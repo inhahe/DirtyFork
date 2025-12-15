@@ -32,7 +32,7 @@ async def user_loop(reader, writer): # todo: users will probably not be able to 
   user = User(reader, writer)
   global_data.users_logging_in.add(user)
   r = RetVals(next_destination=Destinations.login)  
-  todo: # uh oh, sometimes next_destination is treated as a string and sometimes it's treated as the destination object itself, i think. i remember seeing do_destination looking up getattr and such. 
+  # todo uh oh, sometimes next_destination is treated as a string and sometimes it's treated as the destination object itself, i think. i remember seeing do_destination looking up getattr and such. 
   next_destination, next_menu_item = login, None
   while True: 
     try: 
@@ -40,17 +40,17 @@ async def user_loop(reader, writer): # todo: users will probably not be able to 
       next_destination = r.next_destination
       next_menu_item = r.next_menu_item
       if r.status==fail:
-        send(user, f"{"There was an error.\n
-                      "Destination: {r.destination}{('/'+r.menu_item) if r.menu_item else ''}\n
-                      "Error message: r.err_msg)
+        send(user, f"There was an error.\n"
+                    "Destination: {r.destination}{('/'+r.menu_item) if r.menu_item else ''}\n"
+                    "Error message: r.err_msg)")
         user.destination_history.append(r)
         continue
       user.destination_history.append(r)
       r = do_destination(user, r.next_destination, next_menu_item)
       if r.status==fail:
-        send(user, f"{"There was an error.\n
-                      "Destination: {r.next_destination}{('/'+r.next_menu_item) if r.next_menu_item else ''}\n
-                      "Error message: r.err_msg)
+        send(user, f"There was an error.\n"
+                    "Destination: {r.destination}{('/'+r.menu_item) if r.menu_item else ''}\n"
+                    "Error message: r.err_msg)")
       next_destination = r.next_destination
       next_menu_item = r.next_menu_item
     except Disconnected as e:
@@ -58,16 +58,16 @@ async def user_loop(reader, writer): # todo: users will probably not be able to 
       break
     except Exception as e:
       r.status=fail
-      r.errmsg=="There was an error:" + traceback.format_exc(), sender="user_loop")
+      r.errmsg=="There was an error:" + traceback.format_exc() 
       if "debug" in user.keys:
-        send(user, "There was an error:" + traceback.format_exc(), sender="user_loop")
+        send(user, "There was an error:" + traceback.format_exc())
       else:
         send(user, "There was an error.")
-    user.destination_history.append(RetVals(destination=next_destination, menu_item=next_menu_item, status=r.status, err_msg=r.err_msg)
+    user.destination_history.append(RetVals(destination=next_destination, menu_item=next_menu_item, status=r.status, err_msg=r.err_msg))
 
 async def main():
   server = await telnetlib3.create_server(host=config.hostname, port=config.port, shell=user_loop)
   await server.wait_closed()
 
 if __name__=="__main__":
-  await main()
+  asyncio.run(main)
