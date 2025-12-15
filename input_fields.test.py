@@ -1,6 +1,6 @@
-from output import *
+from ansi import *
 from config import get_config
-config = get_config()
+config = get_config(path="dirtyfork.yaml")
 
 class InputFields: # todo: how will I detect mouse clicks in the middle of getting user input keys?
   def __init__(self, user):
@@ -11,7 +11,7 @@ class InputFields: # todo: how will I detect mouse clicks in the middle of getti
                  fill_bg_br=config.input_fields.fill_bg_br, insert_mode = True, outline=config.input_fields.outline, outline_double=config.input_fields.outline_double, content=""):
     self.input_fields.append(await InputField(self.user, field_height, field_length, content_length, self, fg, bg, fg_br, bg_br, fill, fill_fg, fill_bg, fill_fg_br, fill_bg_br, insert_mode, outline, content))
   async def run():
-    pass
+    pass # todo
 
 class InputField:
   async def __init__(self, user, field_height, field_length, content_length, parent=None, fg=config.input_fields.fg, bg=config.input_fields.bg, fg_br=config.input_fields.fg_br, bg_br=config.input_fields.bg_br, \

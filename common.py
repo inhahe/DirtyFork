@@ -1,4 +1,4 @@
-import asyncio, sqlite3, collections
+import asyncio, sqlite3, collections, re
 from importlib import import_module
 from collections import deque
 
@@ -6,20 +6,17 @@ import bcrypt
 
 from output import *
 from keyboardcodes import *
-import re
 from config import *
 from input_fields import * # todo: we have a circular import. supposedly that's a very bad thing.
+import menu
+from modules import *
+from definitions import *
 
 config = get_config()
 
 con = sqlite3.connect(config.database)
 con.row_factory = sqlite3.Row 
 cur = con.cursor()
-
-class RetVals:
-  def __init__(self, **kwargs):
-    for k, v in kwargs.items():
-      self.k = v
 
 class Disconnected(Exception):
   def __init__(self, user):
@@ -70,17 +67,6 @@ email_re = re.compile(b'''(?:[a-z0-9!#$%&'*+\x2f=?^_`\x7b-\x7d~\x2d]+(?:\.[a-z0-
 # what the hell is this? to : does it work?
 handle_re = re.compile("[A-Za-z0-9_]") # i won't allow spaces because that could mess up door games that require a handle in the command line. should I allow any special characters?
                                        # todo: on second thought, handles with spaces is more fun. What should I do abotu the door games?
-black, red, green, brown, blue, magenta, cyan, gray = range(8) 
-yellow = brown
-white = gray
-colors = {"black": black, "red": red, "green": green, "brown": brown, "blue": blue, "magenta": magenta, "cyan": cyan, "gray": gray, "white": white, "yellow": yellow}
-
-SyncTERM, PuTTy = 1, 2
-
-success, fail, new_user = 1, 2, 3
-
-cr, lf = "\x0d", "\x0a"
-
 def check_keys(user, destination, menu_item=None):
   r = RetVals()
   item = menu_item or destination # if no menu_item specified, check keys of destination. destination could be a menu or something else.
@@ -148,7 +134,7 @@ class Destinations:
           user.batch_mode = False
           global_data.users_logging_in.remove(user)
           global_data.users[handle.lower()] = user
-          conf1 = get_config(os.path.join(user_configs, user.handle)
+          conf1 = get_config(os.path.join(config.user_configs, user.handle))
           conf2 = get_config(config.user_defaults)
           conf3 = get_config()
           user.conf = config.ConfigView(conf1, conf2, conf3)
@@ -191,13 +177,13 @@ class Destinations:
     r.destination = destination.type # todo: fix
     return r
 
-  async def user_director(user, next_destination, next_menu_item): # todo: first we have to login
+  async def user_director(user, next_destination, next_menu_item=None): # todo: first we have to login
     result = check_keys(user, next_destination, next_menu_item)
     if not result.allowed:
-      r.status=fail
-      r.err_msg=f{"Destination: {r.next_destination}{('/'+r.next_menu_item) if r.next_menu_item else ''}\n"
-                  "Missing keys: {r.lacking_keys}\n"
-                  "Bad keys: {r.bad_keys}")
+      status=fail
+      err_msg=f"Destination: {next_destination}{('/'+next_menu_item if next_menu_item else ''}\n"
+               "Missing keys: {r.lacking_keys}\n"
+               "Bad keys: {r.bad_keys}")
         
       if user.destination_history[-1].r != fail:
         next_destination = user.destination_history[-1].destination
@@ -206,7 +192,7 @@ class Destinations:
         next_destination = user.main.destination # depends on get_config having been called with user as a parameter, so that the first lookup is user.main_destination
         next_menu_item = user.main.menu_item
         for x in user.destination_history[::-1]:
-          if next_destination = x.destination and next_menu_item = x.menu_item:
+          if next_destination == x.destination and next_menu_item == x.menu_item:
             if x.r.status==fail:
               next_destination = config.main.destination # depends on get_config having been called with user as a parameter, so that the first lookup is user.main_destination
               next_menu_item = config.main.menu_item

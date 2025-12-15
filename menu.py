@@ -1,6 +1,7 @@
 from itertools import batched
 
-from ansi import *
+from output import *
+from definitions import *
 
 def similarity_checker(str1, str2): # should this be case-sensitive or case-insensitive?
   r = 0

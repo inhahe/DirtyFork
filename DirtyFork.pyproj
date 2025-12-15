@@ -30,6 +30,7 @@
     <Compile Include="input_fields.py" />
     <Compile Include="keyboardcodes.py" />
     <Compile Include="menu.py" />
+    <Compile Include="output.py" />
     <Compile Include="testsyncterm.py" />
   </ItemGroup>
   <ItemGroup>

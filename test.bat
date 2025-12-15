@@ -1,0 +1,1 @@
+env\scripts\python -m py_compile "%1"
