@@ -1,0 +1,168 @@
+# todo: make sure all my async functions are called using await
+# todo: make sure i always have result = await function() and not await result = function()
+# todo: figure out were i might need to gather or whatever special functions to group awaits or whatever.
+# where should we check if the user has the 'banned' key and then log them off if they do?
+# i would say in user_director, but the sysop might not necessarily make that the starting destination (settable as config.main_destination)
+# or being banned could just bar them from most things on the bbs but not all, they can still navigate the menus for whatever godforsaken 
+# reason they might want to. that wouldn't require any step to detect that they're banned, but it would require putting banned in the 
+# black_keys for everything they can't use (or include white keys that are taken away from them) (default_options settings for menus make 
+# either one a lot easier)
+# todo: should i have one instantiation of each class destination for everyone
+#       or should i have one instatiotion of each class destination for each user
+#       or should i instantiate a class definition as soon as the user enters it???
+# would there be more or fewer pros and cons to each for different classes? ugh!
+# i guess i'll have to support all three. ugh.
+# type: class_bbs
+# type: class_user
+# type: class_destination
+# it's probably not necessary, different instantiations of classes can see each other easily enough, there's global_data
+# ok, i'll just have one type. the last type.
+# todo: we can't let the an InputField instantiation be deleted just because the user changes destinations away from it. it could still be on the same page she's on. it could have multiple input fields. 
+# but how are we going to structure this? and can i manage to get input fields into its own destination with type class or maybe module?
+# todo: make signing on a destination
+# there are two ways i can do destinations. 
+# if they're functions, that's easier, 
+# but then i can't ensure that no other function is listening to their input stream by accident, because the function must call the get_input_key function from the bbs, which anything could do
+# but when it's a function, i can just call it, and then when it returns it tells me where to send the user to next.
+# if it's a class, i have to somehow explicitly make an instatiation of the class, and then call its get_input_key function repeatedly until it tells me it's done.
+# for real, i doubt that the bbs would get into a state where two coroutines are accidentally listening for the same user. but who knows.
+# wait, doesn't classes just reverse the problem? now how am I going to make sure two different coroutines aren'ttrying to send me input?
+# actually, maybe that's doable. the bbs won't send me input from anything else until the current for x in get_input_key(user) yields a stop.
+# todo: i think we're a little haphazard about when we go to user_director. it should be always. so it shouldn't even have to be listed as a first destination, maybe? 
+# maybe the only firsts have to be (a) login and (b) main_destination?
+# though main_destination can be overriden in a user's yaml.
+# todo: have system, etc. messages from outside the Destination appear in a box with an x on the top right for the user to close when they're done?
+#       maybe the box must span all the way across the screen to make it much easier to scroll the regular content while the box is there?
+# alternate name idea: Galactic, because of the animated stars i'll have. Claude researched and said it doesn't already exist.
+# okay, here's the model i've decided on. 
+# there's two regions of the screen, the destination region and the bbs region for bbs-wide messages
+# the destination region may have its own two regions, input and and the destination output
+# but those two probably won't have to be simultaneous, so it doesn't need to remember a current cursor position for each one
+# but should i have the bbs region constantly there, or open and close when there's a message? the latter would require emulating the entire screen exactly. is that even doable?
+
+# "One gotcha: terminal behavior at the right margin is actually a little inconsistent. Some terminals wrap immediately when you write to the last column. Others do 
+# "deferred wrap" —# the cursor stays in the last column and only wraps when the next character arrives. This matters if you're trying to write exactly 80 characters and then do a 
+# cursor move without wanting a blank line inserted."
+# "Most BBSes just avoided the problem by treating column 79 as the effective edge for text, or by explicitly sending CRLF and managing it themselves rather than relying on autowrap."
+# most BBSers use SyncTERM nowadays.
+# problem: some terminals use utf-8, which conflicts with high ascii.
+# todo: mouse tracking: esc[?1000h
+# "So basic mouse tracking is actually pretty well supported across the terminals people are likely to use. The main variations are:
+#Whether they support the extended SGR mode (1006) for coordinates > 223
+#Whether they support motion tracking (1002, 1003)
+#How they handle modifier keys with clicks"
+# todo: i think the logic for getting input from the user might be incorrect. how do we get input from every user?
+# todo: find writer.write and write.write to change them to send so we can emalute the screen properly.
+# todo: provide a ctrl key the user can press to redraw the screen in case of line noise, and a key they can press in case of changed screen height/width. actually, just make the same key do both. 
+# todo: populate `users` with the user info of every user, and make `global_data.online_users` have the online ones?
+# don't forget to add a user to `users` if they've just registered.
+# todo: make a password type input field that replaces characters with *'s
+# todo: confirmation emails on registration?
+
+# todo:
+# Select your terminal type:
+# 1. ANSI (CP437) - SyncTERM, etc.
+# 2. UTF-8 - PuTTY, modern terminals
+
+# For UTF-8 users, send Unicode box drawing (U+2500 range) as UTF-8
+# The CP437 snowflake (0x0F) looks like ☼. In UTF-8 that's U+263C. 
+
+# todo: we could cheat with the buffers and only process the screen emulation without calling write() while reading a buffer, and then redraw the whole screen!
+
+# add user.buffer, user.normal, store cur_col, fg, etc. under both, have user.write=True, in ansi_move, etc., if user.write, set screen to user.buffer, else set it ot user.normal, change 
+# cur_col, etc. to screen.cur_col
+# after buffered input, compare user.normal.screen with user.buffer.screen and send the differences. set user.write = True before sending.
+
+
+
+# we should consider ruamel.yaml instead, it supports newer yaml spec and preserves formatting, but has 
+# less of a userbase and a more complex api. we might want both the bbs and the sysop to be able to modify yaml files.
+
+# todo: make the bbs a lot more robust by adding a lot more try: excepts
+
+
+
+# or make it support more than two people? there was a multiplayer chat in Hackers, make it like that.
+# or was that The Matrix?
+# show stars constantly twinkling into and out of existence with special ascii characters, 
+# but make it optional. send the twinkle updates on a timer of course. twinkling would work much better for 
+# dial-up than telnet.
+# moving stack based system, there's a stack that defines where you are  is the menu system at any
+# time, but you can jump to any other stack state, i.e., anywhere else in the menu system, and 
+# the stack state determines what you can do from there and what the BBS listens to and how it responds
+# e.g., there are global commands that work almost everywhere, just not in doors or real-time chat,
+# and there's a line input mode that works everywhere but in doors and real-time chat
+# how do I do this?
+# have functions that do everything, store them in a list that represents the stack, one for each user's 
+# state. and we need to somehow mix in other functions that apply more globally. the functions are all 
+# input and output.
+# should line input at the bottom just be the lowest function in the stack? which is replaced by another 
+# function when they're in a realtime chat or in a door? or should it more describe a type of function?
+# and should global commands really be mixed in with more local functions, like injected, or should they 
+# just be hardcoded to be everywhere except in realtime chat and in doors? 
+# should handling connects and disconnects also be a function in these stacks? arguably no, since that 
+# function defines when a user goes into a stack to begin with
+# maybe i'm overthinking it with the stack. e.g. if they're 5 deep in a menu, just have x of that menu item 
+# point to the next higher menu. it's all on a flat landscape. 
+# one process per node
+# no, this is wrong. telnetlib3 is asynchronous so it's perfect more multiple users, according to claude.ai. but it says i still need
+# subprocess to support door programs.
+# also coroutines don't guard against cpu-intensive tasks, will i have any of those? hmm...# i guess i could just spawn a subprocess 
+# if/when I do?
+# redis for inter-node communication, such as tele or message boards (does redis make a good database?)
+# support all door types, the various dropfiles, passing a com port via command line, fossil drivers, etc.
+# maybe send ESC [ = 2 5 5 h before lfing a door, defined in the bananaansi file, but i'm not sure if it's a bananaansi thing only.
+# ESC [ 2 5 5 n report screen size - how popular is support for this? claude.ai says it's not standard. 
+# esc[6n to report current cursor position. reports it as e.g. esc24;80R
+# use DOSBox to run doors, communicate with DOSBox via subprocesses and/or sockets
+# messaging works like notepad, does word wrap, insert, etc., or at least like edit.exe.
+# support avatar (ansi alternative) control codes
+# "6. Avatar, as an asymetrical protocol, allows more than file transfer. It can
+# handle such things as a user logon to a system, transfer of multiple files
+# in either direction simultaneously with other activities, etc. Further
+# details are beyond the scope of this document."
+# would be nice to know how to do taht and whether terminals that support avt support that
+# claude.ai said they don't support avt/1. and all the interesting codes are in avt/1, so i may not even support avatar, 
+# except to read keyboard keys (in avt, they're like null plus the scan code or something like that)
+# er, no, bansi.txt defines enough keys, i don't need to include a bunch of scan codes where they may conflict with the ones bansi
+# defines and i'm not even sure which keyboard standard avt uses.
+# if i support avatar, i should ask the user if their terminal supports it when they sign up. but i'd need to make
+# the bbs in a way such that if they don't support it and it's enabled, what they see indicates clearly enough how to disable it.
+# (claude.ai said that no way to detect for avatar in avt/0 is why it never became popular.)
+# use colorama (on windows) to allow the sysop to emulate a user, but must set the console size to the user's screen
+# dimensions
+# support dial-up with pyserial
+# line input modes works like you type on the bottom line, everything else happens higher up, and if you
+# keep typing off the right side of the screen then your entire text moves to the left. if you hit home
+# or move your arrow key all the way to the left again the text moves to the right again. end works too.
+# apparently bbs's scroll down when the last character is occupied, not when one more is added after that. 
+# so we can never use the last character in line input, or we'd have to disable wrap when working with the 
+# input line and re-enable it when done with that for then. 
+# reply to parts of a message like in gmail. provide a key to remove a whole line. ctrl-k? 
+# how about beautiful squares with shading to hold the individual bbs menu commands?
+# IRC interface? no, can't do that, i'd have too many connections from the host
+# file libraries with zmodem and ymodem, maybe give the user an option of whether to use 8.3 filenames?
+# ymodem-g is the variant that doesn't use crc checks.
+# the files i got that support zmodem and ymodem-g use callbacks, not asyncio, so i'll have to figure out how to convert them
+# or maybe claude.ai can do it.
+# do it like windows used to, ABCDE~2.FGH for clashing filename conversions. or would that conflict with 
+# their OS's naming scheme?
+# don't have categories for files, have tags, and you can specify which tags have to be included or have
+# to not be included when you list files, maybe even using arbitrarily nested groupings
+# maybe also have an option to group files by their tags, that would involve a grouping structure that 
+# holds many files and categories in redundant places. present it to the user like a collapsible tree.
+# make serial port speed 192K, because 56K modems can compress repeating text up to 4X. or do I have to 
+# adjust it to the available hardware/let the sysop adjust it?
+# streamline the process of adding doors, unlike mbbs/wg. specify the type of door and the exe name and
+# what the menu option will be called and maybe what submenus it'll be under, and voila, it's done. 
+# also have an internal list of what the types of the most popular doors are to make it easier (but let
+# the sysop override the default of course)
+# how hard would it be to make it compatible with MBBS/WG addons?
+# have protuction against +++ hacking for dialup? 
+# have protection against m00fing in realtime chat? just don't hang up when the output buffer gets full?
+# claude.ai says practically no users would ever be connecting without ANSI support. 
+# options are case-insensitive except where there are two options in the same menu with different cases
+
+# real-time one-on-one chat where each chat is in its own space, you can see the letters being typed
+
+# todo: ask claude what a good window_size would be if char_threshold is 2

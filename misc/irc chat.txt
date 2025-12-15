@@ -1,0 +1,13 @@
+Are there any IRC channels that BBSs use to connect to each other via IRC relay?
+
+Yes, there are several options:
+
+Synchronet IRC Network - irc.synchro.net:6667 The main hub for Synchronet BBSes. The #synchronet channel is where developers and sysops hang out. Synchronet has a built-in IRC daemon (ircd.js) that can link into this network.
+
+BBSnet - bbsnet.thebbs.org A small IRC network created specifically for BBS operators to let their users chat across different BBSes. Lighter on rules than big networks.
+
+ArakNet IRC - irc.araknet.xyz:6668 Default channel is #araknet. Part of the ArakNet BBS community.
+
+MRC (Multi Relay Chat) - Not IRC, but worth mentioning This is a BBS-specific chat protocol that's become popular for inter-BBS communication. It has clients for Synchronet, Enigma 1/2, Mystic, Cyber BBS, and C-NET. Might be more relevant for your project since it's designed specifically for BBS software integration rather than being a general IRC network. You can get it from phenomprod.com.
+
+For DirtyFork, you could either implement an IRC client module that connects to one of these networks, or look at MRC which might be simpler to integrate since it's designed with BBS software in mind. The MRC protocol is probably documented somewhere if you wanted to write your own client.

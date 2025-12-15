@@ -1,0 +1,62 @@
+One gotcha: terminal behavior at the right margin is actually a little inconsistent. Some terminals wrap immediately when you write to the last column. Others do "deferred wrap" — the cursor stays in the last column and only wraps when the next character arrives. This matters if you're trying to write exactly 80 characters and then do a cursor move without wanting a blank line inserted.
+Most BBSes just avoided the problem by treating column 79 as the effective edge for text, or by explicitly sending CRLF and managing it themselves rather than relying on autowrap.
+For your shadow buffer, you'll need to decide how you want to model it. Probably safest to handle wrapping explicitly in your output function so you always know where the cursor is, rather than trying to perfectly emulate whatever quirks the client terminal might have.
+
+--tested syncterm, it wraps the cursor when the last col is written to.
+
+PuTTY
+
+Bold often renders as bright color only, not bold font weight
+Back Color Erase (BCE) behavior can differ — when you clear screen or clear to end of line, does it fill with current background color or default? PuTTY can go either way depending on settings
+Doesn't support all xterm extended sequences
+
+Windows Terminal / cmd.exe
+
+Modern Windows Terminal is decent, but older conhost was notoriously bad at ANSI
+Some sequences just silently ignored rather than producing garbage
+
+macOS Terminal.app
+
+Generally good, but has had historical issues with 256-color support
+Line-drawing characters sometimes render wrong depending on font
+
+xterm
+
+The reference implementation, but almost too featureful — supports stuff no other terminal does, so testing there can give false confidence
+
+Linux terminals (gnome-terminal, konsole)
+
+Generally solid but vary in edge cases around mouse tracking, bracketed paste, etc.
+
+Character encoding (the big one)
+
+CP437 vs UTF-8 is probably your most common issue
+Old-school ANSI art assumes CP437 box-drawing characters (values 176-223)
+Modern terminals default to UTF-8 and will render garbage unless configured
+SyncTERM handles this; PuTTY needs manual codepage setting
+
+The wrap issue I mentioned
+
+Immediate wrap vs deferred wrap at column 80
+
+You could offer presets: SyncTERM, PuTTY, "Generic ANSI", and maybe a manual config for the tinkerers. 
+
+---
+
+Realistically, the BBS scene has settled on "assume CP437, users configure their client." SyncTERM does CP437 by default, and that's what most of your users will run. Offer a UTF-8 toggle in user settings for the people connecting from modern terminals who don't want to fiddle with codepage settings.
+
+---
+
+syncterm prints the beep character, putty doesn't.
+actually, syncterm prints almost all the ctrl characters, putty doesn't print any of them.
+nope, now syncterm doesn't print the beep character. or maybe it was Terminate that printed it?
+
+# note: syncterm blinks instead of bright background
+  
+
+test \x0c in putty, in syncterm it clears the screen.
+
+test del in putty, in syncterm it prints the char.
+
+
+

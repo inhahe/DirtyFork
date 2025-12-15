@@ -1,0 +1,24 @@
+# this isn't feasible. see reason in login.py.
+type: input
+screen_path: null 
+blurb: 'Welcome to {bbsname}'
+inputs:
+  handle:
+    row: null
+    col: null
+    length: null
+  password:
+    row: null
+    col: null
+    length: null
+login_fail_screen:
+  type: input
+  screen_path: null
+  blurb: Yo
+  inputs:
+    cr: # carriage return
+      row: bottom
+      col: 1
+      length: 0 # todo: can we make an input window that doesn't show up this way?
+      height: 0
+

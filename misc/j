@@ -1,0 +1,251 @@
+# no value you aren't actually going to use needs to be in here. the config object returns None for anything that's missing.
+# todo: option to star out passwords when they're being typed
+# non-required input fields won't be validated.
+# default to required if it's not specified?
+# add int range checks to input fields validation specification?
+database: DirtyFork.db
+hostname: logoplex3 # can also be an ip address
+port: 23
+bbs_name: The Dirty Fork
+doors_base_path: d:\doors # any non-absolute path specified in door game configurations will be relative to this path.
+login: 
+  type: func
+  target: login
+log:
+  path: DirtyFork.log # todo: options for breaking up logs into multiple files, keeping them below a certain length, keeping them younger than a certain age. is there a library for this?
+input_fields:
+  # define colors for entries marked as invalid?
+  # do we validate every time the user enters a character, every time they tab away from a field, or every time they try to submit? make it an option here?
+  edit_types:
+    type_1: # any of these fields can be overriden in the actual field definition. an edit type can be defined as e.g., edit_type: type_1
+      box: false
+      bg_chars: 
+        ord: 176
+        color:
+          fg: gray
+          br_fg: false
+          bg: blue
+          br_bg: false
+      fg_chars:
+        color:
+          fg: green
+          br_fg: false
+          bg: black
+          br_bg: false
+    boxed:
+      box: true
+      fg_chars:
+        color:
+          fg: green
+          br_fg: false
+          bg: black
+          br_bg: false
+    message:
+      box: false
+      fg: white
+      br_fg: false
+      ord: null
+      bg: black
+      br_bg: false
+      scroll_vert: true
+      scroll_horiz: false
+  borders: true
+destinations:
+  register: !include register.yaml
+  main: 
+    type: menu
+    screen:
+      path: null 
+    inputs:
+      option:
+        row: null
+        col: null
+        length: null
+    white_keys: []
+    black_keys: []
+    options:
+      Teleconference: # todo: make it so that option name.startswith(input) is enough to select that input, as long as only one match returns.
+                      # automatically make Teleconfence show up as (T)eleconference, or (Te)leconference if there was another one starting with T, etc.
+                      # or Te: Teleconference. yeah, i like that.
+                      # but this means we no longer need 'name'. it's superfluous'
+        type: module # if target were missing, it would look for a module by the same name as T.name in the BBS's directory
+        target: teleconference
+      Doors: 
+        target: doors
+        white_keys: [doors] # destinations can also have white_keys and black_keys. white keys are keys you need to use it. black_keys are keys you need to not have to use it. 
+        black_keys: [banned] # users shouldn't be able to do anything if they the banned key, but i'm just going to test it on here first.
+        screen_path: null
+      Forums:
+        target: forums
+        type: menu
+      File Library:
+        target: files
+        type: func
+  forums: 
+    type: menu
+    default_option_type: func 
+    default_option_target: forum
+    options:
+      Philosophy:
+        type: func
+        target: forum
+      Physics:
+        type: func
+        target: forum
+      Spirituality & Mysticism:
+        type: func
+        target: forum
+    # hmm, how could we auto-populate the forums menu from the sqlite3 database and still have this be a menu type?
+    # or maybe we should just auto-populate the sqlite3 file based on the forums menu instead? that would involve less addition.
+  doors:
+    default_option_type: func
+    default_option_target: door
+    options:
+      T:
+        name: Trade Wars 2002
+        white_keys: [doors] # destinations can also have white_keys and black_keys. white keys are keys you need to use it. black_keys are keys you need to not have to use it. 
+        black_keys: [banned]
+        communication_type: COM #types: com, fossil, stdio, socket
+        dropfile_type: DOOR.SYS #if this is null or not included, just drop every type of file.
+        dropfile_path: null #uses the same path as in the command line
+ #dropfile types to pass on command line:
+#DOOR.SYS # pcboard
+#DORINFO  # Wildcat
+#CHAIN    # WWIV
+#CALLINFO # Wildcat
+#SFDOORS  # Spitfire
+#TRIBBS   # TriBBS
+#SPITFIRE   
+#DOOR32   # modern
+
+#dropfile filenames:
+#DOOR.SYS      # Most common (PCBoard format)
+#DORINFO1.DEF  # Wildcat/others
+#CALLINFO.BBS  # Wildcat
+#CHAIN.TXT     # WWIV
+#SFDOORS.DAT   # Spitfire
+#DOOR32.SYS    # modern
+#TRIBBS.SYS    # TriBBS
+      command_line: {node} # can't use <node>, that would do file redirection because of the < and > 
+      executable_path: 'TW2002\TW2002.EXE' # putting it in single quotes makes it a raw string so i don't have to escape the \'s
+      #variables: %node, %com, %baud, %dropfile_path, %dropfile_type %config_path %time_limit, %handle,  %socket_handle, 
+        #%graphics_mode, %bbs_software, %data_path, %sysop_name, %bbs_name, %registration_key (probably don't need this variable, 
+        #the user can just enter it in the command line. same for bbs name, sysop name, path, data_path, language (unless we internationalize the bbs), 
+        #DEBUG/VERBOSE/-v/LOG, ui/theme color (e.g. BLUE, DARK), game-specific options), %rows, %cols, 
+        #%irq, %io_port (e.g., 3F8), %uart_type (these three are old and rare)
+        #you need to limit the number of nodes you run at once for a door game 
+        # flags: LOCAL, FOSSIL, 
+        #  maintenance modes: /DAILY, /MAINTENANCE, /MAINT, -MAINT
+        # /RESET
+        # /COMPACT
+        # /BACKUP
+        # /CLEANUP
+        #TW2002.EXE -MAINT -COMPACT -BACKUP -EXPORT -TURNS
+        #BRE.EXE /MAINTENANCE 
+        #/NEWDAY 
+        #/PACK
+        #SRE.EXE /MAINT
+        #/DAILY
+        #/PACK
+        #PLANETS.EXE /MAINT 
+        #PLANETS.EXE /RESET
+        #LORD.EXE /MAINT
+        #/DAILY
+        #/PACK
+        #LORD2.EXE
+        #/MAINT
+        #/RESET
+        #USURPER.EXE /M
+        #/D
+        #LOD.EXE -M
+        #-DAILY
+        #POKER.EXE /MAINT
+        #GWAR.EXE /MAINT
+        #/DAILY
+        #FE.EXE /M
+        #FE.EXE /DAILY
+        #typical maintenance schedules: daily, weekly, monthly, time of day
+
+        #typical command lines: 
+        #door.exe %node
+        #door.exe %node, %baud, %dropfile_path
+        #door.exe /N:%node /D:%dropfile_path, 
+        # or door.exe /N:%node /D:%dropfile_path, /B:%baud
+        #door.exe %node %baud %dropfile_path N Y %rows %cols %handle %bbs_name
+        #if you pass %node and no drop file path, the dropfile should be called e.g. DOOR3.SYS or DORINFO3.SYS for node 3
+        #or, sometimes the dropfile doesn't take a number, like with TRIBBS. you have to make a unique ini file for dosbox which 
+        #mounts the drive and cd's to the directory the door file is in.
+        #you can make e.g. both DOOR3.SYS AND DOOR.SYS for node 3 to make all the doors happy.
+
+  #graphics modes: ANSI, ASCII, RIP, AVATAR, G:ANSI
+#bbs software types: PCBOARD, WILDCAT, WWIV, RENEGADE, MYSTIC, PCBOARD
+  
+        #common door games command-line parameters:
+        #very common:
+        #Trade Wars 2002: TW2002.EXE %node
+        #Legend of the Red Dragon (LORD): LORD.EXE %node
+        #Barren Realms Elite (BRE): BRE.EXE %dropfile_path (DOORINFO1.DEF format)
+        #Planets: The Exploration of Space (TEOS): PLANETS.EXE /N%node
+        #Usurper: USURPER.EXE /N%node
+        #Solar Realms Elite: SRE.EXE %dropfile_path (DOORINFO1.DEF format)
+        #Global War (GWar): GWAR.EXE %node
+        #strategy/simulation: 
+        #Falcons Eye: FE.EXE %node
+        #Food Fight: FOODFITE.EXE %node
+        #Mercenary Wars: MERC.EXE %dropfile_path (DOORINFO1.DEF format)
+        #Swords of Chaos: SOC.EXE %node
+        #Land of Devastation (LOD):
+        #LOD.EXE %node
+        #BBS Poker: POKER.EXE %node
+        #Chess: CHESS.EXE %node %dropfile_path (DOOR.SYS)
+        #
+#         Trivia/Word Games:
+# Fresh Water Fishing:
+# FWFISH.EXE <node>
+# FWFISH.EXE 1
+# Studs:
+# STUDS.EXE <node>
+# STUDS.EXE 1
+# Yankee Trader:
+# YANKEE.EXE <node>
+# YANKEE.EXE 1
+# Scrabble-style games:
+# WORD.EXE <node>
+# WORD.EXE 1
+# Adventure/RPG:
+# LORD II: New World:
+# LORD2.EXE <node>
+# LORD2.EXE 1
+# The Pit:
+# PIT.EXE <node>
+# PIT.EXE 1
+# Darkness:
+# DARK.EXE <node>
+# DARK.EXE 1
+# Leviathan's Lair:
+# LEVIATAN.EXE <node>
+# LEVIATAN.EXE 1
+# Action/Arcade:
+# DoorMUD:
+# DOORMUD.EXE <node>
+# DOORMUD.EXE 1
+# BRE Arena (action version of BRE):
+# ARENA.EXE DORINFO1.DEF
+# Operation: Overkill (OO):
+# OO.EXE <node>
+# OO.EXE 1
+# Utility Doors:
+# InterBBS League Coordinator:
+# LEAGUE.EXE <node>
+# LEAGUE.EXE 1
+# Top Ten Door:
+# TOP10.EXE <node>
+# TOP10.EXE 1
+# User Lister:
+# USERLIST.EXE <node>
+# USERLIST.EXE 1
+# Last Callers:
+# LASTCALL.EXE <node>
+# LASTCALL.EXE 1
+        
+

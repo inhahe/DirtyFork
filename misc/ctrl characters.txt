@@ -1,0 +1,23 @@
+claude is unsure whether ctrl characters not listed are printed or ignored in modern terminal programs like syncterm. i tested it in syncterm21, it seems to print them.
+
+Terminate treats some control characters differently than the below list. for example, wich echo on, ctrl-d seems to move the cursor left one, and ctrl-n seems to clear the screen, unless 
+those are actually Terminate commands
+Terminate prints the actual characters for control characters that don't do anything.
+
+ * 0x00 NUL Ignored
+0x07 BEL Beep/bell sound - prints the char, too
+* 0x08 BS Cursor left one position (stops at left margin) (doesn't erase a char)
+* 0x09 HT Cursor to next tab stop (default every 8 columns)
+* 0x0A LF Line feed (down one line, may also do CR depending on mode)
+0x0B VT Treated same as LF - wrong, just prints 
+* 0x0C FF Treated same as LF - wrong, clears the screen
+* 0x0D CR Cursor to column 1 (left margin)
+0x0E SO Shift Out - switch to G1 character set - just prints 
+0x0F SI Shift In - switch to G0 character set - just prints 
+0x11 DC1/XON Resume transmission (flow control) - just prints 
+0x13 DC3/XOFF Pause transmission (flow control) - just prints
+0x18 CAN Cancel escape sequence in progress - just prints
+0x1A SUB Cancel escape sequence, show error character - just prints
+0x1B ESC Start escape sequence - that's weird, why does it print right arrow instead of left arrow
+
+0x7F DEL Ignored - wrong, prints the char

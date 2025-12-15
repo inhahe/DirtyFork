@@ -1,0 +1,80 @@
+# no charaters less than 32 is always implied. except CR is allowable if the input box is multiline.
+# not sure if we should have a 'required' boolean parameter. it seems redundant when we can just leave min_length at 0.
+# but it may become relevant. i said somewhere else that DirtyFork aren't called when the field isn't required. but i think that was a wrong decision anyway. 
+# note: it's very important to have max_lengths! otherwise someone could sabotage your BBS with like a 1-gigabyte handle or bio or email or something..
+# fields with undefined lengths should generally automatically set themselves according to the max_length of the contents.
+# length, height is for the field, max_length is for the contents.
+# todo: i suppose we should add type: int, float, or string to our parameters 
+# should support drop-down lists. we really need one for time_zone. 
+# problem with this .yaml approach to input screens: no room for anything but the top blurb and input field names.
+# how would i structure it so i could register multiple input fields with any given destination and the class knows how to switch between input fields depending on what the user enters (
+# (or on mouse clicks)?
+# but that wouldn't work very will with the ability to scroll up and down the entire page as needed to fit all the input fields'. it would be doable, though.
+# problem: how do we submit? <enter> should go to the next field.
+# for now, let's just forgo having entry fields being switchable between, and just enter and validate them sequentially.
+
+  type: input
+  blurb: Enter your information to register. 
+  screen_path: # none of the inputs values will actually be used because path is null. the idea is to that we know where to put the inputs in a custom-made ansi screen.
+  inputs:
+    handle:
+      type: input_field
+      chars: 'A-Za-z0-9_,\.\-'
+      allowed_chars: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_0123456789"
+      max_length: 29 # todo: make these more global variables somehow? maybe with {}'s? we'd have to automatically make numeric replacements numeric
+      min_length: 1 # this is more of an input validation parameter
+      row: null
+      col: null
+      length: 29
+    password:
+      type: input_field
+      blurb: "Note that a password of four easily rememberable words is more secure than an 11-character password full of special characters. (See https://xkcd.com/936/.) Minimum length: 6"
+      row: null
+      col: null
+      height: 1
+      length: null
+      min_length: 6
+      max_length: 50
+    age:
+      type: input_field
+      # re: "\\d{1,3}" #is this a one- to three-digit number? # took this out because people won't be honest if they don't want to enter it anyway, and this way people can be more creative.
+      row: null
+      col: null
+      length: null
+      height: 1 # if length or max_length is null, then, the null one = the other one
+      max_length: 10
+    sex: 
+      type: input_field
+      re: null
+      max_length: 10
+      row: null
+      col: null
+      length: 10
+    location: 
+      type: input_box
+      re: null
+      max_length: 100
+      row: null
+      col: null
+      length: 50
+      height: 4
+    time_zone: 
+      type: input_field
+      chars: 'A-Za-z'
+      length: 4
+      min_length: 3
+    email: 
+      type: input_field
+      max_length: 100
+      chars: 'A-Za-z0-9\._%\+\-@'
+      row: null
+      col: null
+      length: null
+      height: null
+    bio:
+      type: input_box
+      length: 40 
+      height: 10 
+      max_length: 400
+      scroll_horiz: null
+      scroll_vert: null # just demonstrating a couple more options that will be available. since these are null, they take on the default value for the BBS.

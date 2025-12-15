@@ -1,0 +1,6 @@
+pyyaml
+pyyaml-include
+telnetlib3
+pyserial-asyncio
+bcrypt
+pandas

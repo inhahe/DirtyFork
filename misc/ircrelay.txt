@@ -1,0 +1,1 @@
+"Single bot relay: One connection to IRC, one channel bridged to one BBS chat room. The bot posts messages like <username> hello everyone on behalf of BBS users. IRC users see it coming from the bot, not individual nicks. It's not seamless, but it works and is the simplest solution."

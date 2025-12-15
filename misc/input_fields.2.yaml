@@ -1,0 +1,58 @@
+# define colors for entries marked as invalid?
+# do we validate every time the user enters a character, every time they tab away from a field, or every time they try to submit? make it an option here?
+edit_types:
+  type_1: # any of these fields can be overriden in the actual field definition. an edit type can be defined as e.g., edit_type: type_1
+    box: false
+    bg_chars: 
+      ord: 176 # this fills all the unused space with chr(176)'s.
+      color:
+        fg: gray
+        br_fg: false
+        bg: blue
+        br_bg: false
+    fg_chars:
+      color:
+        fg: green
+        br_fg: false
+        bg: black
+        br_bg: false
+  boxed:
+    box: true
+    fg_chars:
+      color:
+        fg: green
+        br_fg: false
+        bg: black
+        br_bg: false
+  message:
+    box: false
+    fg: white
+    br_fg: false
+    ord: null
+    bg: black
+    br_bg: false
+    scroll_vert: true
+    scroll_horiz: false
+  command:
+    box: false # this can also have box settings under it.
+               # fg, br_fg, bg, br_bg, box_double (boolean)
+    fg: whit   
+    fg: white
+    br_fg: false
+    ord: null
+    bg: black
+    br_bg: false
+    scroll_vert: false
+    scroll_horiz: false
+    row: bottom
+    col: 1
+    height: 1
+    width: full # full width goes from col to the right side of the screen (or from current position to the right side of the screen depending on parameters)
+                # actually instead of having a parameter to start it at the current position, we should just have col: {cur_col}, row: {cur_row}
+borders: true
+# problem: there's no way to specify e.g. a 4-row high input box that's on the bottom of the screen regardless of user.screen_height.
+# solution: 
+#   height: 4
+#   row: 'user.screen_height-4}'
+# or
+#   row: '{bottom-4}' # and have python evaluate things inside {}'s

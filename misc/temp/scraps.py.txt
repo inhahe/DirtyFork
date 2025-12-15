@@ -1,0 +1,36 @@
+import asyncio
+
+async def read_from_telnet(reader):
+    """Continuously read from telnet and display output"""
+    try:
+        while True:
+            data = await reader.read(1024)  # asyncio.StreamReader IS async
+            if not data:
+                break
+            print(data.decode('utf-8', errors='ignore'), end='', flush=True)
+    except Exception as e:
+        print(f"\nConnection closed: {e}")
+
+async def connect_telnet(host, port):
+    reader, writer = await asyncio.open_connection(host, port)
+    # Now spawn both tasks
+    await asyncio.gather(
+        read_from_telnet(reader),
+        send_to_telnet(writer)
+    )
+
+async def main():
+    reader, writer = await telnetlib3.open_connection('hostname', 23)
+    
+    read_task = asyncio.create_task(read_from_telnet(reader))
+    send_task = asyncio.create_task(send_to_telnet(writer))
+        
+    # Wait for either task to complete (likely due to error/disconnect)
+    done, pending = await asyncio.wait(
+        [read_task, send_task],
+        return_when=asyncio.FIRST_COMPLETED
+    )
+    
+    # Cancel remaining tasks
+    for task in pending:
+        task.cancel()

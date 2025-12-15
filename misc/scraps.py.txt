@@ -1,0 +1,490 @@
+import asyncio
+
+async def read_from_telnet(reader):
+    """Continuously read from telnet and display output"""
+    try:
+        while True:
+            data = await reader.read(1024)  # asyncio.StreamReader IS async
+            if not data:
+                break
+            print(data.decode('utf-8', errors='ignore'), end='', flush=True)
+    except Exception as e:
+        print(f"\nConnection closed: {e}")
+
+async def connect_telnet(host, port):
+    reader, writer = await asyncio.open_connection(host, port)
+    # Now spawn both tasks
+    await asyncio.gather(
+        read_from_telnet(reader),
+        send_to_telnet(writer)
+    )
+
+async def main():
+    reader, writer = await telnetlib3.open_connection('hostname', 23)
+    
+    read_task = asyncio.create_task(read_from_telnet(reader))
+    send_task = asyncio.create_task(send_to_telnet(writer))
+        
+    # Wait for either task to complete (likely due to error/disconnect)
+    done, pending = await asyncio.wait(
+        [read_task, send_task],
+        return_when=asyncio.FIRST_COMPLETED
+    )
+    
+    # Cancel remaining tasks
+    for task in pending:
+        task.cancel()
+
+# async def get_code(user) : # this is sus, what happens if it repeatedly has to save char to cur_input_code and then return? does it miss some characters?
+                             # can i use yield with this function?
+#   while True: 
+#     char = await user.read.read(1) 
+#     if char in b"\x00\x1b":
+#       if user.cur_input_code:
+#         r = user.cur_input_code
+#         user.cur_input_code = char
+#         return bytes("dud:", r)
+#     else:
+#       combined = user_cur_input_code+char
+#       if combined in keyboardcodes:
+#         return keyboardcodes[combined]
+#       if not any(x.startswith(combined) for x in keyboard_codes): 
+#         r = bytes("dud:",user.cur_input)
+#         user.cur_unput = char
+#         return r            
+
+
+def to_bytes(s):
+  if isinstance(s, str):
+    return s.encode("utf-8", errors="ignore")
+  elif isinstance(s, bytes):
+    return s
+  else: # assume it's a list, we want to raise an exception if it's none of the above
+    ss = []
+    for s2 in s:
+      if isinstance(s2, str):
+        ss.append(s2.enccode("utf-8", errors="ignore"))
+      else:
+        ss.append(s2)
+    return ''.join(ss)
+
+def to_str(b):
+  if isinstance(b, bytes):
+    return b.decode("utf-8", errors="ignore")
+  elif isinstance(b, str):
+    return b
+  else: # assume it's a list, we want to raise an exception if it's none of the above
+    bs = []
+    for bb in b:
+      if isinstance(bb, bytes):
+        bs.append(bb.deccode("utf-8", errors="ignore"))
+      else:
+        bs.append(bb)
+    return b''.join(bs)
+
+
+async def ansi_color(user, *args):
+  # todo: if i do [dark, fg, red, br, bg, black] does that work right?
+  # what about    [br, bg, black, dark, fg, red] ?
+  # and           [dark, bg, black, br, fg, red] ?
+  # and           [br, fg, red, dark, bg, black] ? 
+  # #(the order of the red and black is irrelevant)
+  # actually, currently, passing dark does nothing.
+  # black, red, green, brown, blue, magenta, cyan, gray, br, fg, bg, reset = range(12)
+  # todo: should we change br fore, br back, fore clr, or back clr alone if the other arguments aren't present? 
+  # currently e.g. [white] would change it to dark white even if it was previously bright. 
+
+
+
+async def read_input_batch(user, window_size=0.1, char_threshold=5, batch_pause=0.03, quick_check=0.001): 
+  """
+  Read input with paste detection.
+    
+  - Single keystrokes: ~1ms delay (imperceptible)
+  - Paste detected (5+ chars within 100ms): batches until 30ms pause
+    
+  Args:
+      window_size: Time window to detect paste (seconds)
+      char_threshold: Chars within window to trigger batch mode
+      batch_pause: Timeout when in batch mode
+      quick_check: Quick check timeout for normal typing
+  """
+  batch = []
+  start = time.perf_counter()
+  # Get first character (blocking)
+  key = await get_input_key(user)
+  batch.append(key)
+  # Quick check for more immediately available characters
+  while True:
+    try:
+      key = await asyncio.wait_for(get_input_key(user), timeout=quick_check)
+      batch.append(key)
+      # Check if this looks like a paste
+      elapsed = time.perf_counter() - start
+      if len(batch) >= char_threshold and elapsed < window_size:
+        # Paste detected - switch to longer timeout and collect the rest
+        while True:
+          try:
+            key = await asyncio.wait_for(get_input_key(user), timeout=batch_pause)
+            batch.append(key)
+          except asyncio.TimeoutError:
+            return batch
+    except asyncio.TimeoutError:
+      # No more data waiting
+      return batch
+
+async def read_input_batch(user, window_size=0.1, char_threshold=5, batch_pause=0.03):
+    batch = []
+    start = time.perf_counter()
+    
+    key = await get_input_key(user)
+    batch.append(key)
+    
+    # Check if more data already buffered (no wait)
+    while user.reader._buffer:  # internal buffer - a bit hacky
+        key = await get_input_key(user)
+        batch.append(key)
+        
+        elapsed = time.perf_counter() - start
+        if len(batch) >= char_threshold and elapsed < window_size:
+            # Paste detected - collect rest with timeout
+            while True:
+                try:
+                    key = await asyncio.wait_for(get_input_key(user), timeout=batch_pause)
+                    batch.append(key)
+                except asyncio.TimeoutError:
+                    return batch
+    
+    return batch
+
+
+if field_height==1: # somewhere in here, there is a missing close-parentheses
+  field_pos = content_pos = 0
+  content = ""
+  if col+field_length-1>user.screen_width:                                                    
+    raise ValueError("Input field would extend beyond screen width.")
+  if col_offset+field_length-1==user.screen_width:
+    await ansi_wrap(user, False)
+  col_offset = user.cur_col    
+  while True:
+    key = await get_input_key(user)
+    if key == "left":
+      if field_pos == 0:
+        if content_pos > 0: # field is scrolled to the right, cursor is at the beginning
+          content_pos -= 1
+          if insert_mode:
+            await send(user, content[content_pos:content_pos+field_length])
+          else:
+            await ansi_color(user, bg, fg, False, False)
+            await send(user, content[content_pos]) # write inverted color char at cursor pos
+            await ansi_color(user, fg, bg, fg_br, bg_br)
+            await send(user, content[content_pos+1:content_pos+field_length]) # write rest of content in normal colors
+          await ansi_move(user, col=col_offset) 
+      else:                                               
+        field_pos -= 1
+        if insert_mode:
+          await ansi_left(user)
+        else:
+          await send(user, content[content_pos+field_pos+1])
+          await ansi_color(user, bg, fg, False, False)
+          await send(user, content[content_pos+field_pos])
+          await ansi_color(user, fg, bg, fg_br, bg_br)
+          await ansi_left(user)
+          await ansi_left(user)                                
+    elif key == "right":
+      if field_pos == field_length-1: # cursor is at the very right
+        if field_pos+content_pos <= len(content): # make sure cursor is not at end of content already # off by one maybe?
+          content_pos += 1
+          await ansi_move(col=col_offset) # move the cursor the easy/cheating way, we totally optimized ansi_move() anyway. 
+          if insert_mode:
+            await send(user, content[content_pos:content_pos+field_length])
+          else:
+            await ansi_move(col=col_offset)
+            await send(user, content[content_pos:content_pos+field_length-1] # send normal characters up until the inverted character
+            await ansi_color(user, bg, fg, False, False)
+            await send(user, content[content_pos+field_length])              # send the inverted character
+            await ansi_color(user, fg, bg, fg_br, bg_br)
+          await ansi_left(user)
+      else:
+        field_pos += 1
+        if insert_mode:
+          await ansi_right(user)
+        else:
+          await send(user, content[content_pos+field_pos-1])                 # send normal character to replace the inverted character
+          await ansi_color(user, bg, fg, False, False)
+          await send(user, content[content_pos+field_pos])                   # send inverted character to replace the normal character one to the right
+          await ansi_color(user, fg, bg, fg_br, bg_br)
+          await ansi_left(user)
+    elif key == "home":
+      if content_pos > 0:
+        field_pos = content_pos = 0
+        await ansi_move(col=col_offset)          
+        if insert_mode:
+          await send(user, content[:field_length])    # send <field_length> many characters of content 
+          await ansi_move(col=col_offset)
+        else:
+          await ansi_color(bg, fg, False, False)
+          await send(user, content[0])    
+          await ansi_color(fg, bg, fg_br, bg_br)
+          await send(user, content[1:field_length])
+      else:
+        await ansi_color(bg, fg, False, False)
+        await send(user, content[0])
+        await ansi_right(user, field_pos)
+        await ansi_color(fg, bg, fg_br, bg_br)
+        await send(user, content[field_pos])
+        await ansi_move(col=col_offset)
+      await ansi_move(user, col=col_offset) 
+    elif key == "end":
+      if len(content) <= field_length:
+        await ansi_right(user, len(content)-field_pos)
+        field_pos = len(content)
+      else:
+        await ansi_move(user, col=col_offset)
+        content_pos = len(content)-field_length+1
+        await send(user, content[content_pos:content_pos+field_length]) 
+        await ansi_color(user, fill_bg, fill_fg, fill_bg_br, fill_fg_br)
+        await send(user, fill)
+        await ansi_color(user, bg, fg, bg_br, fg_br)
+    elif key == "ins":  # todo
+      insert_mode = not insert_mode
+      if insert_mode:
+        await send(user, content[content_pos+field_pos]) # insert was turned on, replace block with the content character at that col.
+        await ansi_left()
+      else:
+        await ansi_color(user, bg, fg, False, False)
+        await send(user, content[content_pos+field_pos]
+        await ansi_color(user, fg, br, fg_br, bg_br)
+        await ansi_left(user, bg, fg)
+    elif key == "back":
+      if field_pos==0:
+        if content_pos>0:
+          content_pos -= 1
+          content=content[:content_pos]+content[content_pos+1:] # delete a char from content. we're at field_pos=0 so we don't have to factor in field_pos.
+      else:
+        field_pos -= 1          
+        content_pos -= 1
+        content=content[:content_pos+field_pos]+content[content_pos+field_pos+1:] # delete a char from content at new content_pos. factor in field_pos.
+        await ansi_move(user, left)
+        if insert_mode:
+          await send(user, chr(217)+content[conten_pos+1:content_pos+field_length-field_pos]) # check: is this accurate?
+        else:
+          await send(user, content[content[conten_pos:content_pos+field_length-field_pos]) # check: is this accurate?
+        if field_length>len(content)-content_pos:
+          await ansi_color(user, fill_fg, fill_bg, fill_fg_br, fill_bg_br)
+          await send(user, fill)
+          await ansi_color(user, fg, bg, fg_br, br_br)
+    elif key == "del":
+      end_pos == len(content) - content_pos-1 
+      if end_pos==field_pos: # if cursor is right at the end of the content
+        content = content[:field_pos+content_pos-1]
+        if insert_mode:
+          await ansi_color(user, fill_fg, fill_bg, fill_fg_br, fill_bg_br)
+          await send(user, fill)
+        else:
+          await await ansi_color(user, fill_bg, fill_fg)
+          await send(user, fill)
+          await ansi_color(user, fg, bg, fg_br, bg_br)
+      else:
+        if end_pos < field_length + 1: # check: off by one error? # if there are multiple fill characters after the content
+          content = content[:content_pos]+content[field_pos+content_pos+1:]
+          if insert_mode:
+            await send(user, content[field_pos+content_pos:field_pos+content_pos+field_length-field_pos]) # check: is this correct? and is there an off by one error?
+            await ansi_color(fill_fg, fill_bg, fill_fg_br, fill_bg_br)
+            await send(user, fill)
+            await ansi_move(user, col=col_offset+field_pos) # move cursor back to where it belongs
+          else:
+            await ansi_color(user, bg, fg, False, False)  
+            await send(content[field_pos+content_pos])
+            await ansi_color(user, fill_fg, fill_bg, fill_fg_br, fill_bg_br)
+            await send(user, fill)    # print the rest of the fill characters to the end of the input field in normal fill colors.
+        else: # if content takes up the entire field
+          content = content[:content_pos]+content[field_pos+content_pos+1:] # delete a char from content.
+          if insert_mode:
+            await send(user, content[field_pos+content_pos:field_pos+content_pos+field_length-field_pos]) # print content from field_pos to end of input starting with the appropriate content pos for the horizontal scroll
+          else:
+            await ansi_color(user, bg, fg, False, False)
+            await send(user, content[field_pos+content_pos]) # send current char in reverse colors
+            await ansi_color(user, fg, bg, fg_br, bg_br)
+            await send(user, content[field_pos+content_pos+1:field_pos+content_pos+field_length-field_pos]) # send rest of chars in normal colors
+    elif key == ctrl_u: # ^U = clear line
+      content = ""
+      field_pos = content_pos = 0
+      await ansi_move(col=col_offset)
+      await ansi_color(user, fill_fg, fill_bg, fill_fg_br, fill_bg_br)
+      await send(user, fill*field_length)
+      await ansi_color(user, fg, bg, fg_br, br_br)
+    elif key == cr: 
+      await send(user, cr+lf)
+      return content
+    elif ord(key) >= 32: # ord here happens to make sure we didn't overlook any possible special key names that fell through to here.
+      if insert_mode:
+        if len(content) < content_length: 
+          content = content[:field_pos+content_pos]+key+content[field_pos+content_pos:]
+          await send(user, content[content_pos+field_pos:content_pos+field_pos+field_length-field_pos])
+          await ansi_move(user, col=col_offset+input_pos)
+        field_pos += 1
+      else:
+        content=content[:field_pos+content_pos]+key+content[field_pos_content_pos+1:]
+        end_pos = len(content)-content_pos
+        content.append(key)
+        await send(user, key)
+        await await ansi_color(user, fg, bg, fg_br, bg_br)
+        await send(user, key)
+        if field_pos == end_pos: # cursor is one to the right of the content, fill char is currently inverted
+          if field_pos < field_length-1: # field_pos better not be > field_length-1, so if it's not < then it's ==, in which case we wouldn't send a new inverted fill char
+            await await ansi_color(user, fill_bg, user_fill_fg, False, False) 
+            await send(user, fill)
+            await ansi_left(user) 
+        else: # field_pos had better be < end_pos, because field_pos>end_pos is an invalid state, the cursor would be in the middle of fill characters
+          await await ansi_color(user, bg, fg, False, False)
+          await send(user, key)
+          await await ansi_color(user, fg, bg, fg_br, bg_br)
+          await ansi_left(user)
+    await user.writer.drain()
+  
+if self.height == 1: # do i really want a separate function for this special case? i just didn't want to waste the code I already had...
+  if key == "left":
+    if user.cur_input_col == 1:
+      if user.cur_input_pos > 1:
+        user.cur_input_pos -= 1
+        await send(user, user.cur_input[user.cur_input_pos:user.cur_input_pos+length], in_input=True)
+        await ansi_left(user.screen_width)
+    else:
+      ansi_left(user, 1)
+      user.cur_input_pos -= 1
+      user.cur_input_col -= 1
+  elif key == "right":
+    if user.cur_input_col == user.screen_width:
+      if user.cur_input_pos < len(user.cur_input):
+        user.cur_input_pos += 1
+        await ansi_left(user.screen_width)
+        await send(user, user.cur_input[user.cur_input_pos:user.cur_input_pos+length], in_input=True)
+    else:
+      ansi_right(user, 1)
+      user.cur_input_pos += 1
+      user.cur_input_col += 1
+  elif key == "home":
+    pass # todo
+  elif key == "end":
+    pass # todo
+  elif key == "ins":  
+    pass # todo
+  elif key == "del":
+    user.cur_input = user.cur_input[:user.cur_input_pos] + user.cur_input[user.cur_input_pos+1:]
+    s = user.cur_input[user.cur_input_pos:user.cur_input_pos+length-user.cur_input_col]+" "
+    await send(user, s, in_input=True)
+    await ansi_left(user, len(s), in_input=True)
+  elif key == ctrl_u or key == ctrl_c or key == cr: # we don't have to distinguish here, input_field looks for cr to know when editing is complete. 
+    await ansi_move(user, col=col_offset)                         # ctrl_u = clear line
+    user.cur_input = ""
+    field_pos = content_pos = 0
+    ansi_color(fill_fg, fill_bg, fill_fg_br, fill_bg_br)
+    send(user, fill*field_length)
+    ansi_left(user)
+  elif ord(key) >= 32:
+    if user.cur_input_pos <= len(user.cur_input):
+      await send(user, key+user.cur_input[user.cur_input_pos:user.cur_input_pos+length-user.cur_input_col], in_input=True)
+      user.cur_input = user.cur_input[:user.cur_input_pos]+key+user.cur_input[user.cur_input_pos:]
+    user.cur_input_pos += 1
+    user.cur_input_col += 1
+    await user.writer.drain()
+
+  
+async def clear_input_line(user, row, col, length):
+  if user.in_input == False:
+    await ansi_move(user, row, col, in_input=True)
+  await send(user, " "*length)
+
+
+class Subdestinations:
+  def input_field(user, field_length, content_length, fg=config.input_fields.fg, bg=config.input_fields.bg, fg_br=config.input_fields.fg_br, bg_br=contfig.input_fields.bg_br,
+                fill=config.input_fields.fill, fill_fg=config.input_fields.fill_fg, fill_bg=config.input_fields.fill_bg, fill_fg_br=config.input_fields.fill_fg_br, 
+                fill_bg_br=config.input_fields.fill_bg_br, insert_mode = True, outline=None, content=""): 
+
+class InputBox:
+  async def __init__(self, user, conf, r): # r is probably unnecessary. do we need destination? after all, we do have user_cur_destination. i think.
+    self.user = user
+    self.conf = conf
+    self.r = r
+    self.contents = ""
+    self.cur_col == 1 # these are relative to the position of the input_field.
+    self.cur_row = 1
+    self.scrolled_down = 0
+    self.scrolled_right = 0
+    await ansi_move(conf.row, conf.col)
+
+async def do_input_screen(user, dest, r): # todo: make it so the user can cycle through simultaneous inputs using tab, or enter, but when do we return all the values?
+  # todo: this needs to be in an input_screen class.
+  input_fields = {}
+  if screen.path: 
+    await show_screen(user, dest.screen_path, r)
+  for inp in dest.inputs:
+    input_fields[inp]=InputField(user, inp, r)
+  user.input_fields = input_fields
+  user.cur_input = input_fields[dest.inputs[0]] # todo: what to do if dest.inputs is empty?
+  while True:
+    for inp in get_code(user):
+      r = await user.cur_input.process_input(inp, r) 
+      if r.status == "submit":
+        r = await getattr(validators, user.cur_destination)._submit(user, values, r)
+        if r.status == success:
+          r = await getattr(validators, user.cur_destination)._execute(user, values, r)
+          if r.status == success:
+            r.values = values
+            r.next_destination = r.previous_destination
+            return r
+          else:
+            send(user, "Submission failed because of reason: " + r.status, r) # we might need to figure out our scrolling region for sending this.
+        else:                                                                   # todo: maybe _execute should return a dict of errors, too? why not?
+          for input_field, err_msg in r.err_msgs.items():                       # or maybe a failed execution should bring us to some error page?
+            input_field.show_err_msg(err_msg)                                   # user should always have a scroll region defined in is config for receiving messages
+                                                                    # todo: wait, where's next_destination? how do we know what it is? 
+                                                                    # ok, we need to call getattr(validators, user.cur_destination)._execute(user, values, r)
+                                                                    # when r.status says "submitted" (we should probably also have a case in which to 
+                                                                    # run validators...._submit()) and that program will know where the next destination is.
+                                                                    # it will return it in return_value.next_destination.
+  r = RetVals()
+  lacking_keys = item.white_keys - user.keys
+  bad_keys = item.black_keys & user.keys
+  return r(allowed=bool(lacking_keys or bad_keys), lacking_keys=lacking_keys, bad_keys=bad_keys)
+
+async def show_screen(user, screen_path):
+  await ansi_cls()
+  await send(user, open(screen_path, "r").read()) 
+  return 
+  # todo: this runs the risk of a zombie coroutine showing the user a screen out of nowhere. wait, could the same thing happen with other input, now that i'm using classes instead of functions?
+
+
+# class BufferedWriter:
+#   def __init__(self, writer):
+#     self._writer = writer
+#     self._buffer = []
+    
+#   def write(self, data):
+#     self._buffer.append(data)
+    
+#   async def drain(self):
+#     if self._buffer:
+#       self._writer.write(''.join(self._buffer))
+#       self._buffer.clear()
+#     await self._writer.drain()
+
+async def read_input_batch(user, window_size=0.02, char_threshold=2, batch_pause=0.03): 
+  key = await get_input_key(user)
+  now = time.perf_counter()
+  user.input_timestamps.append(now)
+  # Check if recent input looks like a paste
+  if len(user.input_timestamps) == char_threshold:
+    oldest = user.input_timestamps.pop()
+    if now - oldest < window_size:
+      # Paste detected - batch the rest
+      batch = [key]
+      while True:
+        try:
+          key = await asyncio.wait_for(get_input_key(user), timeout=batch_pause)
+          batch.append(key)
+          user.input_timestamps.append(time.perf_counter())
+        except asyncio.TimeoutError:
+          return batch
+  return [key]

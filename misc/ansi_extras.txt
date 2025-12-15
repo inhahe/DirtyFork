@@ -1,0 +1,40 @@
+ESC[20h — Set (newline mode): LF does CR+LF (moves down and to column 1)
+ESC[20l — Reset (line feed mode): LF just moves down, stays in same column
+
+see 1000h.txt
+
+ESC[22m - Bold off
+ESC[24m - Underline off
+ESC[25m - Blink off
+ESC[27m - Reverse off
+ESC[28m - Invisible off
+
+On Off      Attribute
+1  21 or 22 Bold (21 is sometimes "double underline", 22 is more reliable) - 22 works in syncterm
+4  24       Underline
+5  25       Blink - works in syncterm
+7  27       Reverse - doesn't seem to work in syncterm
+8  28       Invisible
+
+esc[100m - esc[107m - bright background (as opposed to blink) - doesn't seem to work in syncterm
+
+ESC[ Ps SP q
+Note the space character before q. Values:
+Ps	Cursor Style
+0,1 	Blinking block
+2	Steady block
+3	Blinking underline
+4	Steady underline
+5	Blinking bar (some terminals)
+6	Steady bar (some terminals)
+
+So ESC[2 q gives you a non-blinking block cursor.
+Support varies:
+
+xterm: yes
+VT520+: yes
+Windows Terminal: yes
+PuTTY: maybe not
+SyncTERM: worth testing - doesn't work on SyncTERM.
+
+esc[?25l - hide cursor - works in SyncTERM

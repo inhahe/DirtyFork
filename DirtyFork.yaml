@@ -1,0 +1,164 @@
+# no value you aren't actually going to use needs to be in here. the config object returns None for anything that's missing.
+# todo: option to star out passwords when they're being typed
+# non-required input fields won't be validated.
+# default to required if it's not specified?
+# add int range checks to input fields validation specification?
+
+# make the destination the input_screen, not the individual field within that screen. even if there's only one field on the screen. 
+# the screen will route the inputs to the appropriate field and that will also enable it to orchestrate movement between fields better.
+# but don't menu pages have fields too? for inputing the options? what are we going to do about that?
+
+# todo: can't currently go back to previous menus by hitting x a bunch of times.. 
+
+bbs_name: The Dirty Fork
+hostname: logoplex3 # can also be an ip address
+port: 23
+
+database: DirtyFork.db
+
+login: 
+  type: func # should we make this a module?
+  target: login
+
+log:
+  path: DirtyFork.log 
+  split_at: 1_000_000 # note: underscores won't work if pyyaml upgrades to 1.2 or we decide to use that other yaml library
+  max_length: 10_000_000 # including all split files
+  max_age: "1 year" # should it trim when it exceeds max_length or max_age, or when it exceeds max_length and max_age?
+
+  #import pandas
+  #pandas.Timedelta("1 day 2 hours")
+
+input_fields: !include input_fields.yaml  
+# hmm, if we keep input_fields in this file, we can use anchors on the edit types so that fields defined in here can include the anchor instead of just the name of the type, 
+# which would require more work for the bbs
+# but i think we'd still have to manually load from the name in the forum module since its input fields aren't defined in any yaml.
+
+user_defaults: # currently we have some user config stored in the database and some stored in yaml files, maybe not ideal
+  main:
+    destination: main
+    menu_item: null
+  menus: 
+    main: main
+    colors:
+      normal:
+        fg: white
+        fg_br: false
+        bg: black
+        bg_br: false
+      noaccess:
+        fg: black
+        fg_br: true
+        bg: black
+        bg_br: false
+      highlight:
+        fg: white
+        fg_br: true
+        bg: black
+        bg_br: false
+  bbs_msgs:
+    
+    
+  time_zone_format: '%Y/%m/%d %H:%M:%S {GMT}{"+" if time_zone_hour>=0 else "-"}:abs(time_zone_minute)}' #is that a valid way to show time zone? 
+  # time_zone_format: '%Y/%m/%d %H:%M:%S {time_zone_letters}')
+  # todo: process keys i read from config
+  # make Config so that you can pass the object the important dictionaries at any time and then it'll use them
+  # codes.format_map(dictionary)
+  keys:
+    - debug # allows the user to see debug output if and when the bbs encounters an error.
+    - doors
+ 
+destinations: # todo: should login be here? 
+# types are module, menu, func, and input (i think register is type: input)
+# i wonder if we should add type: screen to those. it just shows a screen and waits for your input to leave.
+# and i wonder if there's any more use to type: func
+  main: 
+    type: menu
+  door: 
+    type: module
+    white_keys: [doors]
+    base_path: 'c:\doors'# any non-absolute path specified in door game configurations will be relative to this path.
+    max_nodes: 20 # todo: i have no idea what a good value for this is.
+                  # for simplicity, COM will always be 1, it doesn't matter since each door game instance will run on its own instance of DOSBox anyway.
+    option_defaults:
+      type: module
+  teleconference:
+    type: module
+  forum: 
+    type: module
+  files: 
+    type: module
+  register: 
+    type: module
+  user_director:
+    type: func
+  Teleconference:
+    type: module 
+  forums: 
+    type: menu
+  doors:
+    type: menu
+
+forum_list: &forum_list
+  Philosophy: null        # you could have black_keys, white_keys, etc., under the forum entries. 
+  Physics: null
+  Spirituality & Mysticism: null
+  The Paranormal: null
+menu_system: # not sure which things should go in the menus and which things should go under their destinations
+  main:
+    screen_path: null 
+    inputs:
+      option:
+        row: null
+        col: null
+        length: null
+    white_keys: []
+    black_keys: []
+    options:
+      Messages:
+        target: messages
+        type: module
+      Teleconference: 
+        target: teleconference
+        type: module
+      Doors: 
+        target: doors
+        type: menu
+        white_keys: [doors] 
+        black_keys: [banned]
+        screen_path: null
+      Forums:
+        target: forums
+        type: menu
+      File Library:
+        target: files
+        type: module
+  forums: 
+    option_defaults:
+      target: forum
+    options:
+      <<: *forum_list
+      Edit Forum:
+        option_defaults: # todo: should i have the bbs inherit the option_defaults of type and target, or should i have to specify them again here?
+          action: edit
+        options:
+          <<: *forum_list
+    # hmm, how could we auto-populate the forums menu from the sqlite3 database and still have this be a menu type?
+    # or maybe we should just auto-populate the sqlite3 file based on the forums menu instead? that would involve less addition.
+  doors:
+    option_defaults:
+      target: door
+    options:
+      Trade Wars 2002:
+        max_nodes: 4 # some doors require node number not be higher than max_nodes, some don't. to be safe, we'd better made node pools.
+        white_keys: [doors] # destinations can also have white_keys and black_keys. white keys are keys you need to use it. black_keys are keys you need to not have to use it. 
+        black_keys: [banned]
+        communication_type: COM # types: com, fossil, stdio, socket
+        dropfile_type: DOOR.SYS #if this is null or not included, just drop every type of file.
+        dropfile_path: null #
+        dropfile_dir: null
+        dropfile_name: null
+      command: 'TW0002.EXE {node}'
+      dir: 'TW2002'
+
+    

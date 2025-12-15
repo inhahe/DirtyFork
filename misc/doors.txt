@@ -1,0 +1,158 @@
+  doors:
+    max_nodes: 20 # todo: i have no idea what a good value for this is.
+                  # for simplicity, COM will always be 1, it doesn't matter since each door game instance will run on its own instance of DOSBox anyway.
+    option_defaults: # or should we have defaults: options: type etc?
+      type: module
+      target: door
+      white_keys: [doors]
+      base_path: 'c:\doors'# any non-absolute path specified in door game configurations will be relative to this path.
+    options:
+      Trade Wars 2002:
+        max_nodes: 4 # some doors require node number not be higher than max_nodes, some don't. to be safe, we'd better made node pools.
+        white_keys: [doors] # destinations can also have white_keys and black_keys. white keys are keys you need to use it. black_keys are keys you need to not have to use it. 
+        black_keys: [banned]
+        communication_type: COM #types: com, fossil, stdio, socket
+        dropfile_type: DOOR.SYS #if this is null or not included, just drop every type of file.
+        dropfile_path: null #uses the same path as in the executable_path
+
+#dropfile types to pass on command line:
+#DOOR.SYS # pcboard
+#DORINFO  # Wildcat
+#CHAIN    # WWIV
+#CALLINFO # Wildcat
+#SFDOORS  # Spitfire
+#TRIBBS   # TriBBS
+#SPITFIRE   
+#DOOR32   # modern
+
+#dropfile filenames:
+#DOOR.SYS      # Most common (PCBoard format)
+#DORINFO1.DEF  # Wildcat/others
+#CALLINFO.BBS  # Wildcat
+#CHAIN.TXT     # WWIV
+#SFDOORS.DAT   # Spitfire
+#DOOR32.SYS    # modern
+#TRIBBS.SYS    # TriBBS
+      command: 'TW0002.EXE {node}'
+      dir: 'TW2002'
+      # todo: make sure we make exe_path work for .bat files too.
+      #variables: %node, %com, %baud, %dropfile_path, %dropfile_dir, %dropfile_type %config_path %time_limit, %handle,  %socket_handle, 
+        #%graphics_mode, %bbs_software, %data_path, %sysop_name, %bbs_name, %registration_key (probably don't need this variable, 
+        #the user can just enter it in the command line. same for bbs name, sysop name, path, data_path, language (unless we internationalize the bbs), 
+        #DEBUG/VERBOSE/-v/LOG, ui/theme color (e.g. BLUE, DARK), game-specific options), %rows, %cols, 
+        #%irq, %io_port (e.g., 3F8), %uart_type (these three are old and rare)
+        #you need to limit the number of nodes you run at once for a door game 
+        # flags: LOCAL, FOSSIL, 
+        #  maintenance modes: /DAILY, /MAINTENANCE, /MAINT, -MAINT
+        # /RESET
+        # /COMPACT
+        # /BACKUP
+        # /CLEANUP
+        #TW2002.EXE -MAINT -COMPACT -BACKUP -EXPORT -TURNS
+        #BRE.EXE /MAINTENANCE 
+        #/NEWDAY 
+        #/PACK
+        #SRE.EXE /MAINT
+        #/DAILY
+        #/PACK
+        #PLANETS.EXE /MAINT 
+        #PLANETS.EXE /RESET
+        #LORD.EXE /MAINT
+        #/DAILY
+        #/PACK
+        #LORD2.EXE
+        #/MAINT
+        #/RESET
+        #USURPER.EXE /M
+        #/D
+        #LOD.EXE -M
+        #-DAILY
+        #POKER.EXE /MAINT
+        #GWAR.EXE /MAINT
+        #/DAILY
+        #FE.EXE /M
+        #FE.EXE /DAILY
+        #typical maintenance schedules: daily, weekly, monthly, time of day
+
+        #typical command lines: 
+        #door.exe %node
+        #door.exe %node, %baud, %dropfile_path
+        #door.exe /N:%node /D:%dropfile_path, 
+        # or door.exe /N:%node /D:%dropfile_path, /B:%baud
+        #door.exe %node %baud %dropfile_path N Y %rows %cols %handle %bbs_name
+        #if you pass %node and no drop file path, the dropfile should be called e.g. DOOR3.SYS or DORINFO3.SYS for node 3
+        #or, sometimes the dropfile doesn't take a number, like with TRIBBS. you have to make a unique ini file for dosbox which 
+        #mounts the drive and cd's to the directory the door file is in.
+        #you can make e.g. both DOOR3.SYS AND DOOR.SYS for node 3 to make all the doors happy.
+
+  #graphics modes: ANSI, ASCII, RIP, AVATAR, G:ANSI
+#bbs software types: PCBOARD, WILDCAT, WWIV, RENEGADE, MYSTIC, PCBOARD
+  
+        #common door games command-line parameters:
+        #very common:
+        #Trade Wars 2002: TW2002.EXE %node
+        #Legend of the Red Dragon (LORD): LORD.EXE %node
+        #Barren Realms Elite (BRE): BRE.EXE %dropfile_path (DOORINFO1.DEF format)
+        #Planets: The Exploration of Space (TEOS): PLANETS.EXE /N%node
+        #Usurper: USURPER.EXE /N%node
+        #Solar Realms Elite: SRE.EXE %dropfile_path (DOORINFO1.DEF format)
+        #Global War (GWar): GWAR.EXE %node
+        #strategy/simulation: 
+        #Falcons Eye: FE.EXE %node
+        #Food Fight: FOODFITE.EXE %node
+        #Mercenary Wars: MERC.EXE %dropfile_path (DOORINFO1.DEF format)
+        #Swords of Chaos: SOC.EXE %node
+        #Land of Devastation (LOD):
+        #LOD.EXE %node
+        #BBS Poker: POKER.EXE %node
+        #Chess: CHESS.EXE %node %dropfile_path (DOOR.SYS)
+        #
+#         Trivia/Word Games:
+# Fresh Water Fishing:
+# FWFISH.EXE <node>
+# FWFISH.EXE 1
+# Studs:
+# STUDS.EXE <node>
+# STUDS.EXE 1
+# Yankee Trader:
+# YANKEE.EXE <node>
+# YANKEE.EXE 1
+# Scrabble-style games:
+# WORD.EXE <node>
+# WORD.EXE 1
+# Adventure/RPG:
+# LORD II: New World:
+# LORD2.EXE <node>
+# LORD2.EXE 1
+# The Pit:
+# PIT.EXE <node>
+# PIT.EXE 1
+# Darkness:
+# DARK.EXE <node>
+# DARK.EXE 1
+# Leviathan's Lair:
+# LEVIATAN.EXE <node>
+# LEVIATAN.EXE 1
+# Action/Arcade:
+# DoorMUD:
+# DOORMUD.EXE <node>
+# DOORMUD.EXE 1
+# BRE Arena (action version of BRE):
+# ARENA.EXE DORINFO1.DEF
+# Operation: Overkill (OO):
+# OO.EXE <node>
+# OO.EXE 1
+# Utility Doors:
+# InterBBS League Coordinator:
+# LEAGUE.EXE <node>
+# LEAGUE.EXE 1
+# Top Ten Door:
+# TOP10.EXE <node>
+# TOP10.EXE 1
+# User Lister:
+# USERLIST.EXE <node>
+# USERLIST.EXE 1
+# Last Callers:
+# LASTCALL.EXE <node>
+# LASTCALL.EXE 1
+        

@@ -1,0 +1,5 @@
+input field: white background, black foreground
+handles:
+3-29 characters, including letters, spaces, commas, periods, and hyphens
+passwords: 8 chars
+or is it 9 chars?

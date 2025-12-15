@@ -1,0 +1,86 @@
+It would be cool if we could use something like Terminate, which is so complete, or other DOS programs, to telnet to BBSs. Do  you know if there's anything like a modem emulator that converts different phone numbers to different telnet addresses so you can connect to a telnet BBS using the phone directory?
+
+
+Confirming modem emulator solutions exist for telnet BBS connectivity.
+
+
+
+That exists! It's a popular approach in the retro scene.
+
+
+tcpser modem emulator DOS telnet BBS phonebook
+10 results
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Unearthed multiple modem emulation solutions for telnet connectivity.
+
+
+Yes! There are a few options:
+
+tcpser — The most popular solution. TCPSER turns a PC serial port into an emulated Hayes compatible modem that uses TCP/IP for incoming and outgoing connections. It can be used to allow older applications and systems designed for modem use to operate on the Internet. 
+github
+
+It has exactly the phonebook feature you're asking about. Frequently used addresses can be configured in the "phonebook" 
+github
+ — you set up entries like:
+
+5551000=bbs.example.com:23
+5551001=anotherbbs.net:23
+Then from your DOS terminal program you just ATDT5551000 and it connects to the telnet address.
+
+DOSBox built-in — Even simpler if you're already using DOSBox. Basically, you don't need anything except DOSBox! No socat. No tcpser. DOSBox has its own built-in routines for piping a telnet connection through its virtual serial port. 
+breakintochat
+
+You configure the serial port in dosbox.conf and then just type Hayes commands with the telnet address: ATDTbbs.example.com:23
+
+Hardware solutions — For real vintage hardware, there are devices like the WiModem232 or DIY projects like the PiModem that put a Raspberry Pi inside an old modem case, complete with working LEDs.
+
+For running Terminate in DOSBox specifically, the DOSBox built-in method is probably your easiest path — just edit the config file to enable the serial/modem emulation and you're set.
+
+does tcpser work on windows? (the plain dosbox solution wouldn't work with terminal program phone directories that only accept numbers(
+
+
+Verified Windows compatibility and acknowledged phonebook utility.
+
+
+
+
+
+
+Yes, it works on Windows. The application archive contains a pregenerated Windows 32 bit executable (tcpser.exe). No compilation should be required. 
+github
+ Though at least the cygwin1.dll library is required to operate tcpser under Windows. 
+github
+
+The trick is you'd need to connect it to a virtual serial port that DOSBox can see. People use tools like com0com (a virtual null-modem driver for Windows) to create a pair of virtual COM ports — tcpser listens on one, DOSBox uses the other.
+
+So the setup would be:
+
+Install com0com to create virtual COM port pairs (e.g., COM4 ↔ COM5)
+Run tcpser pointing at one of them with your phonebook
+Configure DOSBox to use the other virtual COM port
+Run Terminate, set it to use COM1 (which DOSBox maps to your virtual port)
+Dial "5551234" from Terminate's phone book and tcpser translates it to the telnet address
+It's a bit of a chain to set up, but once it's working you get the full authentic experience — your terminal program's phone directory works with numeric entries and everything.
+
+

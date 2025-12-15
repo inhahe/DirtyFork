@@ -1,0 +1,75 @@
+import asyncio
+import serial_asyncio
+import telnetlib3
+
+async def handle_telnet(reader, writer):
+    # Handle telnet user
+    pass
+
+async def handle_serial(reader, writer):
+    # Watch for modem RING/CONNECT
+    while True:
+        line = await reader.readline()
+        if b'CONNECT' in line:
+            # Modem answered, handle this user
+            await handle_serial_user(reader, writer)
+
+async def main():
+    # Start telnet server
+    telnet_server = await telnetlib3.create_server(
+        host='0.0.0.0',
+        port=23,
+        shell=handle_telnet
+    )
+    
+    # Open serial port (modem)
+    serial_reader, serial_writer = await serial_asyncio.open_serial_connection(
+        url='/dev/ttyUSB0',
+        baudrate=9600
+    )
+    
+    # Run both concurrently
+    await asyncio.gather(
+        telnet_server.wait_closed(),
+        handle_serial(serial_reader, serial_writer)
+    )
+
+asyncio.run(main())
+For multiple serial ports, just open each one and add them to the gather(). You could also use asyncio.create_task() for each connection type if you prefer that style.How would you listen to the modem in serial_asyncio on Windows?11:40 AMIdentified platform-specific port differences and modem communication patterns.The user is asking about listening to a modem via serial_asyncio on Windows. The main differences would be:
+
+The port name - Windows uses COM ports like 'COM1', 'COM3', etc. instead of '/dev/ttyUSB0'
+The actual modem handling should be similar - you'd still watch for RING, send ATA to answer, wait for CONNECT, etc.
+
+Let me give a simple example.Same approach, just use the Windows COM port name:
+pythonimport asyncio
+import serial_asyncio
+
+async def handle_modem():
+    reader, writer = await serial_asyncio.open_serial_connection(
+        url='COM3',  # or COM1, COM4, etc.
+        baudrate=9600
+    )
+    
+    # Initialize modem
+    writer.write(b'ATZ\r')  # Reset
+    await writer.drain()
+    await asyncio.sleep(0.5)
+    
+    writer.write(b'ATE0\r')  # Disable echo
+    await writer.drain()
+    
+    while True:
+        line = await reader.readline()
+        line = line.strip()
+        
+        if line == b'RING':
+            writer.write(b'ATA\r')  # Answer
+            await writer.drain()
+        elif line.startswith(b'CONNECT'):
+            # Caller connected
+            await handle_dialup_user(reader, writer)
+        elif line == b'NO CARRIER':
+            # User disconnected
+            pass
+
+asyncio.run(handle_modem())

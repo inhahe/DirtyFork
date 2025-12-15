@@ -1,0 +1,234 @@
+async def run(user, field_length, content_length, fill=' ', fg=7, bg=0, fg_br=False, bg_br=False, 
+              fill_fg=8, fill_bg=0, fill_fg_br=False, fill_bg_br=False, insert_mode=True):
+    # Fixed: added async, added parameters
+    
+    field_pos = content_pos = 0
+    content = ""
+    col_offset = user.cur_col
+    
+    if col_offset + field_length - 1 > user.screen_width:                                                    
+        raise ValueError("Input field would extend beyond screen width.")
+    if col_offset + field_length - 1 == user.screen_width:
+        await ansi_wrap(user, False)
+    
+    # Draw initial fill
+    await ansi_color(user, fill_fg, fill_bg, fill_fg_br, fill_bg_br)
+    await send(user, fill * field_length)
+    await ansi_move(user, col=col_offset)
+    await ansi_color(user, fg, bg, fg_br, bg_br)
+    
+    while True:
+        key = await get_input_key(user)  # Fixed: was missing key reading
+        
+        if key == "left":
+            if field_pos == 0:
+                if content_pos > 0:
+                    content_pos -= 1
+                    await ansi_move(user, col=col_offset)
+                    if insert_mode:
+                        await send(user, content[content_pos:content_pos + field_length])
+                    else:
+                        await ansi_color(user, bg, fg, False, False)
+                        await send(user, content[content_pos])
+                        await ansi_color(user, fg, bg, fg_br, bg_br)
+                        await send(user, content[content_pos + 1:content_pos + field_length])
+                    await ansi_move(user, col=col_offset)
+            else:                                               
+                field_pos -= 1  # Fixed: was += 1
+                if insert_mode:
+                    await ansi_left(user)
+                else:
+                    # Restore old cursor position to normal
+                    await send(user, content[content_pos + field_pos + 1])
+                    await ansi_left(user)
+                    await ansi_left(user)
+                    # Draw new cursor position inverted
+                    await ansi_color(user, bg, fg, False, False)
+                    await send(user, content[content_pos + field_pos])
+                    await ansi_color(user, fg, bg, fg_br, bg_br)
+                    await ansi_left(user)
+                    
+        elif key == "right":
+            end_pos = len(content) - content_pos
+            if field_pos >= end_pos:  # Can't go right past end of content
+                pass
+            elif field_pos == field_length - 1:
+                content_pos += 1
+                await ansi_move(user, col=col_offset)
+                if insert_mode:
+                    await send(user, content[content_pos:content_pos + field_length])
+                else:
+                    await send(user, content[content_pos:content_pos + field_length - 1])
+                    await ansi_color(user, bg, fg, False, False)
+                    await send(user, content[content_pos + field_length - 1])  # Fixed: was content_pos + field_length
+                    await ansi_color(user, fg, bg, fg_br, bg_br)
+                await ansi_move(user, col=col_offset + field_length - 1)
+            else:
+                if insert_mode:
+                    await ansi_right(user)
+                else:
+                    # Restore old position to normal
+                    await send(user, content[content_pos + field_pos])
+                    # Draw new position inverted
+                    await ansi_color(user, bg, fg, False, False)
+                    char_at_new_pos = content[content_pos + field_pos + 1] if content_pos + field_pos + 1 < len(content) else fill
+                    await send(user, char_at_new_pos)
+                    await ansi_color(user, fg, bg, fg_br, bg_br)
+                    await ansi_left(user)
+                field_pos += 1
+                
+        elif key == "home":
+            if content_pos == 0 and field_pos == 0:
+                pass  # Already at home
+            else:
+                old_field_pos = field_pos
+                field_pos = content_pos = 0
+                await ansi_move(user, col=col_offset)
+                if insert_mode:
+                    await send(user, content[:field_length].ljust(field_length, fill))
+                    await ansi_move(user, col=col_offset)
+                else:
+                    await ansi_color(user, bg, fg, False, False)
+                    await send(user, content[0] if content else fill)
+                    await ansi_color(user, fg, bg, fg_br, bg_br)
+                    await send(user, content[1:field_length] if len(content) > 1 else fill * (field_length - 1))
+                    await ansi_move(user, col=col_offset)
+                    
+        elif key == "end":
+            if len(content) <= field_length:
+                if insert_mode:
+                    await ansi_move(user, col=col_offset + len(content))
+                else:
+                    # Move to last char of content (or first fill)
+                    await ansi_move(user, col=col_offset + field_pos)
+                    await send(user, content[content_pos + field_pos] if content_pos + field_pos < len(content) else fill)
+                    await ansi_move(user, col=col_offset + len(content))
+                    if len(content) < field_length:
+                        await ansi_color(user, bg, fg, False, False)
+                        await send(user, fill)
+                        await ansi_color(user, fg, bg, fg_br, bg_br)
+                        await ansi_left(user)
+                field_pos = len(content)
+                content_pos = 0
+            else:
+                content_pos = len(content) - field_length + 1  # Fixed: was field_length - len(content)
+                field_pos = field_length - 1
+                await ansi_move(user, col=col_offset)
+                if insert_mode:
+                    await send(user, content[content_pos:content_pos + field_length])
+                else:
+                    await send(user, content[content_pos:content_pos + field_length - 1])
+                    await ansi_color(user, bg, fg, False, False)
+                    await send(user, fill)
+                    await ansi_color(user, fg, bg, fg_br, bg_br)
+                    await ansi_left(user)
+                    
+        elif key == "ins":
+            insert_mode = not insert_mode
+            char_at_cursor = content[content_pos + field_pos] if content_pos + field_pos < len(content) else fill
+            if insert_mode:
+                await send(user, char_at_cursor)
+                await ansi_left(user)
+            else:
+                await ansi_color(user, bg, fg, False, False)
+                await send(user, char_at_cursor)
+                await ansi_color(user, fg, bg, fg_br, bg_br)
+                await ansi_left(user)
+                
+        elif key == "back":
+            if content_pos + field_pos == 0:
+                pass  # Nothing to delete
+            elif field_pos == 0:
+                content_pos -= 1
+                content = content[:content_pos] + content[content_pos + 1:]  # Fixed: delete at content_pos
+                await ansi_move(user, col=col_offset)
+                visible = content[content_pos:content_pos + field_length]
+                if insert_mode:
+                    await send(user, visible.ljust(field_length, fill))
+                else:
+                    await ansi_color(user, bg, fg, False, False)
+                    await send(user, visible[0] if visible else fill)
+                    await ansi_color(user, fg, bg, fg_br, bg_br)
+                    await send(user, visible[1:].ljust(field_length - 1, fill))
+                await ansi_move(user, col=col_offset)
+            else:
+                del_pos = content_pos + field_pos - 1
+                content = content[:del_pos] + content[del_pos + 1:]
+                field_pos -= 1  # Fixed: was content_pos -= 1
+                await ansi_left(user)
+                visible = content[content_pos + field_pos:content_pos + field_length]
+                if insert_mode:
+                    await send(user, visible.ljust(field_length - field_pos, fill))
+                else:
+                    await ansi_color(user, bg, fg, False, False)
+                    await send(user, visible[0] if visible else fill)
+                    await ansi_color(user, fg, bg, fg_br, bg_br)
+                    await send(user, visible[1:].ljust(field_length - field_pos - 1, fill))
+                await ansi_move(user, col=col_offset + field_pos)
+                
+        elif key == "del":
+            del_pos = content_pos + field_pos
+            if del_pos >= len(content):
+                pass  # Nothing to delete
+            else:
+                content = content[:del_pos] + content[del_pos + 1:]
+                visible = content[content_pos + field_pos:content_pos + field_length]
+                if insert_mode:
+                    await send(user, visible.ljust(field_length - field_pos, fill))
+                else:
+                    await ansi_color(user, bg, fg, False, False)
+                    await send(user, visible[0] if visible else fill)
+                    await ansi_color(user, fg, bg, fg_br, bg_br)
+                    await send(user, visible[1:].ljust(field_length - field_pos - 1, fill))
+                await ansi_move(user, col=col_offset + field_pos)
+                
+        elif key == "\x15":  # Ctrl+U
+            content = ""
+            field_pos = content_pos = 0
+            await ansi_move(user, col=col_offset)
+            await ansi_color(user, fill_fg, fill_bg, fill_fg_br, fill_bg_br)
+            await send(user, fill * field_length)
+            await ansi_color(user, fg, bg, fg_br, bg_br)
+            await ansi_move(user, col=col_offset)
+            
+        elif key == "\r":
+            await send(user, "\r\n")
+            return content
+            
+        elif len(key) == 1 and ord(key) >= 32:
+            if insert_mode:
+                if len(content) < content_length:
+                    content = content[:field_pos + content_pos] + key + content[field_pos + content_pos:]
+                    visible = content[content_pos + field_pos:content_pos + field_length]
+                    await send(user, visible.ljust(field_length - field_pos, fill))
+                    if field_pos < field_length - 1:
+                        field_pos += 1
+                    else:
+                        content_pos += 1
+                    await ansi_move(user, col=col_offset + field_pos)
+            else:
+                # Overwrite mode
+                if content_pos + field_pos < len(content):
+                    # Replace existing char
+                    content = content[:field_pos + content_pos] + key + content[field_pos + content_pos + 1:]  # Fixed: strings are immutable
+                else:
+                    # Append at end
+                    content += key
+                await send(user, key)
+                if field_pos < field_length - 1:
+                    field_pos += 1
+                    # Draw inverted cursor at new position
+                    char_at_cursor = content[content_pos + field_pos] if content_pos + field_pos < len(content) else fill
+                    await ansi_color(user, bg, fg, False, False)
+                    await send(user, char_at_cursor)
+                    await ansi_color(user, fg, bg, fg_br, bg_br)
+                    await ansi_left(user)
+                elif content_pos + field_pos < len(content) - 1:
+                    content_pos += 1
+                    await ansi_move(user, col=col_offset)
+                    await send(user, content[content_pos:content_pos + field_length - 1])
+                    await ansi_color(user, bg, fg, False, False)
+                    await send(user, content[content_pos + field_length - 1])
+                    await ansi_color(user, fg, bg, fg_br, bg_br)
+                    
+        await user.writer.drain()

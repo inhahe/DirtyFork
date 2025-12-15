@@ -1,0 +1,56 @@
+You're right that it's not in ANSI documents — it's an xterm extension that became a de facto standard. The motion reporting modes are strictly xterm extensions, xfree86 and are not part of any standard.
+Here's how it works:
+Enabling/Disabling
+
+ESC[?1000h enables normal tracking mode
+ESC[?1000l disables it
+
+What the terminal sends back
+On button press or release, the terminal sends a 6-byte sequence:
+ESC [ M Cb Cx Cy
+Where:
+
+Cb encodes the button and modifiers
+Cx is the X coordinate
+Cy is the Y coordinate
+
+Button encoding (Cb)
+The value is a single byte. Subtract 32 to get the raw value, then:
+
+Bits 0-1: button (0=left, 1=middle, 2=right, 3=release)
+Bit 2: Shift held
+Bit 3: Meta/Alt held
+Bit 4: Control held
+Bits 6-7: 01 for scroll wheel up, 10 for scroll wheel down
+
+Coordinate encoding (Cx, Cy)
+Each is a single byte: the coordinate + 32. So column 1 is sent as ASCII 33 (!), column 2 as ASCII 34 ("), etc. Upper-left is (1,1).
+This is why there's a limit at coordinate 223 — after that you'd overflow a single byte. The SGR extension (mode 1006) fixes this by sending decimal numbers instead.
+Example
+Left-click at column 5, row 10 with no modifiers:
+ESC [ M [space] % *
+
+[space] = 32 = button 0 (left), no modifiers
+% = 37 = column 5 (5 + 32)
+* = 42 = row 10 (10 + 32)
+
+On release at the same position:
+ESC [ M # % *
+
+# = 35 = button 3 (release)
+
+Want me to dig up the full xterm control sequences document for reference?
+
+The correct description: Wheel mice may return buttons 4 and 5. Those buttons are represented by the same event codes as buttons 1 and 2 respectively, except that 64 is added to the event code. xfree86
+So the raw button values (before the +32 encoding for transmission) are:
+
+0 = left click
+1 = middle click
+2 = right click
+3 = release
+64 = scroll up (button 4, encoded like left click + 64)
+65 = scroll down (button 5, encoded like middle click + 64)
+
+So when transmitted, scroll up sends Cb = 64 + 32 = 96 (backtick character), and scroll down sends 65 + 32 = 97 (a).
+My description of "bits 6-7" was technically pointing at the right place (bit 6 = 64) but was a confusing way to explain it. "Add 64 for wheel events" is clearer.
+The rest of my explanation — coordinates, modifiers, the basic protocol flow — was accurate.

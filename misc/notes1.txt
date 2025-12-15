@@ -1,0 +1,84 @@
+process ctrl chars - don't print 7
+
+"todo: this is wrong"
+
+ask claude how to make a function that only runs when .drain() is called  so we can do the same thing for ansi_move that we did for ansi_color
+
+make ansi_nowrap() not async
+
+todo: option to change terminal type
+
+check esc[22m in putty
+check the ansi command that affects how things work with scroll regions
+
+test mouse input in putty and7 syncterm
+
+- instantiate InputFields class
+- call instance.getinputfield for each field. they return after composing the input field but stay attached to instance. a class within a class? i guess it doesn't have to be one.
+- they render at the current cursor positions.
+- call instance.getsubmitbutton to get a submit button
+- call instance.runpage, which captures input until submitted
+- can move between inputs with arrows, enter, tab, or mouse clicks.
+goes backward or forward through the
+inputs list in the order in which they were created
+- indicate which one is active with colored boxes. how for fields without boxes? grey out all the others?
+
+in "del", it is unnecessary to render a string of fill. just render one to replace the character that was there.
+
+write initial fill
+
+make config stop recursing when x.format_map() == child  x.format_map()
+
+is there an irc channel that BBSs relay to?
+
+class InputFields
+class InputField
+
+a = InputFields()
+b = InputField(a)
+while 1:
+  dest = dest.run()
+
+or
+class InputFields:
+  def run():
+    while 1:
+      key = getkey(user)
+      self.inputfields[n].do_input(key)
+
+first way allows better reuse for using outside of a class, but we could no longer simply call inputfield(), we'd need to
+instance = inputfield()
+while 1: instance.do_key(get_key(user))
+
+we could have InputField read from getkey() when it's not passed an instance of InputFields and use do_key() when it is
+
+class InputField:
+  def __init__(self, a=None, user=None)):
+    if not a:
+      while 1: self.do_key(getkey(user))
+
+or
+
+class InputField:
+  def __init__(self, user=None, a=None):
+    if not a:
+      self.run()
+
+class InputFields:
+  def __init__(self, user):
+    self.user=user
+    self.fields=[]
+  def getfield():
+    self.fields.append(InputField(user))
+  def run():
+    x=0
+    while 1:
+      x = self.fields[x].run()
+
+   
+   
+   
+
+  
+
+

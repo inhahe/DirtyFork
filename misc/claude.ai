@@ -1,0 +1,83 @@
+todo: the destination object should return a function for the bbs to use to read data to send to that user, 
+just like it send the function for the bbs to write to that user.
+this guarantees against zombie objects accidentally calling functions that are wide open to interrupt the user
+# possibilities:
+# - the class sends the bbs the function to send it characters  and the function for the bbs to send it characters
+# - the class sends the bbs the function to send it characters and the bbs sends it the function to send it characters
+# - the bbs sends the class the function to send it characters and the function fdor the class to send it cbharacters
+# - the bbs sends the class the function to send it characters and the class sensd the bbs the function to send it characters
+# which one is best?
+# - number two is best, that way both can use for ... in to make sure they're only using one connection each 
+# - i think i'm thinking about this all wrong, though
+"""I don't understand - what does for ... in have to do with ensuring one connection?
+Can you explain what you're trying to prevent or ensure?
+
+If you mean "only one destination reads input at a time":
+That's already guaranteed by await - only one coroutine runs per user at a time.
+"""
+"""
+TL;DR:
+Use a token that changes on each navigation. Destination checks token before sending/receiving. If token doesn't match, destination is stale and gets rejected.
+"""
+"""
+Yeah, that's why the yield thing won't work. The BBS would just have to accept messages from various objects that it then yields to me, so yield is no guarantee of no dead objects reaching me.
+
+You're right. If multiple objects can send, there's no perfect solution.
+
+Practical Options:
+1. Accept It - Guard at the Final Gate
+python
+class User:
+    async def send(self, data, sender=None):
+        """Only send if sender is still valid"""
+        if sender is not None:
+            if sender.token != self.current_token:
+                return  # Silently drop
+        await self.writer.write(data)
+Everything that sends must pass itself:
+
+python
+await user.send("hello", sender=self)
+2. Register/Unregister Senders
+python
+class User:
+    def __init__(self):
+        self.valid_senders = set()
+    
+    def register_sender(self, obj):
+        self.valid_senders.add(obj)
+    
+    def unregister_all(self):
+        self.valid_senders.clear()
+    
+    async def send(self, data, sender):
+        if sender not in self.valid_senders:
+            return  # Dead sender, ignore
+        await self.writer.write(data)
+
+# On navigation
+user.unregister_all()
+user.cur_destination = NewDestination()
+user.register_sender(user.cur_destination)
+user.register_sender(user.cur_destination.some_helper)
+3. Just Don't Spawn Background Senders
+If all sends happen inside await input_key(), stale objects can't send because they're not running.
+
+The problem only exists if you have:
+
+Background tasks
+Callbacks
+Timers
+If you avoid those, the problem doesn't exist.
+
+TL;DR:
+
+There's no perfect solution. Either:
+
+Guard at user.send() with sender validation
+Register valid senders, reject others
+Avoid background tasks that send
+Which fits your architecture best?
+
+
+"""

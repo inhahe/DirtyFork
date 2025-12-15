@@ -1,0 +1,58 @@
+# overall architecture:
+# there's a loop, main(), to listen to incoming connections, then it passes them off to user_loop, and starts it off with the login destination.
+# every time a user exits a destination, the destination a reference to where the user should go for the next destination, in r.next_destination.
+# login is a destination. it's of type func, which means it's purely a Python function. the d
+# it has a special place in DirtyFork.yaml, since it has to exist, and it's the first place a user lands at. the special place has a type variable
+# and a target variable. the target is login, and since the type is func, the bbs knows to look in the Destinations class for that function. 
+# all destinations are passed user, whichh has all the information about that user, and r, which is the results of the previous destination. 
+# well, maybe i haven't made all of them accept r yet. 
+# another type of destination is 'input', which tells the bbs to look for the yaml information for destination.name under config.destinations.
+# config stores all the information in DirtyFork.yaml, as both nested attributes and nested dictionary entries for convenience.
+# the yaml defines the path of the ANSI screen to send to the user for the 'input' type destination, or no screen, and it defines all the input fields
+# that will be on the screen. 
+# the bbs will also look in DirtyFork.py for the class with the same name as the the 'input' type destination, it has functions for validating each 
+# input field, named after the names of the input fields. the functions recieve the user object and the current contents of the given field.
+# the validator returns a string if there's an error with the content, and returns nothing if there isn't
+# then there's _submit, a special function that's called when the user attempts to submit the whole thing. it's sent user and values, 
+# values is dictionary of input_field_name[input_contents]
+# then there's _execute, which actually has the power to return from the 'input' destination and tell the bbs where the user is to go to next.
+# a third type of destination is 'menu'. all the menu entries, as well as any ansi screen, are defined in the yaml
+# a menu destination only has one input field, and it's for the user to select the option he wants. 
+# i haven't yet told the registration destination to save all that data to the sqlite3 database.
+# anything in {} in the yaml files is interpreted as variables by the bbs to be replaced with something special. {bbsname} will have the bbs name. 
+# the rest are door game command line parameters.
+# doors are implemented as 'func' destinations, and the target is the one general 'door' destination, other information stored in the destination 
+# will tell the 'door' destination what door it's supposed to run, how, and for whom.
+# 16-bit doors will be run by connecting to DOSBox over sockets. DOSBox can support COM, FOSSIL, and Stdio connections. 
+# DOSBox will mount the hard drive and cd to the directory of the door it's running and put dropfiles there. 
+# every kind of dropfile, just to make it easy, and with and without the first part of the filename having the node number appended to it.
+# i suppose i could run 32-bit doors directly on the machine, i haven't tried it yet.
+# i plan to have a utility for adding well-known door games with minimal manual configuration.
+# input textboxes/fields should work pretty much like notepad does, only in a fixed-width font.
+# there are site-wide option whether to allow scrolling left and right or up and down inside textboxes, but it can be overriden because 
+# forum posts and email messages should always be able to scroll up and down. 
+# the bbs is made so that the user is able to receive messages from elsewhere in the bbs while he's editing an input, and it won't disrupt his editing. 
+# teleconference and forums will be 'func' destinations. 
+# login is a func destination in order to flow how i want it to and also to prevent the user from trying an unlimited number of handles and passwords just by 
+# switching between input fields, or even by typing in them, which may then call the validator functions.
+# teleconference will have a mode where you can see other people typing in real-time, maybe in random boxes on the screen (that show their handles) that
+# maybe can grow and shrink to accommodate their typing.
+# there's going to be a function to optionally show twinkling stars controlled by a timer on the screen in the background at all times. 
+# the bbs will support dial-up using pyserial.
+# every time something is written to the terminal, it knows whether it's written outside the current input box the user is in or inside it, and sends limited
+# ansi codes in response to that. and if it was written outside the current input, it changes that info 'user' so it knows the next time something is sent to 
+# the terminal.
+# do_input_screen creates all the input fields and saves them to the user and sets user.cur_input to the one he starts in
+# before it creates all the input fields, it sends destination.blurb. maybe not if screen_path is defined. it would mess up the screen.
+# it should also send each field's blurb above the field, or maybe not if screen_path is defined. 
+# this is all going to depend heavily on the user's terminal reporting the screen size properly and being able to report cursor position at all. i have no idea
+# what percentage of clients do that.
+# word wrap. 
+# we sometimes have to insert characters or delete characters from content, but it's not at all obvious which index of the content is at the current
+# row and col, because of word wrap. so, we store a 2d array mapping (row, col) positions within the box to indexes into the content. 
+# we also store a list of the distance between the right-most edge of the content for each line in the box and the right side of the box.
+# this will help us move the cursor around correctly, e.g. if you hit end it'll only go to the end of the content on that line, and if you move the cursor to 
+# the right at the end, it'll go down to the beginning of the next line.
+# but the reason i made it was to compute word wrap. it could help us know after inserting a character, the content doesn't go so far to the right that it has to word wrap
+# and similarly when changing all the lines from the current line downward because of word wrap, these distances can let you know if you can stop changing them at some line.
+# i imagine similar benefits for deleting a character. 
