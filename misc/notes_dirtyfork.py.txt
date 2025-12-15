@@ -166,3 +166,8 @@
 # real-time one-on-one chat where each chat is in its own space, you can see the letters being typed
 
 # todo: ask claude what a good window_size would be if char_threshold is 2
+
+# todo: can't currently go back to previous menus by hitting x a bunch of times.. 
+# also have a command to go up one level. that's not necessarily the same as going back, 
+# because there could be ways to jump around in the system. also, if you x'd, going back 
+# will reverse that.
