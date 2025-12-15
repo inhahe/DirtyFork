@@ -233,7 +233,7 @@ class ConfigView(Mapping):
 
                 return self._resolve(value, resolving={key})
 
-        raise KeyError(key)
+        return None
 
     def __setitem__(self, key, value):
         if self._write_to is None:
@@ -263,7 +263,7 @@ class ConfigView(Mapping):
         try:
             return self[name]
         except KeyError:
-            raise AttributeError(name)
+            return None
 
     def __setattr__(self, name, value):
         if name.startswith("_"):
@@ -321,14 +321,14 @@ class ConfigView(Mapping):
 
 configs = {}
 main_path = None
-def get_config(*dicts, config_path=None, main=False): # because of this, no module that loads the config can be run on its own. the main BBS is meant to be the only one to be run on its own.
+def get_config(*dicts, path=None, main=False): # because of this, no module that loads the config can be run on its own. the main BBS is meant to be the only one to be run on its own.
   global main_path
-  if main and config_path: 
-    main_path = config_path    
-  if not config_path:
-    config_path = main_path
-  if not config_path in configs:
-      # configs[config_path] = Config(yaml.safe_load(open(config_path, "r").read()))
+  if main and path: 
+    main_path = path    
+  if not path:
+    path = main_path
+  if not path in configs:
+      # configs[path] = Config(yaml.safe_load(open(path, "r").read()))
       # safe_load is better, but i don't know how to make yaml.add_constructor work with it. 
-    configs[config_path] = Config(yaml.load(open(config_path, "r").read(), Loader=yaml.Loader))
-  return ConfigView(*dicts, configs[config_path])
+    configs[path] = Config(yaml.load(open(path, "r").read(), Loader=yaml.Loader))
+  return ConfigView(*dicts, configs[path])

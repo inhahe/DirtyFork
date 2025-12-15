@@ -1,15 +1,12 @@
 ﻿default_config = "DirtyFork.yaml"
 
 from config import get_config
-config = get_config(sys.argv[1] if len(sys.argv)>1 else default_config, main=True)   # this has to run before any other DirtyFork module is loaded.
+config = get_config(path=sys.argv[1] if len(sys.argv)>1 else default_config, main=True)   # this has to run before any other DirtyFork module is loaded.
 
 import asyncio, re, sqlite3, sys, collections, os, subprocess, multiprocessing, time, traceback
-from collections import deque
 
-import telnetlib3, serial, yaml, bcrypt
+import telnetlib3, serial
 
-from InputFields import *
-import menu
 from common import *
 from modules import *
 
@@ -73,4 +70,4 @@ async def main():
   await server.wait_closed()
 
 if __name__=="__main__":
-   main()
+  await main()

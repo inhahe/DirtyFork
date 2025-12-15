@@ -4,11 +4,11 @@ from collections import deque
 
 import bcrypt
 
-from ansi import *
+from output import *
 from keyboardcodes import *
 import re
 from config import *
-from InputFields import * # todo: we have a circular import. supposedly that's a very bad thing.
+from input_fields import * # todo: we have a circular import. supposedly that's a very bad thing.
 
 config = get_config()
 
@@ -115,63 +115,6 @@ async def read_cursor_position(user, timeout=2.0): # if this times out, that's g
           return None, None, buffer
     except asyncio.TimeoutError:
         return None, None, buffer
-
-async def ansi_cls(user, fg=None, bg=None, fg_br=None, bg_br=None):
-  ansi_color(user, fg, bg, fg_br, bg_br)
-  user.writer.write("\x0c")
-  emu_clear(user)
-  
-def emu_scroll(user): # todo: add scroll region paramaters?
-  del user.screen[0]
-  user.screen.append([Char() for _ in range(user.screen_width)])
-
-def emu_clear(user):
-  for x in range(len(user.screen)):
-    user.screen[x] = [[Char() for col in range(user.screen_width)] for row in range(user.screen_height)]
-  user.cur_col = user.cur_row = 1
-
-async def send(user, message, word_wrap=False, drain=False): # doesn't emulate ansi for the time being, since ansi should be handled via the convenience functions.
-  if message:
-    ansi_move_2(user)
-    ansi_color_2(user)
-  user.writer.write(message)                           # todo: support word_wrap.  should we word wrap when the first word of the last send adds to the last word of the previous send? 
-                                                             # that would be complicated, and probably not necessary.
-  if drain:                                                  # for word wrap, be sure to include extra spaces when there is more than one space between words.
-    await user.writer.drain()                                # for word wrap, might be easiest to insert crlf's into the message and then call a send2 function on each character.
-  for char in message:                                       # todo: if char=="\x07" (beep), some terminals may not print the char.. SyncTERM does for some reason. if they differ, best to send esc[6u and esc[6s
-    if char=="\x00":                                     # even that won't help us if the char is at max_height, max_width, though, because then the screen may or may not scroll.
-      pass                                                        # in that case we could just force it to scroll (if nowrap is off) so we know what it's doing.
-    elif char=="\x08": 
-      user.cur_col = max(user.cur_col-1, 1)     # update: apparently syncterm prints almost all of the ctrl characters, while putty prints none of them.
-    elif char=="\x09": 
-      user.cur_col = (user.cur_col//8)*8+8  # update: now syncterm doesn't print the beep character.
-    elif char=="\x0a":
-      if user.cur_col < user.screen_height:
-        user.cur_col+=1
-      else:
-        emu_scroll(user)
-    elif char=="\x0c":
-      emu_clear(user)
-      user.cur_col = user.cur_row = 1
-    elif char=="\x0d": 
-      user.cur_col = 1
-    else:
-      if user.terminal == PuTTy and ord(char)<32:
-        return
-      user.screen[user.cur_row][user.cur_col] = Char(char, fg=user.cur_fg, bg=user.cur_bg, fg_br=user.cur_fg_br, bg_br=user.cur_bg_br)
-      if not user.cur_wrap:
-        user.cur_col = min(user.cur_col+1, user.screen_width)
-      else:
-        if user.cur_col==user.screen_width:
-          if user.cur_wrap:
-            if user.cur_row==user.screen_height:
-              user.writer.write(cr+lf) # see quirks.txt to see why we do this
-              emu_scroll(user)
-            else:
-              user.cur_row += 1
-            user.cur_col = 1
-        else:
-          user.cur_col += 1  
 
 async def get_screen_size(user):
    # user.writer.write(Detecting screen size...\x1b[s\x1b[999;999H\x1b[6n\x1b[u") 
