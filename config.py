@@ -25,6 +25,9 @@ class Null:
     def __str__(self):
         return "null"
 
+    def __iter__(self):
+        return range(0)
+
 null = Null()
                                                             
 class Config(defaultdict):
