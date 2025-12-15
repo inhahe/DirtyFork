@@ -1,4 +1,18 @@
 import config
+
+i = config.Config({'a': '{b}', 'b': '{c}', 'c': '{a}'}, strict=True)
+
+try:
+  print(f"{i.a=}")
+except ValueError:
+  print("cycle detected") 
+
+try:
+  print(f"{i['a']=}")
+except ValueError:
+  print("cycle detected") 
+
+
 class A: pass
 b = A()
 b.c = A()
@@ -37,23 +51,14 @@ print(f"{(b_c | e_c)['c']['d']=}")
 
 print(f"{(b_c | e_c)['c']['blah']=}")
 
-i = config.Config({'a': '{b}', 'b': '{c}', 'c': '{a}'}, strict=True)
-
-try:
-  print(f"{i.a=}")
-except ValueError:
-  print("cycle detected") 
-
-try:
-  print(f"{i['a']=}")
-except ValueError:
-  print("cycle detected") 
-
-
 print(f"{i.blah=}")  
 
 print(f"{i['blah']=}")  
 
+print(f"{i.foo.bar.baz=}")
 
-j = config.get_config("DirtyFork.yaml")
+x = config.Config({'a': '{b}'}, strict=True)
+#print(f"{x.a}=")
+y = config.ConfigView(x, {})
+print(f"{y.a=}")
 

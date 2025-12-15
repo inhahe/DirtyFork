@@ -2,30 +2,10 @@
 from collections import defaultdict
 from collections.abc import Mapping, Iterable
 from string import Formatter
-
 import yaml, yaml_include
 
-yaml.add_constructor("!include", yaml_include.Constructor(base_dir=None))
-
-class Null:
-    __slots__ = ()
-
-    def __getattr__(self, name):
-        return self
-
-    def __getitem__(self, key):
-        return self
-
-    def __bool__(self):
-        return False
-
-    def __repr__(self):
-        return "null"
-
-    def __str__(self):
-        return "null"
-
-null = Null()
+#yaml.add_constructor("!include", yaml_include.Constructor(base_dir=r'd:\visual studio projects\dirtyfork'))
+yaml.add_constructor("!include", yaml_include.Constructor())
                                                             
 class Config(defaultdict):
     def __init__(self, source=None, *, _root=None, strict=True):
@@ -34,11 +14,9 @@ class Config(defaultdict):
 
         if _root is None:
           self._strict = strict
-          self._resolving = set()  
+          self._resolving = set()  # Add this line
         else:
           self._strict = _root._strict
-
-        self._sealed = False
 
         if source is None:
             return
@@ -50,8 +28,9 @@ class Config(defaultdict):
             for k, v in vars(source).items():
                 self[k] = self._wrap(v)
 
-    def __repr__(self):
-        return dict.__repr__(self) # prevent the __init__ function from showing up when printing the dictionary's contents
+    # -----------------------------
+    # Attribute access
+    # -----------------------------
 
     def __getattr__(self, name):
         return self._get(name)
@@ -71,7 +50,7 @@ class Config(defaultdict):
 
     def __getitem__(self, key):
         value = super().__getitem__(key)
-        if getattr(self._root, '_resolving', null) is null:
+        if getattr(self._root, '_resolving', None) is None:
             self._root._resolving = set()
         self._root._resolving.add(key)
         try:
@@ -79,18 +58,21 @@ class Config(defaultdict):
         finally:
             self._root._resolving.discard(key)
 
-    def _get(self, key, default=null):
+    def _get(self, key, default=None):
         value = super().get(key, default)
-        if value is null:
+        if value is None:
             return value
-        if getattr(self._root, '_resolving', null) is null:
+        if getattr(self._root, '_resolving', None) is None:
             self._root._resolving = set()
         self._root._resolving.add(key)
         try:
             return self._resolve(value)
         finally:
             self._root._resolving.discard(key)
-    
+    # -----------------------------
+    # Internals
+    # -----------------------------
+
     def _wrap(self, value):
         if isinstance(value, Config):
             return value
@@ -98,14 +80,14 @@ class Config(defaultdict):
         if isinstance(value, Mapping):
             return Config(value, _root=self._root)
 
-        if hasattr(value, "__dict__") and not callable(value):
+        if hasattr(value, "__dict__"):
             return Config(vars(value), _root=self._root)
 
         if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
             return type(value)(self._wrap(v) for v in value)
 
-        return value  
-      
+        return value
+
     def _resolve(self, value):
       if isinstance(value, str):
           value = os.path.expandvars(value)
@@ -117,11 +99,8 @@ class Config(defaultdict):
           )
 
           try:
-              return formatter.format(value, self._root)
+              return formatter.format(value)  # No **self._root
           except KeyError:
-
-              print(f"{self._strict=}") # debug
-
               if self._root._strict:
                   raise
               return value
@@ -132,13 +111,9 @@ class Config(defaultdict):
           )
 
       return value
-    
-    def seal(self):
-        self._sealed = True
-        for v in self.values():
-            if isinstance(v, Config):
-                v.seal()
-        return self
+    # -----------------------------
+    # Merge logic
+    # -----------------------------
 
     def merge(self, *sources, deep=True):
         """In-place merge."""
@@ -177,11 +152,16 @@ class Config(defaultdict):
     # Operators
     # -----------------------------
 
-    def __or__(self, other):  # a = b | c
+    def __or__(self, other):
       return ConfigView(other, self)
 
-    def __ior__(self, other): # a != b
+    def __ior__(self, other):
       return self.merge(other)
+
+
+    # -----------------------------
+    # Convenience
+    # -----------------------------
 
     def shallow(self, *sources):
         return self.extended(*sources, deep=False)
@@ -194,21 +174,20 @@ class _DotFormatter(Formatter):
 
     def get_field(self, field_name, args, kwargs):
         if field_name in self.resolving:
-            raise ValueError(f"Interpolation cycle detected: {field_name}")
+            if self.strict:
+                raise ValueError(f"Interpolation cycle detected: {field_name}")
+            return "{" + field_name + "}", field_name
 
         try:
             self.resolving.add(field_name)
-
-            cur = args[0]
+            value = self.root  # Use the Config, not unpacked kwargs
             for part in field_name.split("."):
-                if not isinstance(cur, Mapping):
-                    raise KeyError(part)
-                if part not in cur:
-                    raise KeyError(part)
-                cur = cur[part] 
-
-            return cur, field_name
-
+                value = value[part]  # Now triggers Config.__getitem__!
+            return value, field_name
+        except Exception:
+            if self.strict:
+                raise
+            return "{" + field_name + "}", field_name
         finally:
             self.resolving.discard(field_name)
 
@@ -219,8 +198,10 @@ class _MergeDirective:
         self.source = source
         self.deep = deep
 
+
 def shallow(source):
     return _MergeDirective(source, deep=False)
+
 
 def deep(source):
     return _MergeDirective(source, deep=True)
@@ -241,6 +222,10 @@ class ConfigView(Mapping):
 
         self._write_to = write_to
 
+    # -----------------------------
+    # Mapping interface
+    # -----------------------------
+
     def __getitem__(self, key):
         for layer in self._layers:
             if key in layer:
@@ -256,20 +241,7 @@ class ConfigView(Mapping):
 
                 return self._resolve(value, resolving={key})
 
-        return null
-
-    def __setitem__(self, key, value):
-        if self._write_to is null:
-            raise TypeError("ConfigView is read-only")
-
-        # Ensure nested structure exists in write layer
-        if isinstance(value, Mapping):
-            value = Config(value)
-
-        if getattr(self, "_sealed", False):
-            raise TypeError("Config is sealed")
-
-        self._write_to[key] = value
+        raise KeyError(key)
 
     def __iter__(self):
         seen = set()
@@ -282,17 +254,27 @@ class ConfigView(Mapping):
     def __len__(self):
         return len(set().union(*self._layers))
 
+    # -----------------------------
+    # Attribute access
+    # -----------------------------
+
     def __getattr__(self, name):
         try:
             return self[name]
         except KeyError:
-            return null
+            raise AttributeError(name)
 
     def __setattr__(self, name, value):
         if name.startswith("_"):
             super().__setattr__(name, value)
+        elif self._write_to is None:
+            raise TypeError("ConfigView is read-only")
         else:
-            self[name] = value
+            self._write_to[name] = value
+
+    # -----------------------------
+    # Resolution
+    # -----------------------------
 
     def _resolve(self, value, *, resolving):
         if isinstance(value, str):
@@ -302,11 +284,8 @@ class ConfigView(Mapping):
                 resolving=resolving,
             )
             try:
-                return formatter.format(value, self)
+                return formatter.format(value, **self)
             except KeyError:
-
-                print(f"{self._strict=}") # debug
-
                 if self._strict:
                     raise
                 return value
@@ -324,7 +303,7 @@ class ConfigView(Mapping):
         return materialize(self)
     
     def source(self, path):
-        parts = self._normalize_path(path)
+        parts = path.split(".")
         results = []
 
         for layer in self._layers:
@@ -333,7 +312,7 @@ class ConfigView(Mapping):
                 if isinstance(cur, Mapping) and p in cur:
                     cur = cur[p]
                 else:
-                    cur = null
+                    cur = None
                     break
             results.append((layer, cur))
 
@@ -346,15 +325,17 @@ class ConfigView(Mapping):
         raise TypeError("ConfigView is immutable")
 
 configs = {}
-main_path = None
-def get_config(*dicts, path=None, main=False): # because of this, no module that loads the config can be run on its own. the main BBS is meant to be the only one to be run on its own.
-  global main_path
-  if main and path: 
-    main_path = path    
-  if not path:
-    path = main_path
-  if not path in configs:
-      # configs[path] = Config(yaml.safe_load(open(path, "r").read()))
-      # safe_load is better, but i don't know how to make yaml.add_constructor work with it. 
-    configs[path] = Config(yaml.load(open(path, "r").read(), Loader=yaml.Loader))
-  return ConfigView(*dicts, configs[path])
+
+def get_config(config_path=None): # todo: we have to pass user_directory at some point and have all future get_configs omit the user_direcotry part.
+  if config_path:
+    p = pathlib.PurePath(config_path)
+    if len(p.parts)==1:
+      if not "main" in configs:
+        #configs["main"] = Config(yaml.safe_load(open(config_path, "r").read())) 
+        # safe_load is better, but i don't know how to make yaml.add_constructor work with it. 
+        configs["main"] = Config(yaml.load(open(config_path, "r").read(), Loader=yaml.Loader))
+      return configs["main"]
+  if not config_path in configs:
+    #configs[config_path] = Config(yaml.safe_load(open(config_path, "r").read()))
+    configs[config_path] = Config(yaml.load(open(config_path, "r").read(), Loader=yaml.Loader))
+  return configs[config_path]

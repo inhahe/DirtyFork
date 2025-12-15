@@ -1,14 +1,6 @@
 # no value you aren't actually going to use needs to be in here. the config object returns None for anything that's missing.
 # todo: option to star out passwords when they're being typed
-# non-required input fields won't be validated.
-# default to required if it's not specified?
-# add int range checks to input fields validation specification?
-
-# make the destination the input_screen, not the individual field within that screen. even if there's only one field on the screen. 
-# the screen will route the inputs to the appropriate field and that will also enable it to orchestrate movement between fields better.
-# but don't menu pages have fields too? for inputing the options? what are we going to do about that?
-
-# todo: can't currently go back to previous menus by hitting x a bunch of times.. 
+# we can handle option_defaults by assigning a merge or a configview to each option with first dict being a Config of (or can we just pass it directly?) option_defaults 
 
 bbs_name: The Dirty Fork
 hostname: logoplex3 # can also be an ip address
@@ -104,6 +96,7 @@ forum_list: &forum_list
   Physics: null
   Spirituality & Mysticism: null
   The Paranormal: null
+
 menu_system: # not sure which things should go in the menus and which things should go under their destinations
   main:
     screen_path: null 
