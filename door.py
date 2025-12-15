@@ -1,36 +1,22 @@
-# problem: I really think door.sys should be up whenever the BBS is. but the system is designed to just import it at the time of executing the menu command.
-# solution: all type: module destinations should be loaded when the bbs starts and then just call their run command on demand.
-# problem: all those modules are nested deep into the yaml hierarchy, so it's not exactly elegant to collect them all and run them. what else can we do?
-# i guess it's fair enough just to make a list somewhere of all module destinations, and then say that the destination.target is pointing to the module in that list.
-# can we have a list and use the function to load modules, or do we just have to have a bunch of load commands?
-# claude.ai says that's the best way to do it. use the import function. 
+# config is kinda whack. 
+# we need to point to destinations.door, to destination.door.option_defaults, to menu_system.doors.options, to menu_sysem.doors.option_defaults
+# but the menu can be changed.. we need a better way to do this.
 
-from platform import processor
+from platform import processor # why do I have this?
 import subprocess, multiprocessing, tempfile, os, shutil
-from RetVals import *
+from definitions import *
 from common import *
-
-doors_config = DirtyFork.config.doors
+from config import *
+config = get_config()
+conf = config.destinations.door
 
 class Node:
   def __init__(self, **kwargs):
     for k, v in kwargs.items()
       self.k = v
 
-nodes = {} # each value will be a list of Node instances. 
-for door in doors_config.options: 
-  nodes[door] = []   # should i let node.door get out of sync with the place the node is in the list for a give door?
-
-def process(x, user, door_config, r):
-  if not isinstance(x, str):
-    if type(x) in (float, int):
-      return str(x)
-    else:
-      return x
-  d = global_data # warning: don't let users edit your yaml files!
-  d.update(config)
-  d.update(user.door_config)
-  return x.template_map(d)
+nodes = {} # each value will be a list of Node instances.  the door name will be the key. the list will be the nodes that are currently in use for that door. 
+           # some doors only allow a centain amount of nodes or up to a centain number, so we should delete nodes that are no longer in use and use the next available number
 
 def create_dosbox_config(node, door_config):
     return f"""
@@ -51,15 +37,25 @@ async def run(user, door_config, r): # we could just skip the get_dict step and 
     r.status="Coud not run door because it would exceed the max number of nodes for the door, which is " + str(door_config.max_nodes))
     r.next_destination=r.previous_destination
     return r
-  elif len(nodes) == doors_config.max_nodes:
+  elif len(nodes) == conf.max_nodes:
     r = RetVals()
     r.status="Coud not run door because it would exceed the max number of nodes for the system, which is " + str(DirtyFork.config.doors.max_nodes)
     r.next_destination=r.previous_destination
     return r
+  
   node = Node(user=user, r=r)
   nodes[door_config].append(node)
-  node.node = len(nodes[door_config]) # todo: make work on Linux and Windows?
-  conf_path = os.path.join(tempfile.gettempdir(), f"dosbox_node{node}.conf")  #it just threw away the tempdir string, so how do i know where to delet it later? (claude.ai helped me with this)
+  ns = [d.node_num for d in nodes[door_config]]
+  n = 0
+  while True:
+    if n not in ns:
+      break
+    n += 1
+  node.num_num = n
+    
+  node.node = len(nodes[door_config]) # todo: make work on Linux and Windows? # 
+  # catch: i don't think this works, it could end up with duplicate node.node's
+  conf_path = os.path.join(tempfile.gettempdir(), f"dosbox_node{node}.conf")  
   node_dir = os.path.join(config.doors.base_path,"/temp/node"+node.node)
   os.makedirs(node_dir, exist_ok=True)
   d = {}
