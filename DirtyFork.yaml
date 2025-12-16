@@ -1,6 +1,7 @@
 # no value you aren't actually going to use needs to be in here. the config object returns None for anything that's missing.
 # todo: option to star out passwords when they're being typed
 # we can handle option_defaults by assigning a merge or a configview to each option with first dict being a Config of (or can we just pass it directly?) option_defaults 
+# same with user_defaults and users
 
 bbs_name: The Dirty Fork
 hostname: logoplex3 # can also be an ip address
@@ -72,8 +73,6 @@ destinations: # todo: should login be here?
     base_path: 'c:\doors'# any non-absolute path specified in door game configurations will be relative to this path.
     max_nodes: 20 # todo: i have no idea what a good value for this is.
                   # for simplicity, COM will always be 1, it doesn't matter since each door game instance will run on its own instance of DOSBox anyway.
-    option_defaults:
-      type: module
   teleconference:
     type: module
   forum: 

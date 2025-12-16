@@ -1,11 +1,19 @@
-﻿import os, pathlib
+﻿# todo: test cycle detection with ConfigView, across different config inputs
+# todo: we can handle option_defaults by assigning a merge or a configview to each option with first dict being a Config of (or can we just pass it directly?) option_defaults 
+#       same with user_defaults and users
+# i wonder if we could just do child = child | option_defaults   or child |= option_defaults?
+# todo: provide a function to return a regular old dict of the Config or ConfigView object for passing to yaml.dump
+# may have to do something similar for input_fields too. 
+
+import os, pathlib
 from collections import defaultdict
 from collections.abc import Mapping, Iterable
 from string import Formatter
 
 import yaml, yaml_include
 
-yaml.add_constructor("!include", yaml_include.Constructor(base_dir=None))
+# yaml.add_constructor("!include", yaml_include.Constructor(base_dir=None))
+yaml.add_constructor("!include", yaml_include.Constructor(base_dir=None), Loader=yaml.SafeLoader)
 
 class Null:
     __slots__ = ()
@@ -359,5 +367,6 @@ def get_config(*dicts, path=None, main=False): # because of this, no module that
   if not path in configs:
       # configs[path] = Config(yaml.safe_load(open(path, "r").read()))
       # safe_load is better, but i don't know how to make yaml.add_constructor work with it. 
-    configs[path] = Config(yaml.load(open(path, "r").read(), Loader=yaml.Loader))
+#    configs[path] = Config(yaml.load(open(path, "r").read(), Loader=yaml.Loader))
+    configs[path] = Config(yaml.safe_load(open(path, "r").read()))
   return ConfigView(*dicts, configs[path])

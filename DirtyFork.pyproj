@@ -27,6 +27,7 @@
     <Compile Include="config.py" />
     <Compile Include="createdatabase.py" />
     <Compile Include="DirtyFork.py" />
+    <Compile Include="door.py" />
     <Compile Include="input_fields.py" />
     <Compile Include="keyboardcodes.py" />
     <Compile Include="menu.py" />

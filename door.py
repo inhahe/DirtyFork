@@ -1,6 +1,13 @@
-# config is kinda whack. 
-# we need to point to destinations.door, to destination.door.option_defaults, to menu_system.doors.options, to menu_sysem.doors.option_defaults
-# but the menu can be changed.. we need a better way to do this.
+# dirtyfork.yaml is kinda whack. 
+# we need to point to destinations.door to menu_system.doors.options.{this option}, to menu_sysem.doors.option_defaults, but menus can be changed..
+# but i think that's all doable. `destinations` is standard enough for this bbs, menu_system.doors.options.{this option} will be passed as part of menu_item, 
+#  and menu_system.doors will be passed as part of destination. oh, wait, destinations.door will be passed as the destination. hmm.
+# todo: solution: when reading the config, whenever we see option_defaults, make every child under options a ConfigView(child, option_defaults)
+# i wonder if we could just do child = child | option_defaults   or child |= option_defaults?
+# todo: do the same for user_defaults and users
+
+# if we need to use multiprocessing, the best way of sharing information is to use redis
+
 
 from platform import processor # why do I have this?
 import subprocess, multiprocessing, tempfile, os, shutil
@@ -12,7 +19,7 @@ conf = config.destinations.door
 
 class Node:
   def __init__(self, **kwargs):
-    for k, v in kwargs.items()
+    for k, v in kwargs.items():
       self.k = v
 
 nodes = {} # each value will be a list of Node instances.  the door name will be the key. the list will be the nodes that are currently in use for that door. 
