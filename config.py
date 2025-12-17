@@ -4,7 +4,8 @@
 # i wonder if we could just do child = child | option_defaults   or child |= option_defaults?
 # todo: provide a function to return a regular old dict of the Config or ConfigView object for passing to yaml.dump
 # may have to do something similar for input_fields too. 
-# test if we can use anchors across files
+# test if we can use anchors across yaml files
+# null.exists is True if the value actually exists as null in the yaml file.
 
 import os, pathlib
 from collections import defaultdict
@@ -16,7 +17,10 @@ import yaml, yaml_include
 yaml.add_constructor("!include", yaml_include.Constructor(base_dir=None), Loader=yaml.SafeLoader)
 
 class Null:
-    __slots__ = ()
+    #__slots__ = ('exists',)
+
+    def __init__(self, exists=False):
+        self.exists = exists
 
     def __getattr__(self, name):
         return self
@@ -87,7 +91,7 @@ class Config(defaultdict):
         self._root._resolving.add(key)
         try:
              result = self._resolve(value)
-             return null if result is None else result
+             return null(True) if result is None else result
         finally:
             self._root._resolving.discard(key)
 
@@ -100,7 +104,7 @@ class Config(defaultdict):
         self._root._resolving.add(key)
         try:
             result = self._resolve(value)
-            return null if result is None else result
+            return null(True) if result is None else result
         finally:
             self._root._resolving.discard(key)
     
@@ -251,7 +255,7 @@ class ConfigView(Mapping):
                     return ConfigView(*nested_layers, _root=self._root)
 
                 result = self._resolve(value)
-                return null if result is None else result
+                return null(True) if result is None else result
 
         return null
 
