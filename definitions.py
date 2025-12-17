@@ -25,3 +25,29 @@ class Char:
     self.fg_br = fg_br
     self.bg_br = bg_br
     self.char = char
+
+class Null:
+    #__slots__ = ('exists',)
+
+    def __init__(self, exists=False):
+        self.exists = exists
+
+    def __getattr__(self, name):
+        return self
+
+    def __getitem__(self, key):
+        return self
+
+    def __bool__(self):
+        return False
+
+    def __repr__(self):
+        return "null"
+
+    def __str__(self):
+        return "null"
+
+    def __iter__(self):
+        return range(0)
+
+null = Null()

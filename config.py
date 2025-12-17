@@ -5,8 +5,8 @@
 # todo: provide a function to return a regular old dict of the Config or ConfigView object for passing to yaml.dump
 # may have to do something similar for input_fields too. 
 # test if we can use anchors across yaml files
-# null.exists is True if the value actually exists as null in the yaml file. if it doesn't exist, it's null. if it were False, that would interfere if we were to look up an actual value 
-# 'exists' and the parent was null or didn't exist. as it is, it would have returned null anyway.
+# note that there's currently no way to distinguish between a value being defined as null and the value 
+#  not existing.
 
 import os, pathlib
 from collections import defaultdict
@@ -15,34 +15,10 @@ from string import Formatter
 
 import yaml, yaml_include
 
+from definitions import *
+
 yaml.add_constructor("!include", yaml_include.Constructor(base_dir=None), Loader=yaml.SafeLoader)
 
-class Null:
-    #__slots__ = ('exists',)
-
-    def __init__(self, exists=False):
-        self.exists = exists
-
-    def __getattr__(self, name):
-        return self
-
-    def __getitem__(self, key):
-        return self
-
-    def __bool__(self):
-        return False
-
-    def __repr__(self):
-        return "null"
-
-    def __str__(self):
-        return "null"
-
-    def __iter__(self):
-        return range(0)
-
-null = Null()
-                                                            
 class Config(defaultdict):
     def __init__(self, source=None, *, _root=None, strict=True):
         super().__init__(lambda: null) 
@@ -92,7 +68,7 @@ class Config(defaultdict):
         self._root._resolving.add(key)
         try:
              result = self._resolve(value)
-             return Null(True) if result is None else result
+             return null if result is None else result
         finally:
             self._root._resolving.discard(key)
 
@@ -105,7 +81,7 @@ class Config(defaultdict):
         self._root._resolving.add(key)
         try:
             result = self._resolve(value)
-            return Null(True) if result is None else result
+            return null if result is None else result
         finally:
             self._root._resolving.discard(key)
     
@@ -256,9 +232,9 @@ class ConfigView(Mapping):
                     return ConfigView(*nested_layers, _root=self._root)
 
                 result = self._resolve(value)
-                return Null(True) if result is None else result
+                return null if result is None else result
 
-        return Null(null)
+        return null
 
     def __setitem__(self, key, value):
         if self._write_to is null:
@@ -288,7 +264,7 @@ class ConfigView(Mapping):
         try:
             return self[name]
         except KeyError:
-            return Null(null)
+            return null
 
     def __setattr__(self, name, value):
         if name.startswith("_"):
