@@ -3,23 +3,27 @@ dirtyfork
   common
   modules
 common
-  output
-  keyboardcodes
+  input_output
+  keyboard_codes
   config
   input_fields
   menu
   modules
   definitions
 definitions
-output
+input_output
+  definitions
+  keyboard_codes
 config
-keyboardcodes
+keyboard_codes
 config
 input_fields
-  output
+  input_output
   config
 menu
-  output
+  input_output
   definitions
+  keyboard_codes
 modules
-definitions
+input_fields
+  input_output

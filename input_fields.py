@@ -1,4 +1,5 @@
-from output import *
+from common import *
+from input_output import *
 from config import get_config
 config = get_config()
 
@@ -6,30 +7,42 @@ class InputFields: # todo: how will I detect mouse clicks in the middle of getti
   def __init__(self, user):
     self.input_fields = []
     self.user = user
-  async def input_field(self, field_height, field_length, content_length, fg=config.input_fields.fg, bg=config.input_fields.bg, fg_br=config.input_fields.fg_br, bg_br=config.input_fields.bg_br,
-                 fill=config.input_fields.fill, fill_fg=config.input_fields.fill_fg, fill_bg=config.input_fields.fill_bg, fill_fg_br=config.input_fields.fill_fg_br, 
-                 fill_bg_br=config.input_fields.fill_bg_br, insert_mode = True, outline=config.input_fields.outline, outline_double=config.input_fields.outline_double, content=""):
-    self.input_fields.append(await InputField(self.user, field_height, field_length, content_length, self, fg, bg, fg_br, bg_br, fill, fill_fg, fill_bg, fill_fg_br, fill_bg_br, insert_mode, outline, content))
+  async def input_field(self, conf=None, field_height=None, field_length=None, content_length=None, fg=None, fg_br=None, bg=None, bg_br=None, fill=None, fill_fg_br=None, fill_fg=None, fill_bg=None, 
+                        fill_bg_br=None, outline=None, outline_double=None, outline_fg=None, outline_fg_br=None, outline_bg=None, outline_bg_br=None, insert_mode=None, content=""):
+    self.input_fields.append(await InputField(self, conf=conf, field_height=field_height, field_length=field_length, content_length=content_length, fg=fg, fg_br=fg_br, bg=bg, bg_br=bg_br, fill=fill, 
+                                              fill_fg=fill_fg, fill_fg_br=fill_fg_br, fill_bg=fill_bg, fill_bg_br=fill_bg_br, outline=outline, outline_double=outline_double,
+                                              outline_fg=outline_fg, outline_fg_br=outline_fg_br, outline_bg=outline_bg, outline_bg_br=outline_bg_br, insert_mode=insert_mode, content=content))
   async def run():
-    pass
+    pass # todo
 
 class InputField:
-  async def __init__(self, user, field_height, field_length, content_length, parent=None, fg=config.input_fields.fg, bg=config.input_fields.bg, fg_br=config.input_fields.fg_br, bg_br=config.input_fields.bg_br, \
-                 fill=config.input_fields.fill, fill_fg=config.input_fields.fill_fg, fill_bg=config.input_fields.fill_bg, fill_fg_br=config.input_fields.fill_fg_br, \
-                 fill_bg_br=config.input_fields.fill_bg_br, scroll_vert=False, scroll_horiz=False, insert_mode = True, outline=None, outline_double=False, content="", allow_edit=True):
-    await ansi_color(user, fill_fg, fill_bg, fill_fg_br, fill_bg_br)
-    await send(user, fill*input_length)
-    self.col_offset = user.cur_col    
-    self.row_offset = user.cur_row
-    self.user = user
+  async def __init__(self, parent=None, conf=None, field_height=None, field_length=None, content_length=None, fg=None, fg_br=None, bg=None, bg_br=None, fill=None, fill_fg_br=None, fill_fg=None, fill_bg=None, 
+                     fill_bg_br=None, outline=None, outline_double=None, outline_fg=None, outline_fg_br=None, outline_bg=None, outline_bg_br=None, insert_mode=None, content="", allow_edit=True)
+    field_height = field_height or conf.field_height 
+    assert field_height and field_length
+    await ansi_color(self.user, fill_fg, fill_bg, fill_fg_br, fill_bg_br)
+    await send(self.user, fill*content_length)
+    self.col_offset = self.user.cur_col 
+    self.row_offset = self.user.cur_row
+    self.outline = conf.outline if outline is None else outline
+    if self.outline:
+      self.col_offset = self.col_offset+1
+      self.row_offset = self.row_offset+1
     self.field_height = field_height
     self.field_length = field_length
-    self.content_length = content_length
+    self.content_length = content_length or conf.content_length
+    assert self.content_length
     self.parent=parent
-    self.fg=fg
-    self.bg=bg
+    self.fg=fg = conf.fg if fg is None else fg
+    self.bg=bg = conf.bg if fg is None else bg
+    if self.bg is None:
+      self.bg = conf.bg
     self.fg_br=fg_br
+    if self.fg_br is None:
+      self.fg_br = conf.fg_br
     self.bg_br=bg_br
+    if self.bg_br is None:
+      self.bg_br = conf.bg_br    
     self.scroll_vert=scroll_vert
     self.scroll_horiz=scroll_horiz
     self.insert_mode=insert_mode
@@ -69,12 +82,12 @@ class InputField:
             if self.content_pos > 0: # field is scrolled to the right, cursor is at the beginning
               self.content_pos -= 1
               if self.insert_mode:
-                await send(self.user, self.content[self.content_pos:self.content_pos+field_length])
+                await send(self.user, self.content[self.content_pos:self.content_pos+self.field_length])
               else:
                 await ansi_color(self.user, self.bg, self.fg, False, False)
                 await send(self.user, self.content[self.content_pos]) # write inverted color char at cursor pos
                 await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
-                await send(self.user, self.content[self.content_pos+1:self.content_pos+field_length]) # write rest of self.content in normal colors
+                await send(self.user, self.content[self.content_pos+1:self.content_pos+self.field_length]) # write rest of self.content in normal colors
               await ansi_move(self.user, col=self.col_offset) 
           else:                                               
             self.field_pos -= 1
@@ -116,13 +129,13 @@ class InputField:
             self.field_pos = self.content_pos = 0
             await ansi_move(col=self.col_offset)          
             if self.insert_mode:
-              await send(self.user, self.content[:field_length])    # send <field_length> many characters of self.content 
+              await send(self.user, self.content[:self.field_length])    # send <field_length> many characters of self.content 
               await ansi_move(col=self.col_offset)
             else:
               await ansi_color(self.bg, self.fg, False, False)
               await send(self.user, self.content[0])    
               await ansi_color(self.fg, self.bg, self.fg_br, self.bg_br)
-              await send(self.user, self.content[1:field_length])
+              await send(self.user, self.content[1:self.field_length])
           else:
             await ansi_color(self.bg, self.fg, False, False)
             await send(self.user, self.content[0])
@@ -132,13 +145,13 @@ class InputField:
             await ansi_move(col=self.col_offset)
           await ansi_move(self.user, col=self.col_offset) 
         elif key == "end":
-          if len(self.content) <= field_length:
+          if len(self.content) <= self.field_length:
             await ansi_right(self.user, len(self.content)-self.field_pos)
             self.field_pos = len(self.content)
           else:
             await ansi_move(self.user, col=self.col_offset)
-            self.content_pos = len(self.content)-field_length+1
-            await send(self.user, self.content[self.content_pos:self.content_pos+field_length]) 
+            self.content_pos = len(self.content)-self.field_length+1
+            await send(self.user, self.content[self.content_pos:self.content_pos+self.field_length]) 
             await ansi_color(self.user, self.fill_self.bg, self.fill_self.fg, self.fill_self.bg_br, self.fill_self.fg_br)
             await send(self.user, self.fill)
             await ansi_color(self.user, self.bg, self.fg, self.bg_br, self.fg_br)
@@ -161,15 +174,15 @@ class InputField:
             self.field_pos -= 1          
             self.content_pos -= 1
             self.content=self.content[:self.content_pos+self.field_pos]+self.content[self.content_pos+self.field_pos+1:] # delete a char from self.content at new self.content_pos. factor in self.field_pos.
-            await ansi_move(self.user, left)
+            await ansi_left(self.user)
             if self.insert_mode:
-              await send(self.user, chr(217)+self.content[conten_pos+1:self.content_pos+field_length-self.field_pos]) # check: is this accurate?
+              await send(self.user, chr(217)+self.content[self.content_pos+1:self.content_pos+self.field_length-self.field_pos]) # check: is this accurate?
             else:
-              await send(self.user, self.content[conten_pos:self.content_pos+field_length-self.field_pos]) # check: is this accurate?
-            if field_length>len(self.content)-self.content_pos:
+              await send(self.user, self.content[self.content_pos:self.content_pos+self.field_length-self.field_pos]) # check: is this accurate?
+            if self.field_length>len(self.content)-self.content_pos:
               await ansi_color(self.user, self.fill_self.fg, self.fill_self.bg, self.fill_self.fg_br, self.fill_self.bg_br)
               await send(self.user, self.fill)
-              await ansi_color(self.user, self.fg, self.bg, self.fg_br, br_br)
+              await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.br_br)
         elif key == "del":
           end_pos == len(self.content) - self.content_pos-1 
           if end_pos==self.field_pos: # if cursor is right at the end of the self.content
@@ -182,10 +195,10 @@ class InputField:
               await send(self.user, self.fill)
               await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
           else:
-            if end_pos < field_length + 1: # check: off by one error? # if there are multiple self.fill characters after the self.content
+            if end_pos < self.field_length + 1: # check: off by one error? # if there are multiple self.fill characters after the self.content
               self.content = self.content[:self.content_pos]+self.content[self.field_pos+self.content_pos+1:]
               if self.insert_mode:
-                await send(self.user, self.content[self.field_pos+self.content_pos:self.field_pos+self.content_pos+field_length-self.field_pos]) # check: is this correct? and is there an off by one error?
+                await send(self.user, self.content[self.field_pos+self.content_pos:self.field_pos+self.content_pos+self.field_length-self.field_pos]) # check: is this correct? and is there an off by one error?
                 await ansi_color(self.fill_self.fg, self.fill_self.bg, self.fill_self.fg_br, self.fill_self.bg_br)
                 await send(self.user, self.fill)
                 await ansi_move(self.user, col=self.col_offset+self.field_pos) # move cursor back to where it belongs
@@ -197,19 +210,19 @@ class InputField:
             else: # if self.content takes up the entire field
               self.content = self.content[:self.content_pos]+self.content[self.field_pos+self.content_pos+1:] # delete a char from self.content.
               if self.insert_mode:
-                await send(self.user, self.content[self.field_pos+self.content_pos:self.field_pos+self.content_pos+field_length-self.field_pos]) # print self.content from self.field_pos to end of input starting with the appropriate self.content pos for the horizontal scroll
+                await send(self.user, self.content[self.field_pos+self.content_pos:self.field_pos+self.content_pos+-self.field_length-self.field_pos]) # print self.content from self.field_pos to end of input starting with the appropriate self.content pos for the horizontal scroll
               else:
                 await ansi_color(self.user, self.bg, self.fg, False, False)
                 await send(self.user, self.content[self.field_pos+self.content_pos]) # send current char in reverse colors
                 await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
-                await send(self.user, self.content[self.field_pos+self.content_pos+1:self.field_pos+self.content_pos+field_length-self.field_pos]) # send rest of chars in normal colors
+                await send(self.user, self.content[self.field_pos+self.content_pos+1:self.field_pos+self.content_pos+self.field_length-self.field_pos]) # send rest of chars in normal colors
         elif key == ctrl_u: # ^U = clear line
           self.content = ""
           self.field_pos = self.content_pos = 0
           await ansi_move(col=self.col_offset)
           await ansi_color(self.user, self.fill_self.fg, self.fill_self.bg, self.fill_self.fg_br, self.fill_self.bg_br)
-          await send(self.user, self.fill*field_length)
-          await ansi_color(self.user, self.fg, self.bg, self.fg_br, br_br)
+          await send(self.user, self.fill*self.field_length)
+          await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.br_br)
         elif key == cr: 
           await send(self.user, cr+lf)
           return self.content
@@ -217,8 +230,8 @@ class InputField:
           if self.insert_mode:
             if len(self.content) < self.content_length: 
               self.content = self.content[:self.field_pos+self.content_pos]+key+self.content[self.field_pos+self.content_pos:]
-              await send(self.user, self.content[self.content_pos+self.field_pos:self.content_pos+self.field_pos+field_length-self.field_pos])
-              await ansi_move(self.user, col=self.col_offset+input_pos)
+              await send(self.user, self.content[self.content_pos+self.field_pos:self.content_pos+self.field_pos+self.field_length-self.field_pos])
+              await ansi_move(self.user, col=self.col_offset+self.input_pos)
             self.field_pos += 1
           else:
             self.content=self.content[:self.field_pos+self.content_pos]+key+self.content[self.field_pos_self.content_pos+1:]
@@ -228,7 +241,7 @@ class InputField:
             await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
             await send(self.user, key)
             if self.field_pos == end_pos: # cursor is one to the right of the self.content, self.fill char is currently inverted
-              if self.field_pos < field_length-1: # self.field_pos better not be > field_length-1, so if it's not < then it's ==, in which case we wouldn't send a new inverted self.fill char
+              if self.field_pos < self.field_length-1: # self.field_pos better not be > field_length-1, so if it's not < then it's ==, in which case we wouldn't send a new inverted self.fill char
                 await ansi_color(self.user, self.fill_self.bg, self.user_self.fill_self.fg, False, False) 
                 await send(self.user, self.fill)
                 await ansi_left(self.user) 
@@ -273,11 +286,7 @@ class InputField:
     # todo: finish
   async def draw_outline(self):
     if self.outline:
-      self.col_offset = self.col_offset+1
-      self.row_offset = self.row_offset+1
-      self.width = conf.width-2
-      self.height = conf.height-2
-      ansi_color(user, fg=conf.box.color.fg, fg_br=conf.box.color.fg_br, bg=conf.box.color.bg, bg_br=conf.box.color.bg_br)
+      ansi_color(self.user, fg=conf.box.color.fg, fg_br=conf.box.color.fg_br, bg=conf.box.color.bg, bg_br=conf.box.color.bg_br)
       if self.outline_double: # todo: use unicode if user.terminal == PuTTy
         ords = chr(201), chr(205), chr(187), chr(186), chr(200), chr(188)
       else:

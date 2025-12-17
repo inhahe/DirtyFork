@@ -4,6 +4,7 @@
 # i wonder if we could just do child = child | option_defaults   or child |= option_defaults?
 # todo: provide a function to return a regular old dict of the Config or ConfigView object for passing to yaml.dump
 # may have to do something similar for input_fields too. 
+# test if we can use anchors across files
 
 import os, pathlib
 from collections import defaultdict
@@ -12,7 +13,6 @@ from string import Formatter
 
 import yaml, yaml_include
 
-# yaml.add_constructor("!include", yaml_include.Constructor(base_dir=None))
 yaml.add_constructor("!include", yaml_include.Constructor(base_dir=None), Loader=yaml.SafeLoader)
 
 class Null:
@@ -40,7 +40,7 @@ null = Null()
                                                             
 class Config(defaultdict):
     def __init__(self, source=None, *, _root=None, strict=True):
-        super().__init__(lambda: None) 
+        super().__init__(lambda: null) 
         self._root = _root or self
 
         if _root is None:
@@ -86,7 +86,8 @@ class Config(defaultdict):
             self._root._resolving = set()
         self._root._resolving.add(key)
         try:
-            return self._resolve(value)
+             result = self._resolve(value)
+             return null if result is None else result
         finally:
             self._root._resolving.discard(key)
 
@@ -98,7 +99,8 @@ class Config(defaultdict):
             self._root._resolving = set()
         self._root._resolving.add(key)
         try:
-            return self._resolve(value)
+            result = self._resolve(value)
+            return null if result is None else result
         finally:
             self._root._resolving.discard(key)
     
@@ -118,32 +120,18 @@ class Config(defaultdict):
         return value  
       
     def _resolve(self, value):
-      if isinstance(value, str):
-          value = os.path.expandvars(value)
+        if not isinstance(value, str):
+            return value
 
-          formatter = _DotFormatter(
-              strict=self._root._strict,
-              resolving=self._root._resolving,
-              root=self._root,  # Pass the actual Config
-          )
+        value = os.path.expandvars(value)
 
-          try:
-              return formatter.format(value, self._root)
-          except KeyError:
+        formatter = _DotFormatter(
+            strict=self._strict,
+            resolving=self._root._resolving,
+        )
 
-              print(f"{self._strict=}") # debug
+        return formatter.format(value, self)    
 
-              if self._root._strict:
-                  raise
-              return value
-
-      if isinstance(value, bytes):
-          return os.path.expandvars(
-              value.decode("utf-8", errors="ignore")
-          )
-
-      return value
-    
     def seal(self):
         self._sealed = True
         for v in self.values():
@@ -198,28 +186,25 @@ class Config(defaultdict):
         return self.extended(*sources, deep=False)
 
 class _DotFormatter(Formatter):
+    
     def __init__(self, *, strict=True, resolving=None, root=None):
         self.strict = strict
-        self.resolving = resolving or set()
-        self.root = root or {}
+        self.resolving = resolving if resolving is not None else set()
+        self.root = root if root is not None else {}
 
     def get_field(self, field_name, args, kwargs):
         if field_name in self.resolving:
             raise ValueError(f"Interpolation cycle detected: {field_name}")
 
+        self.resolving.add(field_name)
         try:
-            self.resolving.add(field_name)
-
             cur = args[0]
             for part in field_name.split("."):
                 if not isinstance(cur, Mapping):
                     raise KeyError(part)
-                if part not in cur:
-                    raise KeyError(part)
-                cur = cur[part] 
+                cur = cur[part]
 
             return cur, field_name
-
         finally:
             self.resolving.discard(field_name)
 
@@ -265,7 +250,8 @@ class ConfigView(Mapping):
                             nested_layers.append(l[key])
                     return ConfigView(*nested_layers, _root=self._root)
 
-                return self._resolve(value, resolving={key})
+                result = self._resolve(value)
+                return null if result is None else result
 
         return null
 
@@ -305,23 +291,23 @@ class ConfigView(Mapping):
         else:
             self[name] = value
 
-    def _resolve(self, value, *, resolving):
-        if isinstance(value, str):
-            value = os.path.expandvars(value)
-            formatter = _DotFormatter(
-                strict=self._strict,
-                resolving=resolving,
-            )
-            try:
-                return formatter.format(value, self)
-            except KeyError:
+    def _resolve(self, value):
+        if not isinstance(value, str):
+            return value
 
-                print(f"{self._strict=}") # debug
+        value = os.path.expandvars(value)
 
-                if self._strict:
-                    raise
-                return value
-        return value
+        formatter = _DotFormatter(
+            strict=self._root._strict,
+            resolving=self._root._resolving,
+        )
+
+        try:
+            return formatter.format(value, self._root)
+        except KeyError:
+            if self._root._strict:
+                raise
+            return value
 
     def freeze(self):
         def materialize(obj):
@@ -365,8 +351,5 @@ def get_config(*dicts, path=None, main=False): # because of this, no module that
   if not path:
     path = main_path
   if not path in configs:
-      # configs[path] = Config(yaml.safe_load(open(path, "r").read()))
-      # safe_load is better, but i don't know how to make yaml.add_constructor work with it. 
-#    configs[path] = Config(yaml.load(open(path, "r").read(), Loader=yaml.Loader))
     configs[path] = Config(yaml.safe_load(open(path, "r").read()))
   return ConfigView(*dicts, configs[path])

@@ -13,6 +13,7 @@
 
 input_field:
   outline: false
+  height: 1
   bg_chars: 
     ord: 176 # this fills all the unused space with chr(176)'s. if null, uses space.
     color:
@@ -36,9 +37,9 @@ input_command:
       br_fg: false
       bg: black
       br_bg: false
-  input_length: null
-  input_length_minus: 0 # number of characters short of reaching the end of the screen
-  max_length: 300
+  field_length: null
+  field_length_from_end: 0 # number of characters short of reaching the end of the screen. if this is defined, field_length is ignored.
+  content_length: 300
 
 input_box:
   outline: 

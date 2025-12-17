@@ -4,7 +4,7 @@ from collections import deque
 
 import bcrypt
 
-from output import *
+from input_output import *
 from keyboardcodes import *
 from config import *
 from input_fields import * # todo: we have a circular import. supposedly that's a very bad thing.
@@ -17,18 +17,6 @@ config = get_config()
 con = sqlite3.connect(config.database)
 con.row_factory = sqlite3.Row 
 cur = con.cursor()
-
-class Disconnected(Exception):
-  def __init__(self, user):
-    self.user = user
-
-class Char: 
-  def __init__(self, fg=7, bg=0, fg_br=False, bg_br=False, char=" "):
-    self.fg = fg
-    self.bg = bg
-    self.fg_br = fg_br
-    self.bg_br = bg_br
-    self.char = char
 
 class GlobalData: 
   def __init__(self):
