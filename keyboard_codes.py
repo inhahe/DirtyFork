@@ -1,4 +1,4 @@
-import re 
+import re, asyncio
 
 cr = "\x0d" # are these right?
 tab = "\x09"

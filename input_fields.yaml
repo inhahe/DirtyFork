@@ -14,32 +14,30 @@
 input_field:
   outline: false
   height: 1
-  bg_chars: 
-    ord: 176 # this fills all the unused space with chr(176)'s. if null, uses space.
-    color:
-      fg: gray
-      br_fg: false
-      bg: blue
-      br_bg: false
-  fg_chars:
-    color:
-      fg: green
-      br_fg: false
-      bg: black
-      br_bg: false
+  blank: 
+    char: 176 # this fills all the unused space with chr(176)'s. if null, uses space.
+    fg: gray
+    br_fg: false
+    bg: blue
+    br_bg: false
+  content:
+    fg: green
+    br_fg: false
+    bg: black
+    br_bg: false
 
 input_command:
   height: 1
   outline: false 
-  fg_chars:
-    color:
-      fg: green
-      br_fg: false
-      bg: black
-      br_bg: false
-  field_length: null
-  field_length_from_end: 0 # number of characters short of reaching the end of the screen. if this is defined, field_length is ignored.
-  field_height_from_end: null
+  content:
+    fg: green
+    br_fg: false
+    bg: black
+    br_bg: false
+    length: null
+  length: null
+  length_from_end: 0 # number of characters short of reaching the end of the screen. if this is defined, length is ignored.
+  height_from_end: null
   content_length: 300
 
 input_box:
@@ -49,10 +47,9 @@ input_box:
     fg_br: false
     bg_br: false
     double_lined: false
-  fg_chars:
-    color:
-      fg: green
-      br_fg: false
-      bg: black
-      br_bg: false
+  content:
+    fg: green
+    br_fg: false
+    bg: black
+    br_bg: false
 

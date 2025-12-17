@@ -17,11 +17,10 @@ class InputFields: # todo: how will I detect mouse clicks in the middle of getti
     pass # todo
 
 class InputField:
-  async def __init__(self, parent=null, conf=null, field_height=null, field_length=null, field_length_from_end=null, field_height_from_end=null, content_length=null, fg=null, fg_br=null, bg=null, bg_br=null, fill=null, 
+  async def __init__(self, parent=null, conf=null, height=null, length=null, length_from_end=null, height_from_end=null, content_length=null, fg=null, fg_br=null, bg=null, bg_br=null, fill=null, 
                      fill_fg_br=null, fill_fg=null, fill_bg=null, fill_bg_br=null, outline=null, outline_double=null, outline_fg=null, outline_fg_br=null, outline_bg=null, outline_bg_br=null, insert_mode=null, 
                      scroll_vert=null, scroll_horiz=null, content="", allow_edit=null):
     field_height = field_height or conf.field_height 
-    assert field_height and field_length
     await ansi_color(self.user, fill_fg, fill_bg, fill_fg_br, fill_bg_br)
     await send(self.user, fill*content_length)
     self.col_offset = self.user.cur_col 
@@ -30,23 +29,35 @@ class InputField:
     if self.outline:
       self.col_offset = self.col_offset+1
       self.row_offset = self.row_offset+1
-    self.field_height = field_height
-    self.field_length = field_length
-    self.field_length_from_end = conf.field_length_from_end if field_length_from_end is null else field_length_from_end
-    self.field_height_from_end = conf.field_height_from_end if field_height_from_end is null else field_height_from_end
-    self.content_length = content_length or conf.content_length
+    self.height = height or conf.height # height shouldn't be 0, so we can do this
+    self.length = length or conf.length # length shouldn't be 0
+    self.height_from_end = conf.height_from_end if height_from_end is null else height_from_end
+    self.length_from_end = conf.length_from_end if length_from_end is null else length_from_end
+    if self.height is null and self.height_from_end is not null: 
+      self.height = self.user.screen_height-self.row_offset+1-self.height_from_end
+    if self.length is null and self.length_from_end is not null: 
+      self.length = self.user.screen_height-self.row_offset+1-self.length_from_end
+    self.content_length = content_length or conf.content_length # content_length shouldn't be zero
     assert self.content_length
-    self.parent=parent
-    self.fg=fg = conf.fg if fg is null else fg
-    self.fg_br = conf.fg_br if fg_br is null else fg_br
-    self.bg=bg = conf.bg if bg is null else bg
-    self.bg_br = conf.bg_br if bg_br is null else bg_br
+    self.parent = parent
+    self.fg = colors[conf.content.fg] if fg is null else fg
+    self.fg_br = conf.content.fg_br if fg_br is null else fg_br
+    self.bg = colors[conf.content.bg] if bg is null else bg
+    self.bg_br = conf.content.bg_br if bg_br is null else bg_br
+    self.fill = conf.blank.char if fill is null else conf.blank.char
+    self.fill = self.fill or " " # not using 'if ... is null' because character zero doesn't show anyway
+    if type(self.fill) is int: 
+      self.fill = chr(self.fill)
+    self.fill_fg = colors[conf.content.blank.fg] if fill_fg is null else fill_fg
+    self.fill_fg_br = conf.content.blank.fg_br if fill_fg_br is null else fill_fg_br
+    self.fill_bg = colors[conf.content.blank.bg] if fill_bg is null else fill_bg
+    self.fill_bg_br = conf.content.blank.bg_br if fill_bg_br is null else fill_bg_br
     self.scroll_vert = conf.scroll_vert if scroll_vert is null else scroll_vert
     self.scroll_horiz = conf.scroll_horiz if scroll_horiz is null else scroll_horiz
     self.insert_mode = conf.insert_mode if insert_mode is null else insert_mode
-    self.outline=outline
-    self.content=content
-    self.allow_edit = allow_edit
+    self.outline = conf.outline if outline is null else outline
+    self.content = content
+    self.allow_edit = conf.allow_edit if allow_edit is null else allow_edit
     if self.outline:
       await self.draw_outline()
     if parent==null:
@@ -65,7 +76,7 @@ class InputField:
     # field_length should never be > content_length
     # todo: constantly blink block cursor with a timer, alternating between block cursor and character at that point? claude says that's non-standard and may be confusing, but it seems familar. 
     # but also, would that cause periods of stillness followed by very rapid blinking due to network delays?
-    if self.field_height==1: # somewhere in here, there is a missing close-parentheses
+    if self.field_height==1: 
       self.field_pos = self.content_pos = 0
       self.content = ""
       if self.col+self.field_length-1>self.user.screen_width:                                                    
@@ -193,7 +204,7 @@ class InputField:
               await send(self.user, self.fill)
               await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
           else:
-            if end_pos < self.field_length + 1: # check: off by one error? # if there are multiple self.fill characters after the self.content
+            if end_pos < self.field_length + 1: # if there are multiple self.fill characters after the self.content # check: off by one error? 
               self.content = self.content[:self.content_pos]+self.content[self.field_pos+self.content_pos+1:]
               if self.insert_mode:
                 await send(self.user, self.content[self.field_pos+self.content_pos:self.field_pos+self.content_pos+self.field_length-self.field_pos]) # check: is this correct? and is there an off by one error?
@@ -265,12 +276,11 @@ class InputField:
           await user.writer.drain()
     self.pos_to_content_index = [[null*conf.width] for _ in range(conf.height)]
     self.content_index_to_pos = [] # probably won't need this either.
-    self.content_lines = ["" for _ in range(conf.height)] # todo: might not need this one.
     # we could keep an array of all word positions plus how many spaces and how many cr's are after each word 
     # to make it easier to compute word wrap, but then we have to modify it without iterating over the whole thing 
     # every time we insert or delete a char. so it may not be worth it. hmm, let's do it.
     # should we store lines of words, or just a 1D array of words? or a 1D array of words, cr's, spaces, rows and cols?
-    # hmm, you can have any combination of spaces and cr's after a word... so cr's should probably also be words. 
+    # hmm, you can have any combination of spaces and cr's after a word, and they should be preserved... so cr's should probably also be words. 
     # or extra spaces should. 
     self.words = []
     self.dists_from_right = [null*conf.height]
