@@ -33,7 +33,6 @@ async def user_loop(reader, writer): # todo: users will probably not be able to 
   global_data.users_logging_in.add(user)
   r = RetVals(next_destination=Destinations.login)  
   # todo uh oh, sometimes next_destination is treated as a string and sometimes it's treated as the destination object itself, i think. i remember seeing do_destination looking up getattr and such. 
-  next_destination, next_menu_item = login, None
   while True: 
     try: 
       r = await Destinations.user_director(user, next_destination, next_menu_item)
