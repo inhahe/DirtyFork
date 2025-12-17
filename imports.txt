@@ -17,6 +17,7 @@ input_output
 config
 keyboard_codes
 config
+  definitions
 input_fields
   input_output
   config
