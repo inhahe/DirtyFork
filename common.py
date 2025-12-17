@@ -5,7 +5,7 @@ from collections import deque
 import bcrypt
 
 from input_output import *
-from keyboardcodes import *
+from keyboard_codes import *
 from config import *
 from input_fields import * # todo: we have a circular import. supposedly that's a very bad thing.
 import menu
@@ -99,39 +99,18 @@ async def get_screen_size(user):
 
 class Destinations:
   async def login(user, r):
-    async def check_handle_password(handle, password):
+    def check_handle(handle):
       cur.execute("SELECT * FROM users WHERE handle = ? LIMIT 1 COLLATE NOCASE", (handle,))
       r = RetVals()
       user_in_db = cur.fetchone()
       if user_in_db is None:
         user.login_tries.append((handle,))
-        return RetVals(status = "bad handle")
-      else:
-        if user_in_db["password_hash"] == bcrypt.hashpw(password, user_in_db["password_salt"]):
-          user.id = user_in_db["id"]
-          user.handle = user_in_db["handle"] # correct capitalization here
-          user.email = user_in_db["email"]
-          user.age = user_in_db["age"]
-          user.sex = user_in_db["sex"]
-          user.location = user_in_db["location"]
-          user.time_created = user_in_db["time_created"]
-          cur.execute("SELECT key FROM USER_KEYS WHERE user_id = ?", (user.id,))
-          rows = cur.fetchall()
-          user.keys.add(r["key"] for r in rows)
-          user.input_timestamps = deque()
-          user.batch_mode = False
-          global_data.users_logging_in.remove(user)
-          global_data.users[handle.lower()] = user
-          conf1 = get_config(os.path.join(config.user_configs, user.handle))
-          conf2 = get_config(config.user_defaults)
-          conf3 = get_config()
-          user.conf = config.ConfigView(conf1, conf2, conf3)
-          return RetVals(status=success)
-        else:
-          r.status = fail
-          r.err_msg = "The password you entered is incorrect."
-          user.login_tries.append((handle, password))
-          return r
+        return RetVals(status=fail, err_msg=handle+" is not a registered user on this system")
+      return RetVals(status=success, user_in_db=user_in_db)      
+    async def check_password(user_in_db, password):
+      if user_in_db["password_hash"] == bcrypt.hashpw(password, user_in_db["password_salt"]):
+        return RetVals(status=success)
+      return r(statu=fail, err_msg="The password you entered is incorrect.")
     rows, cols = get_screen_size(user)
     user.screen = [[Char() for col in cols] for row in rows]
     user.click_screen = [[None*rows] for row in rows] # this will store arbitrary objects associated with cells to be returned when they're clicked on (set by a rect defining function)
@@ -139,18 +118,39 @@ class Destinations:
     for x in range(config.login.allowed_attempts):
       await send(lf*2+'Enter your handle or "new" to sign up.'+lf*2, drain=True)
       handle = await InputField(user, *read_cursor_position(user), user.screen_width-1) # todo: use nowrap as explained in another comment so i can take out that -1
-      if handle.lower() == "new":                                                                                 # todo: i think we have to distinguish between an input_field stand-alone and one
-        return RetVals(status=new_user, next_destination=register)                                                           #       used in an input page?
-        await send(user, lf*2+handle+" is not a registered user on this system")                                            # todo: do we change cur_destination to the input_field or what?
+      r = check_handle(handle)
+      if r.status==fail:
+        user.login_tries.append((handle, None))
+        await send(cr+lf*2+r.err_msg)
         continue
+      if handle.lower() == "new":                                                                                 # todo: i think we have to distinguish between an input_field stand-alone and one
+        return RetVals(status=new_user, next_destination=Destinations.register)                                                           #       used in an input page?
+      user_in_db = r.user_in_db
       await send(user, lf*2+"Enter your password.")
       password = await InputField(user, *read_cursor_position(user), user.screen_width-1) # todo: use nowrap as explained in another comment so i can take out that -1
-      r = check_handle_password(handle, password)
+      r = check_password(r.user_in_db, password)
       if r.status==success:
+        user.handle = user_in_db["handle"] # correct capitalization here
+        user.email = user_in_db["email"]
+        user.age = user_in_db["age"]
+        user.sex = user_in_db["sex"]
+        user.location = user_in_db["location"]
+        user.time_created = user_in_db["time_created"]
+        cur.execute("SELECT key FROM USER_KEYS WHERE user_id = ?", (user.id,))
+        rows = cur.fetchall()
+        user.keys.add(r["key"] for r in rows)
+        user.input_timestamps = deque()
+        user.batch_mode = False
+        global_data.users_logging_in.remove(user)
+        global_data.users[handle.lower()] = user
+        conf1 = get_config(os.path.join(config.user_configs, user.handle))
+        conf2 = get_config(config.user_defaults)
+        conf3 = get_config()
+        user.conf = config.ConfigView(conf1, conf2, conf3)
         return r
-      else:
-        await send(user, lf*2+r.err_msg)
-    return RetVals(status=fail, err_msg="max failed attempts", next_destination=logout, next_menu_item=None)
+      user.login_tries.append((handle, password))
+      await send(user, cr+lf*2+r.err_msg)
+    return RetVals(status=fail, err_msg="max failed attempts", next_destination=Destinations.logout, next_menu_item=None)
 
   async def do_destination(user, destination, menu_item=None): 
       # todo: this should return a function to talk to destination too, even if it's set to None, 
@@ -162,16 +162,15 @@ class Destinations:
       r = await menu.do_menu(user, destination, menu_item, r) # how will the menu know to render itself instead of going into an option? i guess if destination==menu_item?
     elif destination.type == "module":
       r = await modules[destination].run(user, destination, menu_item)
-    r.destination = destination.type # todo: fix
     return r
 
   async def user_director(user, next_destination, next_menu_item=None): # todo: first we have to login
     result = check_keys(user, next_destination, next_menu_item)
     if not result.allowed:
       status=fail
-      err_msg=f"Destination: {next_destination}{('/'+next_menu_item if next_menu_item else ''}\n"
-               "Missing keys: {r.lacking_keys}\n"
-               "Bad keys: {r.bad_keys}")
+      err_msg=f"Destination: {next_destination}{('/'+next_menu_item) if next_menu_item else ''}\n" \
+               "Missing keys: {r.lacking_keys}\n" \
+               "Bad keys: {r.bad_keys}"
         
       if user.destination_history[-1].r != fail:
         next_destination = user.destination_history[-1].destination
@@ -185,7 +184,7 @@ class Destinations:
               next_destination = config.main.destination # depends on get_config having been called with user as a parameter, so that the first lookup is user.main_destination
               next_menu_item = config.main.menu_item
               for x in user.destination_history[::-1]:
-                if next_destination = x.destination and next_menu_item = x.menu_item:
+                if next_destination == x.destination and next_menu_item == x.menu_item:
                   if x.r.status==fail:
                     next_destination = logout
                     next_menu_item = None
@@ -193,8 +192,8 @@ class Destinations:
                     next_destination = logout
                   break
             break
-      return RetVals(status=status, err_msg=err_msg, next_destination=next_destination, next_menu_item=menu_item)
+      return RetVals(status=status, err_msg=err_msg, next_destination=next_destination, next_menu_item=next_menu_item)
     
-    async def logout(user)
+    async def logout(user):
       user.writer.close()
       del global_data.users[user.handle.lower()]

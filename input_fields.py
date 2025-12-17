@@ -1,57 +1,55 @@
+# don't forget ctrl+z. i guess we can't do ctrl+shift+z?
+
+from asyncio.windows_events import NULL
 from common import *
 from input_output import *
 from config import get_config
+from definitions import *
 config = get_config()
 
 class InputFields: # todo: how will I detect mouse clicks in the middle of getting user input keys?
   def __init__(self, user):
     self.input_fields = []
     self.user = user
-  async def input_field(self, conf=None, field_height=None, field_length=None, content_length=None, fg=None, fg_br=None, bg=None, bg_br=None, fill=None, fill_fg_br=None, fill_fg=None, fill_bg=None, 
-                        fill_bg_br=None, outline=None, outline_double=None, outline_fg=None, outline_fg_br=None, outline_bg=None, outline_bg_br=None, insert_mode=None, content=""):
-    self.input_fields.append(await InputField(self, conf=conf, field_height=field_height, field_length=field_length, content_length=content_length, fg=fg, fg_br=fg_br, bg=bg, bg_br=bg_br, fill=fill, 
-                                              fill_fg=fill_fg, fill_fg_br=fill_fg_br, fill_bg=fill_bg, fill_bg_br=fill_bg_br, outline=outline, outline_double=outline_double,
-                                              outline_fg=outline_fg, outline_fg_br=outline_fg_br, outline_bg=outline_bg, outline_bg_br=outline_bg_br, insert_mode=insert_mode, content=content))
+  async def input_field(self, **kwargs):
+    self.input_fields.append(await InputField(parent=self, allow_edit=False, **kwargs))
   async def run():
     pass # todo
 
 class InputField:
-  async def __init__(self, parent=None, conf=None, field_height=None, field_length=None, content_length=None, fg=None, fg_br=None, bg=None, bg_br=None, fill=None, fill_fg_br=None, fill_fg=None, fill_bg=None, 
-                     fill_bg_br=None, outline=None, outline_double=None, outline_fg=None, outline_fg_br=None, outline_bg=None, outline_bg_br=None, insert_mode=None, content="", allow_edit=True)
+  async def __init__(self, parent=null, conf=null, field_height=null, field_length=null, field_length_from_end=null, field_height_from_end=null, content_length=null, fg=null, fg_br=null, bg=null, bg_br=null, fill=null, 
+                     fill_fg_br=null, fill_fg=null, fill_bg=null, fill_bg_br=null, outline=null, outline_double=null, outline_fg=null, outline_fg_br=null, outline_bg=null, outline_bg_br=null, insert_mode=null, 
+                     scroll_vert=null, scroll_horiz=null, content="", allow_edit=null):
     field_height = field_height or conf.field_height 
     assert field_height and field_length
     await ansi_color(self.user, fill_fg, fill_bg, fill_fg_br, fill_bg_br)
     await send(self.user, fill*content_length)
     self.col_offset = self.user.cur_col 
     self.row_offset = self.user.cur_row
-    self.outline = conf.outline if outline is None else outline
+    self.outline = conf.outline if outline is null else outline
     if self.outline:
       self.col_offset = self.col_offset+1
       self.row_offset = self.row_offset+1
     self.field_height = field_height
     self.field_length = field_length
+    self.field_length_from_end = conf.field_length_from_end if field_length_from_end is null else field_length_from_end
+    self.field_height_from_end = conf.field_height_from_end if field_height_from_end is null else field_height_from_end
     self.content_length = content_length or conf.content_length
     assert self.content_length
     self.parent=parent
-    self.fg=fg = conf.fg if fg is None else fg
-    self.bg=bg = conf.bg if fg is None else bg
-    if self.bg is None:
-      self.bg = conf.bg
-    self.fg_br=fg_br
-    if self.fg_br is None:
-      self.fg_br = conf.fg_br
-    self.bg_br=bg_br
-    if self.bg_br is None:
-      self.bg_br = conf.bg_br    
-    self.scroll_vert=scroll_vert
-    self.scroll_horiz=scroll_horiz
-    self.insert_mode=insert_mode
+    self.fg=fg = conf.fg if fg is null else fg
+    self.fg_br = conf.fg_br if fg_br is null else fg_br
+    self.bg=bg = conf.bg if bg is null else bg
+    self.bg_br = conf.bg_br if bg_br is null else bg_br
+    self.scroll_vert = conf.scroll_vert if scroll_vert is null else scroll_vert
+    self.scroll_horiz = conf.scroll_horiz if scroll_horiz is null else scroll_horiz
+    self.insert_mode = conf.insert_mode if insert_mode is null else insert_mode
     self.outline=outline
     self.content=content
     self.allow_edit = allow_edit
     if self.outline:
       await self.draw_outline()
-    if parent==None:
+    if parent==null:
       return await self.run()
   async def run(self):
     # makes the input field starting where the cursor currently is at.
@@ -265,7 +263,7 @@ class InputField:
           await send(user, bytes((conf.bg_chars.ord,) or (32,))*self.width)
           await ansi_move(user, conf.row, conf.col)
           await user.writer.drain()
-    self.pos_to_content_index = [[None*conf.width] for _ in range(conf.height)]
+    self.pos_to_content_index = [[null*conf.width] for _ in range(conf.height)]
     self.content_index_to_pos = [] # probably won't need this either.
     self.content_lines = ["" for _ in range(conf.height)] # todo: might not need this one.
     # we could keep an array of all word positions plus how many spaces and how many cr's are after each word 
@@ -275,7 +273,7 @@ class InputField:
     # hmm, you can have any combination of spaces and cr's after a word... so cr's should probably also be words. 
     # or extra spaces should. 
     self.words = []
-    self.dists_from_right = [None*conf.height]
+    self.dists_from_right = [null*conf.height]
   async def recompute_word_wrap(self): # uh oh, what happens when the user pastes something into the middle of the text?
                                        # it would have to recompute word wrap for every character!
                                        # we need some kind of input buffer for this

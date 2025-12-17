@@ -1,11 +1,11 @@
 ﻿default_config = "DirtyFork.yaml"
 
-from config import get_config
-config = get_config(path=sys.argv[1] if len(sys.argv)>1 else default_config, main=True)   # this has to run before any other DirtyFork module is loaded.
-
-import asyncio, sys
+import asyncio, sys, traceback
 
 import telnetlib3, serial
+
+from config import get_config
+config = get_config(path=sys.argv[1] if len(sys.argv)>1 else default_config, main=True)   # this has to run before any other DirtyFork module is loaded.
 
 from common import *
 from modules import *
@@ -40,13 +40,13 @@ async def user_loop(reader, writer): # todo: users will probably not be able to 
       next_destination = r.next_destination
       next_menu_item = r.next_menu_item
       if r.status==fail:
-        send(user, f"There was an error.\n"
+        await send(user, f"There was an error.\n"
                     "Destination: {r.destination}{('/'+r.menu_item) if r.menu_item else ''}\n"
                     "Error message: r.err_msg)")
         user.destination_history.append(r)
         continue
       user.destination_history.append(r)
-      r = do_destination(user, r.next_destination, next_menu_item)
+      r = await do_destination(user, r.next_destination, next_menu_item)
       if r.status==fail:
         send(user, f"There was an error.\n"
                     "Destination: {r.destination}{('/'+r.menu_item) if r.menu_item else ''}\n"
@@ -60,9 +60,9 @@ async def user_loop(reader, writer): # todo: users will probably not be able to 
       r.status=fail
       r.errmsg=="There was an error:" + traceback.format_exc() 
       if "debug" in user.keys:
-        send(user, "There was an error:" + traceback.format_exc())
+        await send(user, "There was an error:" + traceback.format_exc())
       else:
-        send(user, "There was an error.")
+        await send(user, "There was an error.")
     user.destination_history.append(RetVals(destination=next_destination, menu_item=next_menu_item, status=r.status, err_msg=r.err_msg))
 
 async def main():

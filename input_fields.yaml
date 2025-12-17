@@ -39,6 +39,7 @@ input_command:
       br_bg: false
   field_length: null
   field_length_from_end: 0 # number of characters short of reaching the end of the screen. if this is defined, field_length is ignored.
+  field_height_from_end: null
   content_length: 300
 
 input_box:
