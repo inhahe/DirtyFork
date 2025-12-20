@@ -152,18 +152,6 @@ class Destinations:
       await send(user, cr+lf*2+r.err_msg)
     return RetVals(status=fail, err_msg="max failed attempts", next_destination=Destinations.logout, next_menu_item=None)
 
-  async def do_destination(user, destination, menu_item=None): 
-      # todo: this should return a function to talk to destination too, even if it's set to None, 
-      # or we should change RetVals so that getting a nonexisting attribute returns something False=equivalent,
-      # and so does getting a nonexisting attribute of a nonexisting attribute, etc.
-    if destination.type == "func":
-      r = await getattr(Destinations, destination)(user, destination, menu_item)  
-    elif destination.type == "menu":                                               
-      r = await menu.do_menu(user, destination, menu_item, r) # how will the menu know to render itself instead of going into an option? i guess if destination==menu_item?
-    elif destination.type == "module":
-      r = await modules[destination].run(user, destination, menu_item)
-    return r
-
   async def user_director(user, next_destination, next_menu_item=None): # todo: first we have to login
     result = check_keys(user, next_destination, next_menu_item)
     if not result.allowed:
@@ -197,3 +185,16 @@ class Destinations:
     async def logout(user):
       user.writer.close()
       del global_data.users[user.handle.lower()]
+
+async def do_destination(user, destination, menu_item=None): 
+    # todo: this should return a function to talk to destination too, even if it's set to None, 
+    # or we should change RetVals so that getting a nonexisting attribute returns something False=equivalent,
+    # and so does getting a nonexisting attribute of a nonexisting attribute, etc.
+  if destination.type == "func":
+    r = await getattr(Destinations, destination)(user, destination, menu_item)  
+  elif destination.type == "menu":                                               
+    r = await menu.do_menu(user, destination, menu_item, r) # how will the menu know to render itself instead of going into an option? i guess if destination==menu_item?
+  elif destination.type == "module":
+    r = await modules[destination].run(user, destination, menu_item)
+  return r
+

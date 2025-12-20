@@ -23,8 +23,9 @@ class InputField:
     field_height = field_height or conf.field_height 
     await ansi_color(self.user, fill_fg, fill_bg, fill_fg_br, fill_bg_br)
     await send(self.user, fill*content_length)
-    self.col_offset = self.user.cur_col 
     self.row_offset = self.user.cur_row
+    self.col_offset = self.user.cur_col 
+    self.row = self.col = 0
     self.outline = conf.outline if outline is null else outline
     if self.outline:
       self.col_offset = self.col_offset+1
@@ -45,7 +46,7 @@ class InputField:
     self.bg = colors[conf.content.bg] if bg is null else bg
     self.bg_br = conf.content.bg_br if bg_br is null else bg_br
     self.fill = conf.blank.char if fill is null else conf.blank.char
-    self.fill = self.fill or " " # not using 'if ... is null' because character zero doesn't show anyway
+    self.fill = self.fill or " " # not using 'if ... is null' because character 0 doesn't show anyway
     if type(self.fill) is int: 
       self.fill = chr(self.fill)
     self.fill_fg = colors[conf.content.blank.fg] if fill_fg is null else fill_fg
