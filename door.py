@@ -8,6 +8,9 @@
 
 # if we need to use multiprocessing, the best way of sharing information is to use redis
 
+# todo: user could hack the BBS by making their handle something that resolves to something sensitive and then going
+# into a door that passes the handle as a parameter. we need to provide a get function that only uses a specified 
+# dictionary for resolving.
 
 from platform import processor # why do I have this?
 import subprocess, multiprocessing, tempfile, os, shutil

@@ -1,5 +1,7 @@
 import re, asyncio
 
+from definitions import *
+
 cr = "\x0d" # are these right?
 tab = "\x09"
 beep = "\x07"
@@ -117,13 +119,6 @@ keyboard_codes = {
 # "\x01": "ctrl_a" # move to start of line
 # "\x05": "ctrl_e" # move to end of line
 
-class Key(str):
-  def __new__(cls, content, **kwargs): 
-    instance = super().__new__(cls, content)
-    for k, v in kwargs.items():
-      setattr(instance, k, v)
-    return instance
-        
 partial_R = re.compile("\x1b(?:\\[(?:[1-9](?:\\d{0,2}(?:;(?:[1-9](?:\\d(0,2)(?:R)))))")
 R = re.compile("\x1b\\[[(1-9\\d{0,3});([1-9]\\d{0,2})R")
 
@@ -170,11 +165,11 @@ def check(k):
     return r
   r = R.fullmatch(k)
   if r:
-    return Key("position", row=int(r.group(1)), col=int(r.group(2)))
+    return Estr("position", row=int(r.group(1)), col=int(r.group(2)))
   r = M.fullmatch(k)
   if r:
     Cb = r.group(0)[3]-32
-    return Key("click", button=["left", "middle", "right", "release"][Cb & 3], 
+    return Estr("click", button=["left", "middle", "right", "release"][Cb & 3], 
                shift=(Cb & 4), alt=(Cb & 8), ctrl=(Cb & 16), wheel=[None, "up", "down"][Cb & (64+128)],
                row=ord(r.group(2)-32), col=ord(r.group(3)-32))
   

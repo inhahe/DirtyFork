@@ -10,10 +10,28 @@ success, fail, new_user = 1, 2, 3
 
 cr, lf = "\x0d", "\x0a"
 
+invalid = -1
+
 class RetVals:
   def __init__(self, **kwargs):
     for k, v in kwargs.items():
       self.k = v
+
+Eobj = RetVals
+
+class Estr(str):
+  def __new__(cls, content, **kwargs): 
+    instance = super().__new__(cls, content)
+    for k, v in kwargs.items():
+      setattr(instance, k, v)
+    return instance
+
+class Eint(int):
+  def __new__(cls, content, **kwargs): 
+    instance = super().__new__(cls, content)
+    for k, v in kwargs.items():
+      setattr(instance, k, v)
+    return instance
 
 class Disconnected(Exception):
   def __init__(self, user):

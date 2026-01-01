@@ -1,3 +1,4 @@
+from ast import Try
 import asyncio, sqlite3, collections, re
 from importlib import import_module
 from collections import deque
@@ -55,6 +56,12 @@ email_re = re.compile(b'''(?:[a-z0-9!#$%&'*+\x2f=?^_`\x7b-\x7d~\x2d]+(?:\.[a-z0-
 # what the hell is this? to : does it work?
 handle_re = re.compile("[A-Za-z0-9_]") # i won't allow spaces because that could mess up door games that require a handle in the command line. should I allow any special characters?
                                        # todo: on second thought, handles with spaces is more fun. What should I do abotu the door games?
+async def read_cursor_position(user):
+  while True:
+    key = get_input_key(user)
+    if key=="position":
+      return key.row, key.col
+
 def check_keys(user, destination, menu_item=None):
   r = RetVals()
   item = menu_item or destination # if no menu_item specified, check keys of destination. destination could be a menu or something else.
@@ -67,35 +74,17 @@ def show_screen(user, path):
   # accept .bin format, 80x25, 1 byte char followed by 1 byte color. clear screen first, skip over spaces with ansi_move
   # we'll need unicode translations for every high ascii char for putty and other utf-8 clients! where do we find that!? 
   # maybe claude.ai would do a good search. 
-  
-async def read_cursor_position(user, timeout=2.0): # if this times out, that's going to suck...we *need* the cursor position. todo: we could ask the user if their screen size is 25x80 or what if it times out.
-    """Read terminal response for cursor position query"""
-    # todo: the user might be pressing keys while this is taking place, so we should scan the input for \x1b etc. 
-    # this code almost accounts for that, the only problem is the user might have hit 'R' 
-    buffer = b''
-    try:
-      while True:
-        data = await asyncio.wait_for(user.reader.read(1), timeout=timeout)
-        if not data:
-          break
-        buffer += data
-        # Check if we have complete ANSI response: ESC[row;colR
-        if b'R' in buffer:
-          match = line_pos_re.search(buffer)
-          if match:
-            rows = int(match.group(1))
-            cols = int(match.group(2))
-            return rows, cols, buffer
-          return None, None, buffer
-    except asyncio.TimeoutError:
-        return None, None, buffer
-
+ 
 async def get_screen_size(user):
-   # user.writer.write(Detecting screen size...\x1b[s\x1b[999;999H\x1b[6n\x1b[u") 
-   user.writer.write("\x1b[s\x1b[999;999H\x1b[6n\x1b[u") 
-   #save cursor position, move cursor to 999,999, send command to retrieve cursor position, restore cursor position
+   user.writer.write("Detecting screen size...") 
+   user.writer.write("\x1b[999;999H\x1b[6n") 
+   user.writer.drain()
    await user.writer.drain()   
-   return await read_cursor_position(user)
+   try: 
+     return await asyncio.wait_for(read_cursor_position(user), timeout=3.0)
+   except asyncio.TimeoutError:
+     user.writer.write("We couldn't detect your screen size. Assuming 25x80.") # todo: give user the option to select/input screen size
+     return 25, 80
 
 class Destinations:
   async def login(user, r):
@@ -127,7 +116,7 @@ class Destinations:
         return RetVals(status=new_user, next_destination=Destinations.register)                                                           #       used in an input page?
       user_in_db = r.user_in_db
       await send(user, lf*2+"Enter your password.")
-      password = await InputField(user, *read_cursor_position(user), user.screen_width-1) # todo: use nowrap as explained in another comment so i can take out that -1
+      password = await InputField(user, config.input_fields.input_field, length=50, content_length=49) # todo: use nowrap as explained in another comment so i can take out that -1
       r = check_password(r.user_in_db, password)
       if r.status==success:
         user.handle = user_in_db["handle"] # correct capitalization here

@@ -2,6 +2,7 @@ from itertools import batched
 
 from input_output import *
 from definitions import *
+from input_fields import *
 
 def similarity_checker(str1, str2): # should this be case-sensitive or case-insensitive?
   r = 0
@@ -14,9 +15,9 @@ def similarity_checker(str1, str2): # should this be case-sensitive or case-inse
       break
   else:
     status = fail
-    if len(a) == len(b):
+    if len(str1) == len(str2):
       err_msg = "left and right are equal"
-    elif len(a) < len(b):
+    elif len(str1) < len(str2):
       err_msg = "right contains left"
     else:
       err_msg = "left contains right"
@@ -78,9 +79,9 @@ async def do_menu(user, menu): # todo: option to not show an option if your keys
     for bin in bins:
       max_len = max(map(len, bins))
       if max_len+cur_left > user.screen_width:
-        ansi_move(user, user.screen_height, 1)
-        send(user, "Enter an option or press <enter> for the next page: ")
-        r = InputField(user, height=1, max_length=300, input_length=user.screen_height-user.cur_col) # todo: make InputField use InputField.yaml values
+        await ansi_move(user, user.screen_height, 1)
+        await send(user, "Enter an option or press <enter> for the next page: ")
+        r = InputField.create(user, height=1, max_length=300, input_length=user.screen_height-user.cur_col) # todo: make InputField use InputField.yaml values
         if r.strip()=="":
           cur_left = 1
         else:
@@ -98,7 +99,7 @@ async def do_menu(user, menu): # todo: option to not show an option if your keys
             await ansi_color(user, **user.menus.colors.noaccess)
             await send(user, bin)
         cur_left += max_len+3 # todo: is 3 a good value?
-        send(user, "Enter an option: ")
-        r = InputField(user, **config.InputFields.input_command) 
+        await send(user, "Enter an option: ")
+        r = InputField.create(user, **config.InputFields.input_command)
         ansi_wrap(user, True)
         return process_option(r, menu)

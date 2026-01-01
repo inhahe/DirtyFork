@@ -1,3 +1,5 @@
+# todo: change fg, bg, fg_br, bg_br to fg, fg_br, bg, bg_br
+
 import time
 
 from definitions import *
