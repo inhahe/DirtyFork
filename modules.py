@@ -1,9 +1,16 @@
+from importlib import import_module
+
 from config import get_config
 
 config = get_config()
 
-# i really want a better place to list the modules, because they need to be loaded when the bbs starts up. but i don't see a better way without being redundant.
-modules = {} # todo: would be better if we could do all this with one list comprehension somehow
+modules = {}
 
-for module in [destination for destination in config.destinations if destination.type == "module"]:
-  modules[module] = import_module(module)
+if config.destinations:
+  for name in config.destinations.keys():
+    dest = config.destinations[name]
+    if dest and dest.type == "module":
+      try:
+        modules[name] = import_module(name)
+      except (ImportError, ModuleNotFoundError):
+        pass  # Module not yet implemented

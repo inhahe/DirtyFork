@@ -7,15 +7,15 @@ colors = {"black": black, "red": red, "green": green, "brown": brown, "blue": bl
 SyncTERM, PuTTy = 1, 2
 
 success, fail, new_user = 1, 2, 3
-
 cr, lf = "\x0d", "\x0a"
-
-invalid = -1
+after, invalid, margin_cell = -1, -2, -3
+submit = -1
+top, before_cur, cur = 1, 2, 3
 
 class RetVals:
   def __init__(self, **kwargs):
     for k, v in kwargs.items():
-      self.k = v
+      setattr(self, k, v)
 
 Eobj = RetVals
 
@@ -34,11 +34,11 @@ class Eint(int):
     return instance
 
 class Disconnected(Exception):
-  def __init__(self, user):
+  def __init__(self, user=None):
     self.user = user
 
 class Char: 
-  def __init__(self, fg=7, bg=0, fg_br=False, bg_br=False, char=" "):
+  def __init__(self, char=" ", fg=7, fg_br=False, bg=0, bg_br=False):
     self.fg = fg
     self.bg = bg
     self.fg_br = fg_br
@@ -48,8 +48,8 @@ class Char:
 class Null:
     __slots__ = ()
 
-    def __init__(self, exists=False):
-        self.exists = exists
+    def __init__(self):
+        pass
 
     def __getattr__(self, name):
         return self
@@ -67,6 +67,15 @@ class Null:
         return "null"
 
     def __iter__(self):
-        return range(0)
+        return iter(())
+
+    def __contains__(self, item):
+        return False
+
+    def __len__(self):
+        return 0
+
+    def __call__(self, *args, **kwargs):
+        return self
 
 null = Null()

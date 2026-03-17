@@ -57,6 +57,25 @@ class Config(defaultdict):
     def __delattr__(self, name):
         del self[name]
 
+    def __iter__(self):
+        """Iterate over values instead of keys to allow iterating over config objects."""
+        for key in super().__iter__():
+            yield self[key]
+
+    def keys(self):
+        """Return an iterator over the keys."""
+        return super().__iter__()
+
+    def values(self):
+        """Return an iterator over the values (Config objects)."""
+        for key in super().__iter__():
+            yield self[key]
+
+    def items(self):
+        """Return an iterator over (key, value) pairs."""
+        for key in super().__iter__():
+            yield (key, self[key])
+
     # -----------------------------
     # Lazy resolution
     # -----------------------------
@@ -96,7 +115,7 @@ class Config(defaultdict):
             return Config(vars(value), _root=self._root)
 
         if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
-            return type(value)(self._wrap(v) for v in value)
+            return [self._wrap(v) for v in value]
 
         return value  
       
@@ -106,12 +125,18 @@ class Config(defaultdict):
 
         value = os.path.expandvars(value)
 
+        if '{' not in value:
+            return value
+
         formatter = _DotFormatter(
             strict=self._strict,
             resolving=self._root._resolving,
         )
 
-        return formatter.format(value, self)    
+        try:
+            return formatter.format(value, self)
+        except (ValueError, KeyError, IndexError):
+            return value
 
     def seal(self):
         self._sealed = True
@@ -211,9 +236,10 @@ class ConfigView(Mapping):
             layer if isinstance(layer, (Config, ConfigView)) else Config(layer)
             for layer in layers
         ]
+        self._resolving = set()
 
         # Root for interpolation & strictness
-        self._root = _root or self
+        self._root = _root if _root is not None else self
         self._strict = self._layers[0]._strict
 
         self._write_to = write_to
@@ -250,15 +276,47 @@ class ConfigView(Mapping):
         self._write_to[key] = value
 
     def __iter__(self):
+        """Iterate over values instead of keys to allow iterating over config objects."""
         seen = set()
         for layer in self._layers:
-            for k in layer:
+            for k in dict.keys(layer) if isinstance(layer, Config) else layer.keys():
+                if k not in seen:
+                    seen.add(k)
+                    yield self[k]
+
+    def keys(self):
+        """Return an iterator over the keys."""
+        seen = set()
+        for layer in self._layers:
+            for k in dict.keys(layer) if isinstance(layer, Config) else layer.keys():
                 if k not in seen:
                     seen.add(k)
                     yield k
 
+    def values(self):
+        """Return an iterator over the values (Config objects)."""
+        seen = set()
+        for layer in self._layers:
+            for k in dict.keys(layer) if isinstance(layer, Config) else layer.keys():
+                if k not in seen:
+                    seen.add(k)
+                    yield self[k]
+
+    def items(self):
+        """Return an iterator over (key, value) pairs."""
+        seen = set()
+        for layer in self._layers:
+            for k in dict.keys(layer) if isinstance(layer, Config) else layer.keys():
+                if k not in seen:
+                    seen.add(k)
+                    yield (k, self[k])
+
     def __len__(self):
-        return len(set().union(*self._layers))
+        seen = set()
+        for layer in self._layers:
+            for k in dict.keys(layer) if isinstance(layer, Config) else layer.keys():
+                seen.add(k)
+        return len(seen)
 
     def __getattr__(self, name):
         try:
@@ -285,9 +343,9 @@ class ConfigView(Mapping):
 
         try:
             return formatter.format(value, self._root)
-        except KeyError:
+        except (KeyError, ValueError, IndexError):
             if self._root._strict:
-                raise
+                return value
             return value
 
     def freeze(self):
@@ -325,12 +383,48 @@ class ConfigView(Mapping):
 
 configs = {}
 main_path = None
+def _apply_option_defaults(cfg):
+  """Walk the config tree and merge option_defaults into each child of options.
+  Anywhere we find a mapping with both 'option_defaults' and 'options' keys,
+  each option gets the defaults merged under it (option's own values take priority)."""
+  if not isinstance(cfg, (Config, dict)):
+    return
+  # Check if this level has option_defaults + options
+  has_defaults = 'option_defaults' in cfg and isinstance(cfg.get('option_defaults', None), (Config, dict, Mapping))
+  has_options = 'options' in cfg and isinstance(cfg.get('options', None), (Config, dict, Mapping))
+  if has_defaults and has_options:
+    defaults = cfg['option_defaults']
+    options = cfg['options']
+    for key in list(dict.keys(options) if isinstance(options, Config) else options.keys()):
+      opt = options[key]
+      if isinstance(opt, (Config, dict, Mapping)):
+        # Merge defaults under the option (option values take priority)
+        for dk in (dict.keys(defaults) if isinstance(defaults, Config) else defaults.keys()):
+          if dk not in opt or (isinstance(opt, Config) and super(defaultdict, opt).__getitem__(dk) is None):
+            # Key not explicitly set in the option — inherit from defaults
+            if isinstance(opt, Config):
+              opt[dk] = opt._wrap(defaults[dk])
+            else:
+              opt[dk] = defaults[dk]
+      elif opt is None or (hasattr(opt, '__bool__') and not opt):
+        # Option is null/None — replace with a copy of defaults
+        if isinstance(options, Config):
+          options[key] = Config(defaults, _root=cfg._root if isinstance(cfg, Config) else None)
+  # Recurse into children
+  items = dict.items(cfg) if isinstance(cfg, Config) else cfg.items()
+  for k, v in items:
+    if isinstance(v, (Config, dict, Mapping)):
+      _apply_option_defaults(v)
+
+
 def get_config(*dicts, path=None, main=False): # because of this, no module that loads the config can be run on its own. the main BBS is meant to be the only one to be run on its own.
   global main_path
-  if main and path: 
-    main_path = path    
+  if main and path:
+    main_path = path
   if not path:
     path = main_path
   if not path in configs:
-    configs[path] = Config(yaml.safe_load(open(path, "r").read()))
+    cfg = Config(yaml.safe_load(open(path, "r").read()))
+    _apply_option_defaults(cfg)
+    configs[path] = cfg
   return ConfigView(*dicts, configs[path])

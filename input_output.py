@@ -11,51 +11,82 @@ def emu_scroll(user): # todo: add scroll region paramaters?
 
 def emu_clear(user):
   for x in range(len(user.screen)):
-    user.screen[x] = [[Char() for col in range(user.screen_width)] for row in range(user.screen_height)]
+    user.screen[x] = [Char() for col in range(user.screen_width)]
   user.cur_col = user.cur_row = 1
 
-async def send(user, message, word_wrap=False, drain=False): # doesn't emulate ansi for the time being, since ansi should be handled via the convenience functions.
+async def send(user, message, word_wrap=False, drain=False):
+  if message or drain:
+    await ansi_move_2(user)
+    await ansi_color_2(user)
   if message:
-    ansi_move_2(user)
-    ansi_color_2(user)
-  user.writer.write(message)                           # todo: support word_wrap.  should we word wrap when the first word of the last send adds to the last word of the previous send? 
-                                                             # that would be complicated, and probably not necessary.
-  if drain:                                                  # for word wrap, be sure to include extra spaces when there is more than one space between words.
-    await user.writer.drain()                                # for word wrap, might be easiest to insert crlf's into the message and then call a send2 function on each character.
-  for char in message:                                       # todo: if char=="\x07" (beep), some terminals may not print the char.. SyncTERM does for some reason. if they differ, best to send esc[6u and esc[6s
-    if char=="\x00":                                     # even that won't help us if the char is at max_height, max_width, though, because then the screen may or may not scroll.
-      pass                                                        # in that case we could just force it to scroll (if nowrap is off) so we know what it's doing.
-    elif char=="\x08": 
-      user.cur_col = max(user.cur_col-1, 1)     # update: apparently syncterm prints almost all of the ctrl characters, while putty prints none of them.
-    elif char=="\x09": 
-      user.cur_col = (user.cur_col//8)*8+8  # update: now syncterm doesn't print the beep character.
+    user.writer.write(message)
+  if drain:
+    await user.writer.drain()
+  for char in message:
+    if char=="\x00":
+      pass
+    elif char=="\x08":
+      user.cur_col = max(user.cur_col-1, 1)
+    elif char=="\x09":
+      user.cur_col = (user.cur_col//8)*8+8
     elif char=="\x0a":
-      if user.cur_col < user.screen_height:
-        user.cur_col+=1
+      if user.cur_row < user.screen_height:
+        user.cur_row += 1
       else:
         emu_scroll(user)
     elif char=="\x0c":
       emu_clear(user)
       user.cur_col = user.cur_row = 1
-    elif char=="\x0d": 
+    elif char=="\x0d":
       user.cur_col = 1
     else:
       if user.terminal == PuTTy and ord(char)<32:
         return
-      user.screen[user.cur_row][user.cur_col] = Char(char, fg=user.cur_fg, bg=user.cur_bg, fg_br=user.cur_fg_br, bg_br=user.cur_bg_br)
+      if user.screen and 0 < user.cur_row <= len(user.screen) and 0 < user.cur_col <= len(user.screen[0]):
+        user.screen[user.cur_row-1][user.cur_col-1] = Char(char, fg=user.cur_fg, fg_br=user.cur_fg_br, bg=user.cur_bg, bg_br=user.cur_bg_br)
       if not user.cur_wrap:
         user.cur_col = min(user.cur_col+1, user.screen_width)
       else:
         if user.cur_col==user.screen_width:
           if user.cur_wrap:
             if user.cur_row==user.screen_height:
-              user.writer.write(cr+lf) # see quirks.txt to see why we do this
+              user.writer.write(cr+lf)
               emu_scroll(user)
             else:
               user.cur_row += 1
             user.cur_col = 1
         else:
-          user.cur_col += 1  
+          user.cur_col += 1
+  # Keep new_row/new_col in sync so the next send() doesn't reposition backwards
+  user.new_row = user.cur_row
+  user.new_col = user.cur_col
+
+async def send_wrapped(user, text, drain=False):
+  """Send text with word wrapping to the user's screen width.
+  Wraps at word boundaries, respecting the current cursor column.
+  Sends cr+lf for line breaks."""
+  width = user.screen_width
+  words = text.split(' ')
+  col = user.cur_col  # 1-based current column
+  first = True
+  for word in words:
+    word_len = len(word)
+    if first:
+      # First word — just send it
+      await send(user, word, drain=False)
+      col += word_len
+      first = False
+    elif col + 1 + word_len <= width:
+      # Fits on this line with a space
+      await send(user, ' ' + word, drain=False)
+      col += 1 + word_len
+    else:
+      # Wrap to next line
+      await send(user, cr + lf + word, drain=False)
+      col = 1 + word_len
+  if drain:
+    await user.writer.drain()
+
 
 def ansi_wrap(user, wrap=True): 
   if user.cur_wrap != wrap:
@@ -67,9 +98,32 @@ def ansi_wrap(user, wrap=True):
 
 # todo: have an ansi_leftright and an ansi_updown which can take negative numbers and call the appropriate function, just for convenience?
 
-async def ansi_left(user, val=1, drain=False): 
+async def ansi_move_absolute(user, row, col, drain=False):
+  """Move cursor using absolute positioning. Always sends ESC[row;colH
+  regardless of current tracked state, and syncs all tracking."""
+  user.writer.write(f"\x1b[{row};{col}H")
+  user.cur_row = user.new_row = row
+  user.cur_col = user.new_col = col
+  if drain:
+    await user.writer.drain()
+
+async def ansi_hide_cursor(user, drain=False):
+  if getattr(user, 'cur_show_cursor', True):
+    user.cur_show_cursor = False
+    user.writer.write("\x1b[?25l")
+    if drain:
+      await user.writer.drain()
+
+async def ansi_show_cursor(user, drain=False):
+  if not getattr(user, 'cur_show_cursor', True):
+    user.cur_show_cursor = True
+    user.writer.write("\x1b[?25h")
+    if drain:
+      await user.writer.drain()
+
+async def ansi_left(user, val=1, drain=False):
   assert val >= 0
-  new_col = max(user.new_col-val, 1)
+  user.new_col = max(user.new_col-val, 1)
   if drain:
     await ansi_move_2(user, drain)
   
@@ -83,7 +137,7 @@ async def ansi_up(user, val=1, drain=False):
   assert val >= 0
   user.new_row = max(user.new_row-val, 1)
   if drain:
-    ansi_move_2(user, drain)
+    await ansi_move_2(user, drain)
 
 async def ansi_down(user, val=1, drain=False): 
   assert val >= 0
@@ -94,51 +148,55 @@ async def ansi_down(user, val=1, drain=False):
 async def ansi_move(user, row=None, col=None, drain=False): # we have the drain option because if we're moving the cursor in(to) an input field, the user will want to see where he's about to type.
   user.new_row = row if row else user.new_row
   user.new_col = col if col else user.new_col
-  assert user.new_row > 0 and user.new_col > 0                      # should we raise an error if row or col exceeds the boundaries of the screen?
+  user.new_row = max(1, min(user.new_row, user.screen_height or 25))
+  user.new_col = max(1, min(user.new_col, user.screen_width or 80))
   if drain:
     await ansi_move_2(user, drain)
 
 async def ansi_move_2(user, drain=False):
-  if user.cur_row != user.new_row and user.cur_col != user.new_col: 
-    user.cur_row = min(user.new_row, user.screen_height)     # should we raise an error if val is too far up, down, left or right instead of just max/mining it? to catch potential bugs?
-    user.cur_col = min(user.new_col, user.screen_width) 
+  if user.cur_row != user.new_row and user.cur_col != user.new_col:
+    user.cur_row = min(user.new_row, user.screen_height)
+    user.cur_col = min(user.new_col, user.screen_width)
     user.writer.write(f"\x1b[{user.cur_row};{user.cur_col}H")
-  elif user.cur_row != user.new_row and user.cur_col == user.new_col: 
+  elif user.cur_row == user.new_row and user.cur_col != user.new_col:
     if user.new_col > user.cur_col: # go right
-      val = user.new_col-user.cur_col
-      if val==1 or user.cur_col==user.screen_width-1:                                 
-        user.writer.write("\x1b[C")         
-      else:                                                 
+      val = user.new_col - user.cur_col
+      if val == 1:
+        user.writer.write("\x1b[C")
+      else:
         user.writer.write(f"\x1b[{val}C")
     else: # go left
       val = user.cur_col - user.new_col
       if val == 1:
-        user.writer.write(cr)
-      elif val<=3 or user.cur_col<=4:
-        user.writer.write(back*min(val, user.user_col-1)) # if we're moving 3 or fewer to the left, send \x08's instead
+        user.writer.write(back)
+      elif val <= 3 or user.cur_col <= 4:
+        user.writer.write(back * min(val, user.cur_col - 1))
       else:
         user.writer.write(f"\x1b[{val}D")
-  elif user.cur_row == user.new_row and user.cur_col != user.new_col:
-    if user.new_row > user.cur_row: # go up
+  elif user.cur_row != user.new_row and user.cur_col == user.new_col:
+    if user.new_row < user.cur_row: # go up
       val = user.cur_row - user.new_row
-      if val==1 or user.cur_row==2:
+      if val == 1:
         user.writer.write("\x1b[A")
       else:
         user.writer.write(f"\x1b[{val}A")
-    else:
-      val = user.new_row - user.cur_row # go down
-      if val<=3:
-        user.writer.write(lf*min(val, user.cur_row - user.screen_height)) # check: will this shortcut mess with our handling of ansi scroll regions?
+    else: # go down
+      val = user.new_row - user.cur_row
+      if val <= 3:
+        user.writer.write(lf * min(val, user.screen_height - user.cur_row))
       else:
         user.writer.write(f"\x1b[{val}B")
-  else: # user.cur_row == new_row and user.cur_col == user.new_col, so values haven't changed, don't drain
+  else: # no change
     return
   user.cur_row = user.new_row
-  user.cur_col = user.new_col  
+  user.cur_col = user.new_col
   if drain:
     await user.writer.drain()
 
-def ansi_color(user, fg=None, bg=None, fg_br=None, bg_br=None, drain=False): # note that any color property not passed here will remain as it currently is rather than resetting to default.
+def ansi_color(user, fg=None, bg=None, fg_br=None, bg_br=None, drain=False):
+  """Set pending color state. Colors are sent on the next send() call.
+  Call with no args to reset to default (white on black).
+  drain=True writes the color codes to the buffer immediately (via ansi_color_2)."""
   if fg is None and bg is None and fg_br is None and bg_br is None:
     user.new_fg = white
     user.new_bg = black
@@ -146,20 +204,25 @@ def ansi_color(user, fg=None, bg=None, fg_br=None, bg_br=None, drain=False): # n
     user.new_bg_br = False
   else:
     user.new_fg = user.cur_fg if fg is None else fg
-    user.new_bg = user.cur_bg if fg is None else bg
+    user.new_bg = user.cur_bg if bg is None else bg
     user.new_fg_br = user.cur_fg_br if fg_br is None else fg_br
     user.new_bg_br = user.cur_bg_br if bg_br is None else bg_br
   if drain:
-    ansi_color_2(user, drain=True)
-  
-async def ansi_color_2(user, drain=False):
+    _ansi_color_write(user)
+
+def _ansi_color_write(user):
+  """Write color escape codes to the buffer (synchronous). Called by ansi_color(drain=True) and ansi_color_2."""
   # note: syncterm blinks instead of bright background
-  codes = []                                                                            
+  codes = []
   if (user.new_fg == white and user.new_bg == black and user.new_fg_br == False and user.new_bg_br == False) and (user.cur_fg != white or user.cur_bg != black or user.cur_fg_br != False or user.cur_bg_br != False):
-    user.writer.write("\x1b[m") 
+    user.writer.write("\x1b[m")
+    user.cur_fg = white
+    user.cur_bg = black
+    user.cur_fg_br = False
+    user.cur_bg_br = False
   else:
     if user.new_fg_br != user.cur_fg_br:
-      if user.new_fg:
+      if user.new_fg_br:
         codes.append("1")
       else:
         codes.append("22")
@@ -171,22 +234,57 @@ async def ansi_color_2(user, drain=False):
       else:
         codes.append("25")
       user.cur_bg_br = user.new_bg_br
-    if user.new_fg != user.cur_fg:  
+    if user.new_fg != user.cur_fg:
       codes.append(str(user.new_fg+30))
       user.cur_fg = user.new_fg
     if user.new_bg != user.cur_bg:
       codes.append(str(user.new_bg+40))
       user.cur_bg = user.new_bg
-    if codes: 
-      user.writer.write(f"\x1b[{+';'.join(codes)}m") 
+    if codes:
+      user.writer.write(f"\x1b[{';'.join(codes)}m")
+
+async def ansi_color_2(user, drain=False):
+  _ansi_color_write(user)
   if drain:
     await user.writer.drain()
 
 async def ansi_cls(user, fg=None, bg=None, fg_br=None, bg_br=None):
-  ansi_color(user, fg, bg, fg_br, bg_br)
-  user.writer.write("\x0c")
+  ansi_color(user, fg=fg, fg_br=fg_br, bg=bg, bg_br=bg_br, drain=True)
+  user.writer.write("\x1b[2J\x1b[H")
   emu_clear(user)
+  user.cur_row = user.new_row = 1
+  user.cur_col = user.new_col = 1
+  await user.writer.drain()
 
+async def ansi_del_to_end(user, drain=False):
+  user.writer.write("\x1b[J")
+  user.screen[user.cur_row] = user.screen[user.cur_row][:user.cur_col]
+  if drain:
+    await user.writer.drain()
+
+async def ansi_set_region(user, top_row=None, bottom_row=None, drain=False):
+  if user.scroll_region_top != top_row or user.scroll_region_bottom != bottom_row:
+    if bottom_row is None:
+      if top_row is None:
+        user.writer.write("\x1b[r")
+      else:
+        user.writer.write(f"\x1b{top_row}r")
+    else:
+      user.writer.write(f"\x1b[{top_row};{bottom_row}r")
+    user.scroll_region_top = top_row
+    user.scroll_region_bottom = bottom_row
+    if drain:
+      await user.writer.drain()
+
+async def ansi_set_region_strict(user, value=True, drain=False):
+  if value != user.scroll_region_strict:
+    user.scroll_region_strict = value
+    if value:
+      user.writer.write(f"\x1b[?6h")
+    else:
+      user.writer.write(f"\x1b[?7h")
+    if drain:
+      await user.writer.drain()
 
 async def _get_input_key(user):
   while True:
@@ -198,7 +296,10 @@ async def _get_input_key(user):
         user.cur_input_code = ""
         if code == "\x1b":
           return "esc"
-        continue  # incomplete NUL sequence, try again
+        if code == "\x1b[M":
+          # Timed out waiting for mouse bytes — it's actually ctrl_pgup
+          return ctrl_pgup
+        continue  # incomplete sequence, try again
     else:
       char = await user.reader.read(1)
     if not char:
@@ -209,11 +310,11 @@ async def _get_input_key(user):
     if ord(char) < 32:
       user.cur_input_code = ""
     combined = user.cur_input_code + char
-    r = keyboard_codes.check(combined):
+    r = check(combined)
     if r:
       user.cur_input_code = ""
       return r
-    if keyboard_codes.check_partial(combined):
+    if check_partial(combined):
       user.cur_input_code = combined
     else:
       user.cur_input_code = ""

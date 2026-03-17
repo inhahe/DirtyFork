@@ -1,0 +1,11 @@
+
+ 1. Enter on an empty quoted line (level > 0) → exit that level (decrease by 1)
+  2. Enter on a non-empty quoted line → new line at the same level
+  3. Backspace at the start of a quoted line (right after margin prefix) → reduce that line's level by 1
+  4. Backspace at level 0 at start of line → normal join with previous line
+  5. Typing inside a quoted block → characters inherit the current line's level
+  6. Word wrap → continuation lines inherit the same margin prefix
+
+
+- margins are part of the editor metadata, not inferred ad hoc from literal ">" or "|" characters
+- besides margin, editor behaves like typical notepad, etc. apps
