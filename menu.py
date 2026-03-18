@@ -134,6 +134,8 @@ async def _show_text_error(user, err, can_inline, prompt_row, prompt_col, typed_
   First error: overwrites the prompt row with the error and reprints the prompt one row lower.
   Subsequent errors: updates the error row in place.
   Returns (new_prompt_row, new_prompt_col, error_row)."""
+  if can_inline and len(err) > user.screen_width:
+    can_inline = False
   if typed_len > 0:
     await ansi_move(user, prompt_row, prompt_col, drain=False)
     await send(user, " " * typed_len, drain=False)
@@ -717,6 +719,20 @@ async def do_menu(user, menu_name):
           else: error_msg = "Unknown command: /crash. Try /jump, /page, /quit"
           continue
         raise RuntimeError("Test crash triggered by /crash command.")
+
+      # /testpopups — sysop-only: queue several popups to test queueing
+      if lower == "/testpopups":
+        if "sysop" not in user.keys:
+          if await _err("Unknown command. Try /jump, /page, /quit"): continue
+          else: error_msg = "Unknown command. Try /jump, /page, /quit"
+          continue
+        # Queue popups 2 and 3 first, then show popup 1 (which drains the queue)
+        user.popup_queue.append(dict(text="Popup 2 of 3: This is the second queued popup.", title="Test 2/3", fg=white, fg_br=True, bg=black, bg_br=False, outline_fg=yellow, outline_fg_br=True, outline_bg=black, outline_bg_br=False))
+        user.popup_queue.append(dict(text="Popup 3 of 3: This is the third and final popup.", title="Test 3/3", fg=white, fg_br=True, bg=black, bg_br=False, outline_fg=magenta, outline_fg_br=True, outline_bg=black, outline_bg_br=False))
+        from bbs_msg import send_popup
+        await send_popup(user, "Popup 1 of 3: This is the first queued popup.", title="Test 1/3", fg=white, fg_br=True, outline_fg=cyan, outline_fg_br=True)
+        needs_render = True
+        continue
 
       # Unknown slash command
       if lower.startswith("/"):

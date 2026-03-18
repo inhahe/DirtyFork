@@ -300,9 +300,13 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     else:
       prompt_text = " Press any key "
     abort_text = ""
+    abort_prefix = ""
+    abort_suffix = ""
     if queued_count > 0:
       abort_text = f"Abort All ({queued_count})"
-      prompt_text = prompt_text.rstrip() + "  " + abort_text + " "
+      abort_prefix = prompt_text.rstrip() + "  "
+      abort_suffix = "bort All ({}) ".format(queued_count)
+      prompt_text = abort_prefix + abort_text + " "
     if h_scrollable:
       # Put prompt on top border (right-aligned) so it doesn't cover the h-scrollbar
       prompt_col = save_left + inner_width + 1 - len(prompt_text)
@@ -314,7 +318,14 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
       prompt_row = save_bottom
       await ansi_move_deferred(user, row=prompt_row, col=save_left + 2, drain=False)
       prompt_col = save_left + 2
-    await send(user, prompt_text, drain=False)
+    if abort_text:
+      await send(user, abort_prefix, drain=False)
+      ansi_color(user, fg=fg, fg_br=fg_br, bg=outline_bg, bg_br=outline_bg_br)
+      await send(user, "A", drain=False)
+      ansi_color(user, fg=outline_fg, fg_br=True, bg=outline_bg, bg_br=outline_bg_br)
+      await send(user, abort_suffix, drain=False)
+    else:
+      await send(user, prompt_text, drain=False)
     # Track abort click region
     if abort_text:
       abort_offset = prompt_text.rfind(abort_text)

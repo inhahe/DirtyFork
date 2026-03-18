@@ -224,7 +224,15 @@ async def run(user, destination, menu_item=None):
        VALUES (?, ?, ?, ?, ?)""",
     (values["handle"], cmd_line_handle, password_hash, salt, int(time.time()))
   )
-  con.commit()
+  user_id = cur.lastrowid
+
+  # Insert default keys from config
+  default_keys = config.user_defaults.keys if config.user_defaults and config.user_defaults.keys else []
+  if default_keys:
+    for key in default_keys:
+      cur.execute("INSERT INTO USER_KEYS (user_id, key) VALUES (?, ?)", (user_id, str(key)))
+    con.commit()
+
   con.close()
 
   # YAML: profile data and preferences
