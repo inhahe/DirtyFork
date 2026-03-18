@@ -1,0 +1,48 @@
+# DOOR.SYS field defaults (PCBoard format).
+#
+# Shared variables (defined in DirtyFork.yaml option_defaults.variables):
+#   {security_level}, {ansi}, {home_phone}, {expiration_date}, {user_record}
+#
+# Session variables (always from live data, cannot be overridden here):
+#   {node}, {baud}, {handle}, {first_name}, {last_name}, {location},
+#   {rows}, {cols}, {time_limit}, {mins_remaining}, {secs_remaining},
+#   {bbs_name}, {sysop_name}, {node_dir}
+
+baud_rate: "{baud}"
+security_level: "{security_level}"
+screen_display: "Y"
+printer_toggle: "N"
+page_bell: "Y"
+caller_alarm: "Y"
+home_phone: "{home_phone}"
+work_phone: ""
+password: ""
+times_called: "0"
+last_call_date: "01/01/00"
+expert_mode: "N"
+conferences: ""
+conf_joined: ""
+expiration_date: "{expiration_date}"
+user_record: "{user_record}"
+protocol: "Z"
+uploads: "0"
+downloads: "0"
+daily_dl_k: "0"
+dl_k_today: "0"
+birthday: ""
+user_db_path: ""
+event_time: "00:00"
+error_correcting: "Y"
+ansi_in_transfer: "N"
+default_color: ""
+time_credits: "0"
+last_new_scan: "01/01/00"
+time_of_call: "00:00:00"
+last_time_on: "00:00:00"
+max_daily_files: "999"
+files_today: "0"
+total_ul_k: "0"
+total_dl_k: "0"
+comment: ""
+total_doors: "0"
+messages_left: "0"

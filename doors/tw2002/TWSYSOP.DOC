@@ -1,0 +1,369 @@
+
+
+
+
+
+
+
+
+			   Trade Wars 2002 Version 2
+ 
+			     The story continues...
+
+
+
+		  by Gary Martin and MaryAnn Martin @1:299/299
+		 Many thanks also to Drew Markham, a.k.a. Videon
+		Castle RavenLoft (913) 842-0300 and (913) 832-2888
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	Welcome!  Right now you're probably dying to configure this program 
+and get it running.  Before I tell about that, I just want to put a plug in 
+here.
+
+	Trade Wars 2002 is the result of over 7 years of game testing and 
+development.  The version you have in your hands is 2.00, our NEW version,
+offerings tons of new features the players requested and some new twists that
+we threw in ourselves!  It is one of the most complex games in the BBS world
+at this time.  You probably can guess about the amount of development time that
+went into this game.  Install and run this game for a few weeks and if you 
+agree that it is decent and want to keep it, you will need to register with us.
+The registration fee is very small, just $20.  Being registered will keep you
+in touch with further development of the game and all subsequent releases of 
+Trade Wars 2002 will be free of charge to you.  This un-registered version is 
+almost fully functional.  There are four options that do not work:
+
+	You cannot edit any values in the Trade Wars Sysop's editor, 
+	Players cannot buy any of the other shiptypes in the game, and
+	Players cannot build or enter Citadels on planets.
+	Photon Missiles cannot be purchased.
+
+The rest of the game works 100%  Try it, I think you'll agree that our 
+registration fee is cheap for what you get!
+
+We accept Visa, Mastercard, American Express and US funds drawn on a US bank
+ONLY!  Foreign funds will be returned as the cost of processing them is most
+often more than the registration fee itself!
+
+-------------------------- Ordering Info -----------------------------
+
+ To register, send $20 (US) in check or money order to:
+
+		Martech Software, Inc.
+		134 Indian Ave
+		Lawrence, Kansas  66046
+
+You will find an accompanying file on your harddisk called TWORDER.FRM, 
+please use this to send in your order as it will speed things up.
+
+Please allow 3-6 weeks for your registration code to reach you by return mail. 
+We will not transmit registration codes through the net.  And we will not 
+call with your codes.  We have very little time to work on the game as it is. 
+Also, US Postal Priority Mail doesn't seem to be any faster than regular mail!  
+We get registrations from either coast in 3-4 days.  Please include your BBS 
+name, type and number as well as your address on the included form TWORDER.FRM. 
+
+--------------------------- Update Info -----------------------------
+
+If you registered Trade Wars 1.xx or 0.9x before January 1st, 1994, then
+you are eligible for a free upgrade to the new version 2.xx codes.  You
+will find an update form included with this archive.  Get it to us and
+we'll get you your new codes for 2.xx
+
+
+
+
+
+
+       ---------------- Now on to the installation! ----------------
+
+
+
+
+
+
+
+  B E F O R E you do anything else!  Copy the distribution archive 2002V2B1.EXE
+	to a nice safe place.  The installation process will delete the one 
+	from out of the BBS dir to save system space.
+
+
+
+
+
+
+   Step 1: ERASE ALL FILES IN THE TRADEWAR SUBDIR IF YOU ARE CURRENTLY
+	   RUNNING Trade Wars 2002!  (Optionally install version 2.00
+	   in a different subdirectory.  You can put it anywhere on 
+	   your computer as you can fully control where the program 
+	   looks for its data)  Version 2.00 is NOT compatible in
+	   any way with the files from Version 0.90 through 1.03d  Make
+	   sure and erase every file in the TRADEWAR subdirectory! 
+
+   Step 2: Run 2002V2B1.EXE and it will create the installation package for
+	   you.   Put all three executable archives TWDATA.EXE, TWSUPP.EXE 
+	   and TWPGM.EXE and the batch file TWINSTAL.BAT in your main BBS 
+	   directory.  Leave the TW2002.BAT, TEDIT.BAT and EXTERN.BAT files
+	   in your main BBS directory as well.  These batch files are what 
+	   you will call in order to run the game.
+ 
+
+   Step 3: Run the batch file. (TWINSTAL.BAT)  It will unzip everything into
+	   a directory it will make called TRADEWAR (or will use the old dir).
+	   If you want to run two versions of the game, make another 
+	   subdirectory under your main BBS directory and copy EVERYTHING 
+	   thats in your TRADEWAR subdirectory.  You will then need to make 
+	   copies of your TW2002.BAT file (and TEDIT and EXTERN) that use 
+	   the appropriate subdirectory.
+
+   *************************************************************************
+   *************************************************************************
+
+   Please NOTE!!!  During a first time initialization, the BigBang Universe
+   Creator must be run.  This process can take a while on slower machines.
+
+
+   A LARGE portion of the Trade Wars 2002 Universe is contained in the 
+   External maintenance program called EXTERN.EXE   This program must be 
+   run once a day.  It does NOT support the modem so it should not be run 
+   as a logon event for users.  (it also gives out info that users shouldn't 
+   see).  Run it in your nightly maintenance batch file.  We have noticed that
+   some other door's external maintenance files screw up the environment so 
+   that EXTERN will not function correctly. We recommend that you put 
+   EXTERN.EXE *FIRST* in your nightly batch file.
+
+
+
+	      ------  Running TW2002 on Your BBS  ------
+   
+	The new version of TW2002 runs quite a bit differently than the
+previous versions.  The Node configuration file determines how the system
+runs, what type of door drop file should be read (and where it is) and
+how communications should be handled.  There are only two command line 
+options that are used regularly. (with a third, optional override command
+line option available).
+
+NOXMS   The NoXms switch tells TW2002 to NOT use Extended memory to load
+	its overlay files.
+
+NOEMS   The NoEms switch does the same for Expanded memory.
+
+By default TW2002 will try to use Xms memory first, then Ems memory.  If
+neither are available (in sufficient quantity) then the game will not load
+its overlays into memory and your disk usage will rise considerably as the
+program loads and unloads modules from the overlay file.
+
+EXAMPLE:
+
+	TW2002 NOXMS NOEMS
+
+Calling Trade Wars 2002 this way would insure that no high memory was used
+at all.  (Sometimes useful for systems such as Desqview)
+
+The third, optional command line item, is a node specifier.
+
+TWNODE=x   Where x is a number from 0 to 254
+
+
+
+The standard method to setup TW2002 is to use a Dos Environment variable in
+the autoexec batch file to indicate which node a given machine is running.
+
+ษออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออป
+บ      ษออออออออออออออออออออออออออออออออออออออออออออออออออออออออออป      บ
+บ      บ                                                          บ      บ
+บ      บ     SET TWNODE=x   Where x is a number from 0 to 254     บ      บ
+บ      บ                                                          บ      บ
+บ      ศออออออออออออออออออออออออออออออออออออออออออออออออออออออออออผ      บ
+ศออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออผ
+
+Sample Autoexec.bat entry
+
+path=c:\dos
+set TWNODE=1     <============  Upper or lower case doesn't matter
+prompt $p$g     
+
+
+
+ษอออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออป
+บ                                                                         บ
+บ   Trade Wars 2002 supports many different BBS interchange file formats. บ
+บ            Select one from the following list for YOUR BBS!             บ
+บ                                                                         บ
+บ    BBS Name             Interface File Name    Nodeedit Door Type       บ
+บ    -------------------  ---------------------- -------------------      บ
+บ    World War IV         CHAIN.TXT               WWIV                    บ
+บ    Generic System       DOOR.SYS                DOOR                    บ
+บ    QuickBBS             DORINFO1.DEF            QBBS                    บ
+บ    PcBoard              DOOR.SYS                DOOR                    บ
+บ    R.B.B.S.             DORINFO1.DEF            RBBS                    บ
+บ    RyBBS                CURRUSER.BBS            RYBS                    บ
+บ    Wildcat              CALLINFO.BBS            WILD                    บ
+บ    Teleguard            CHAIN.TXT               WWIV                    บ
+บ    Spitfire             DOOR.SYS                DOOR                    บ
+บ    Local Mode, no BBS                           LOCL                    บ
+บ                                                                         บ
+บ                                                                         บ
+ศอออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออผ
+
+
+Please note!!!  TW2002 is designed to run in a small amount of memory.  This 
+system will work in 270K of RAM!   
+
+This system is delivered in an "as-is" basis.  We do not guarantee that this 
+system will work on your BBS.  Any problems with your system, lost data or 
+corrupted files are your problems to solve.  As distributed this package will 
+work fine on a PC-compatible running WWIV or QBBS.  If your dog gets sick, you 
+lose your job or one of your users gets into a gunfight over this game with 
+you, it is still your responsibility.
+
+We *ARE* glad to try and help if you are having problems getting this system 
+installed on your board.
+
+
+
+Good luck trading and watch out for the Ferrengi!
+
+
+Gary A. Martin,    #1 at 9354, and            Castle RavenLoft (913)842-0300
+Mary Ann Martin,   #2 at 9354.                AutoSysop Validation, HST 14.4
+
+You can also reach us on our Multiine system, Metropolis - (913)832-0041
+
+
+
+Common Technical Problems and answers:
+
+
+       ษอออออออออออออออออออออออออออออออออออออออออออออออออออออออป    
+       บ                                                       บ
+       บ   W W I V   S Y S O P S ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! บ
+       บ                                                       บ
+       บ  Make sure that Use_Dos_Interrupts is set to NO for   บ
+       บ  your Chainedit entry of TW2002.  YOU MUST SET THIS   บ
+       บ  off! It's very important.  Otherwise you will see    บ
+       บ  double characters remotely and it can lock up your   บ
+       บ  system!!!!!!!!!!!                                    บ
+       ศอออออออออออออออออออออออออออออออออออออออออออออออออออออออผ 
+
+Q: Trade Wars seems to run fine in Local mode, but goes crazy for the remote
+   callers?
+
+A: TW2002 handles its own I/O.  Make sure that you are NOT using some other
+   utility program or the BBS itself to handle the Modem I/O.  A program 
+   such as Gateway is not needed with TW2002.  Also, make sure you are using 
+   the door mode on your BBS that removes the BBS from memory.  This is the 
+   safest setting.
+
+
+Q: No matter who runs the game, it always comes up as the same player or
+   as me! (the sysop) what is happening?
+
+A: TW2002 looks for your Door Interface file wherever you told it to.  If
+   you have it pointing to the wrong one (not one the BBS makes whenever
+   a user tries to run the door) then it will always try to run that 
+   configuration.  Also, if your Dos Environment variable TWNODE isn't 
+   set, it will default to Node 0 (local mode)
+
+
+Q: Running TW2002 on WWIV, remote callers get double characters?
+
+A: Under WWIV's Chainedit, you have Use Dos Interrupts set to "Yes".  Turn 
+   that setting off as you are asking both the BBS and Trade Wars to transmit
+   characters to the remote user.
+
+
+Q: When I run TW2002 I keep getting error codes 002 or 103.? Its never
+   worked since I got it.
+
+A: You never ran the TWINSTAL.BAT file when you first got the archive.  If you
+   do not run this, then the appropriate data files were not created.
+
+
+Borland Turbo Pascal Error Messages you can get with TW2002:
+
+Number Meaning                 With regards to TW2002
+------ ----------------------- -------------------------------------------
+    2  File not found          You are missing a file.
+    3  Path not found          You are not using the batch files we included.
+    4  Too many open files     Increase your FILES= statement in your 
+			       CONFIG.SYS  We recommend about 25.
+    5  File access denied      Either a file has been set to read only, a
+			       directory is full, a RENAME tried to rename to
+			       an existing file name or a file is not open.
+    6  Invalid File Handle     Your file handles have become corrupted, DOS err.
+    
+  100  Disk Read Error         An attempt was made to read past the end of a 
+			       file most often.  Something is corrupted in the
+			       record pointers.
+  101  Disk Write Error        Generall an indication of a full hard disk.
+  103  File Not Open           File is closed when it shouldn't have been.
+  104  File Not Open for Input Text file is closed when it shouldn't have been.
+  105  File Not Open for Output "   "     "   "       "      "       "
+  106  Invalid Numeric Format  Generally this is only caused when reading a
+			       BBS interface file (that has the user's info).
+			       It happens when TW2002 is trying to read a 
+			       numeric value from an interface text file and 
+			       there isn't a valid number in the file.
+  
+  Errors 150 through 162 indicate various HARDWARE failures.  If you're getting
+  these, then something is wrong with your PC and I can't be of much help there.
+
+	Some commone ones are:
+  152  Drive not ready         Controller problem or drive not spinning
+  154  CRC error in data       Scrogged disk (real technical eh? (grin))
+  156  Disk Seek error         Head problem or bad controller
+  157  Unknown media type      Did you just change to DOS 4.0 or 5.0???
+  158  Sector not found        Head problem or bad controller
+  159  Printer out of paper    Hit Control P!  Disable printer logging.
+  160  Device write fault      Disk problem
+  161  Device read fault       Disk problem
+  162  Hardware Failure        Reported due to Dos sharing violations,
+			       mostly having to do with Lan or multi-
+			       user problems.  If you encounter this
+			       error, then you have a configuration 
+			       problem with your multinode BBS setup.
+			       Make sure Share is being run.
+
+  Fatal errors generally indicate a problem that must be fixed before you 
+  can continue to run the game.
+
+  200  Division by zero        Now I hope you cannot make one of these happen
+			       as I check before every division to make sure
+			       it DOESN'T happen, but you it might.
+  201  Range Check Error       Array index out of range.
+  202  Stack Overflow          NOT ENOUGH MEMORY for the stack!  Type @ while
+			       at the main menu in TW2002 and it will tell you
+			       how much memory you have left with the game 
+			       running.  If you're under 5K, then you're in
+			       trouble.
+  203  Heap overflow error     Same as 202.
+  204  Invalid Pointer Op.     Can be caused the same as 202.
+  205  Floating point overflow Most likely someone has used the editor
+			       and put an insane amount of credits in a credits
+			       field somewhere.  YOU CANNOT make enough money in
+			       TW2002 to cause this with normal play.
+  207  Invalid Floating point  You have a real thats trying to be converted to a
+       Operation               Long int and its greater than 2 billion.
+  209  Overlay File read error TW2002 had a problem getting an overlay from the
+			       TW2002.OVR file.  If you're not using EMS, then
+			       the .OVR file is missing or is setting on a bad
+			       sector on your harddisk.  If you are running EMS
+			       then you have a bad memory chip! (yak)
+
+Well this covers a large portion of the technical support for TW2002.  If you have
+further questions, contact us at Martech Software via one of our BBSes.
+ 
+

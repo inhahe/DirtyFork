@@ -131,6 +131,7 @@ class Config(defaultdict):
         formatter = _DotFormatter(
             strict=self._strict,
             resolving=self._root._resolving,
+            root=self._root,
         )
 
         try:
@@ -209,6 +210,8 @@ class _DotFormatter(Formatter):
                 if not isinstance(cur, Mapping):
                     raise KeyError(part)
                 cur = cur[part]
+                if cur is null or cur is None:
+                    raise KeyError(part)
 
             return cur, field_name
         finally:
@@ -339,6 +342,7 @@ class ConfigView(Mapping):
         formatter = _DotFormatter(
             strict=self._root._strict,
             resolving=self._root._resolving,
+            root=self._root,
         )
 
         try:

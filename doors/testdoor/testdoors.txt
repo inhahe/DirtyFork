@@ -1,0 +1,23 @@
+```
+
+Here's a summary of what the program does and how to use it:
+
+**Compilation:**
+```
+tcc testdoor.cpp
+```
+
+**Command line:**
+```
+TESTDOOR FOSSIL1 C:\BBS\NODE1\
+TESTDOOR COM1:57600 C:\RENEGADE\NODE\
+TESTDOOR COM2                          (defaults to 38400 baud)
+TESTDOOR LOCAL C:\BBS\                 (console-only, good for debugging)
+
+
+What it does:
+
+Connection mode — parses FOSSIL<n>, COM<n>[:<baud>], or LOCAL from the command line; initializes accordingly. If FOSSIL mode is requested but no driver is found (AX ≠ 0x1954 from INT 14h/AH=04h), it falls back to LOCAL with a stderr warning.
+FOSSIL — uses INT 14h AH=01/02/03/04/05 (the X00/BNU/ZedZap standard). AH=04h with BX=4F49h to init, checks AX==1954h for presence. AH=03h for status, bit 0 of AH for RX-ready. AH=01h/02h for TX/RX.
+COM (direct UART) — programs the 8250/16550 directly via inportb/outportb: sets DLAB to write baud divisor (115200÷baud), then 8N1, FIFO enable, DTR+RTS+OUT2. Polls LSR bits for TX/RX readiness.
+Dropfile detection — tries all four major formats in the search path, reports which were found, and dumps every line with its field label plus a summary of interpreted values.

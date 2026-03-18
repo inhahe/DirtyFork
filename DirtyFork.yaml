@@ -1,37 +1,54 @@
-# no value you aren't actually going to use needs to be in here. the config object returns None for anything that's missing.
-# todo: option to star out passwords when they're being typed
-# we can handle option_defaults by assigning a merge or a configview to each option with first dict being a Config of (or can we just pass it directly?) option_defaults 
-# same with user_defaults and users
+# DirtyFork BBS — main configuration file
+#
+# Copy this file to your data directory (or use --data-dir) and edit as needed.
+# Any value not present here returns null; most settings have sensible defaults.
 
-bbs_name: The Dirty Fork
-hostname: logoplex3 # can also be an ip address
+bbs_name: My BBS
+sysop_name: Sysop
+hostname: 0.0.0.0   # bind on all interfaces; set to a specific IP to restrict
 port: 23
 
-database: DirtyFork.db
+# Menu layout compactness: how much to prefer shorter/wider over taller/narrower.
+# 1.0 = balanced. >1 = more columns (shorter). <1 = fewer columns (taller).
+menu_compactness: 1.0
 
-login: 
-  type: func # should we make this a module?
+min_edit_width: 10  # minimum characters reserved for editing when quote margins get deep
+
+database: DirtyFork.db
+files_dir: files
+files_meta: files/meta.yaml   # maps filename -> {keys: [...], description: "..."}
+file_keys:                     # sysop-defined list of valid file keys
+  - game
+  - utility
+  - dos
+  - windows
+  - art
+  - music
+  - document
+  - programming
+  - communication
+  - demo
+  - bbs
+  - adult
+user_configs: user_configs
+
+login:
+  type: func
   target: login
 
 log:
-  path: DirtyFork.log 
-  split_at: 1_000_000 # note: underscores won't work if pyyaml upgrades to 1.2 or we decide to use that other yaml library
-  max_length: 10_000_000 # including all split files
-  max_age: "1 year" # should it trim when it exceeds max_length or max_age, or when it exceeds max_length and max_age?
+  path: DirtyFork.log
+  split_at: 1_000_000
+  max_length: 10_000_000
+  max_age: "1 year"
 
-  #import pandas
-  #pandas.Timedelta("1 day 2 hours")
+input_fields: !include input_fields.yaml
 
-input_fields: !include input_fields.yaml  
-# hmm, if we keep input_fields in this file, we can use anchors on the edit types so that fields defined in here can include the anchor instead of just the name of the type, 
-# which would require more work for the bbs
-# but i think we'd still have to manually load from the name in the forum module since its input fields aren't defined in any yaml.
-
-user_defaults: # currently we have some user config stored in the database and some stored in yaml files, maybe not ideal
+user_defaults:
   main:
     destination: main
     menu_item: null
-  menus: 
+  menus:
     main: main
     colors:
       normal:
@@ -49,56 +66,53 @@ user_defaults: # currently we have some user config stored in the database and s
         fg_br: true
         bg: black
         bg_br: false
-  bbs_msgs:
-    
-    
-  time_zone_format: '%Y/%m/%d %H:%M:%S {GMT}{"+" if time_zone_hour>=0 else "-"}:abs(time_zone_minute)}' #is that a valid way to show time zone? 
-  # time_zone_format: '%Y/%m/%d %H:%M:%S {time_zone_letters}')
-  # todo: process keys i read from config
-  # make Config so that you can pass the object the important dictionaries at any time and then it'll use them
-  # codes.format_map(dictionary)
+  allow_door_popups: true  # allow BBS messages/popups to interrupt door sessions
   keys:
-    - debug # allows the user to see debug output if and when the bbs encounters an error.
-    - doors
- 
-destinations: # todo: should login be here? 
-# types are module, menu, func, and input (i think register is type: input)
-# i wonder if we should add type: screen to those. it just shows a screen and waits for your input to leave.
-# and i wonder if there's any more use to type: func
-  main: 
+    - doors  # all users can access doors by default; add 'banned' key to block individuals
+
+destinations:
+  main:
     type: menu
-  door: 
+  door:
     type: module
     white_keys: [doors]
-    base_path: 'c:\doors'# any non-absolute path specified in door game configurations will be relative to this path.
-    max_nodes: 20 # todo: i have no idea what a good value for this is.
-                  # for simplicity, COM will always be 1, it doesn't matter since each door game instance will run on its own instance of DOSBox anyway.
+    # Path to your DOSBox-X executable:
+    dosbox_path: C:\dosbox-x\dosbox-x.exe
+    base_path: doors  # relative paths in door configs are relative to this directory
+    max_nodes: 20
   teleconference:
     type: module
-  forum: 
+  messages:
+    type: menu
+  message:
     type: module
-  files: 
+  forum:
     type: module
-  register: 
+  files:
+    type: menu
+  file:
+    type: module
+  register:
+    type: module
+  settings:
     type: module
   user_director:
     type: func
-  Teleconference:
-    type: module 
-  forums: 
+  forums:
     type: menu
   doors:
     type: menu
+    white_keys: [doors]
+    black_keys: [banned]
 
 forum_list: &forum_list
-  Philosophy: null        # you could have black_keys, white_keys, etc., under the forum entries. 
-  Physics: null
-  Spirituality & Mysticism: null
-  The Paranormal: null
+  General: null
+  # Add more forums here, or remove/rename these.
+  # You can add white_keys/black_keys per forum for access control.
 
-menu_system: # not sure which things should go in the menus and which things should go under their destinations
+menu_system:
   main:
-    screen_path: null 
+    screen_path: null
     inputs:
       option:
         row: null
@@ -109,48 +123,98 @@ menu_system: # not sure which things should go in the menus and which things sho
     options:
       Messages:
         target: messages
-        type: module
-      Teleconference: 
+        type: menu
+      Teleconference:
         target: teleconference
         type: module
-      Doors: 
+      Doors:
         target: doors
         type: menu
-        white_keys: [doors] 
-        black_keys: [banned]
         screen_path: null
       Forums:
         target: forums
         type: menu
       File Library:
         target: files
+        type: menu
+      Settings:
+        target: settings
         type: module
-  forums: 
+  forums:
     option_defaults:
       target: forum
     options:
       <<: *forum_list
       Edit Forum:
-        option_defaults: # todo: should i have the bbs inherit the option_defaults of type and target, or should i have to specify them again here?
+        option_defaults:
           action: edit
         options:
           <<: *forum_list
-    # hmm, how could we auto-populate the forums menu from the sqlite3 database and still have this be a menu type?
-    # or maybe we should just auto-populate the sqlite3 file based on the forums menu instead? that would involve less addition.
   doors:
     option_defaults:
       target: door
+      dosbox_conf: doors/dosbox.conf  # default DOSBox-X base config; override per door
+      # Shared values — any scalar here becomes a {variable} in dropfile sections.
+      # Override per door to affect every format at once.
+      security_level: "0"         # used by all formats
+      ansi: "1"                   # ANSI capable; used by dorinfo, chain_txt, callinfo_bbs, sfdoors_dat
+      home_phone: ""              # used by door_sys and callinfo_bbs
+      expiration_date: "01/01/00" # used by door_sys and callinfo_bbs
+      user_record: "1"            # used by door_sys, callinfo_bbs, door32_sys
+      door_sys:    !include doors/dropfiles/door_sys.yaml
+      dorinfo:     !include doors/dropfiles/dorinfo.yaml
+      chain_txt:   !include doors/dropfiles/chain_txt.yaml
+      callinfo_bbs: !include doors/dropfiles/callinfo_bbs.yaml
+      door32_sys:  !include doors/dropfiles/door32_sys.yaml
+      sfdoors_dat: !include doors/dropfiles/sfdoors_dat.yaml
     options:
-      Trade Wars 2002:
-        max_nodes: 4 # some doors require node number not be higher than max_nodes, some don't. to be safe, we'd better made node pools.
-        white_keys: [doors] # destinations can also have white_keys and black_keys. white keys are keys you need to use it. black_keys are keys you need to not have to use it. 
-        black_keys: [banned]
-        communication_type: COM # types: com, fossil, stdio, socket
-        dropfile_type: DOOR.SYS #if this is null or not included, just drop every type of file.
-        dropfile_path: null #
-        dropfile_dir: null
-        dropfile_name: null
-      command: 'TW0002.EXE {node}'
-      dir: 'TW2002'
+      # Example door entries — edit paths and commands to match your installation.
+      # Trade Wars 2002:
+      #   max_nodes: 4
+      #   white_keys: [doors]
+      #   black_keys: [banned]
+      #   communication_type: COM
+      #   command: 'TW2002.EXE TWNODE={node}'
+      #   dir: 'tw2002'
+      # Legend of the Red Dragon:
+      #   max_nodes: 10
+      #   white_keys: [doors]
+      #   black_keys: [banned]
+      #   communication_type: COM
+      #   command: 'START.BAT {node}'
+      #   dir: 'lord'
+      1 - Test Door (FOSSIL):
+        max_nodes: 10
+        communication_type: COM
+        command: 'TESTDOOR.EXE /FOSSIL /PORT:0'
+        dir: 'testdoor'
+      2 - Test Door (BIOS):
+        max_nodes: 10
+        communication_type: COM
+        command: 'TESTDOOR.EXE /BIOS /PORT:0'
+        dir: 'testdoor'
 
-    
+  files:
+    option_defaults:
+      target: file
+    options:
+      Search:
+        action: search
+      Browse:
+        action: browse
+      List All:
+        action: list
+      Download:
+        action: download
+      Upload:
+        action: upload
+  messages:
+    option_defaults:
+      target: message
+    options:
+      New Messages:
+        action: new
+      Compose:
+        action: compose
+      Search:
+        action: search

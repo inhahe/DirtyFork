@@ -20,6 +20,7 @@ from file_transfer import (send_file_zmodem, recv_file_zmodem,
 from keyboard_codes import up, down, pgup, pgdn, home, end, back
 from config import get_config
 from logger import log
+import paths
 
 config = get_config()
 
@@ -44,7 +45,7 @@ _TRACK    = bytes([176]).decode('cp437')  # scroll track
 
 def _files_dir():
   """Return the file library directory, creating it if needed."""
-  d = str(config.files_dir) if config.files_dir else "files"
+  d = paths.resolve_data(str(config.files_dir) if config.files_dir else "files")
   os.makedirs(d, exist_ok=True)
   return d
 
@@ -52,7 +53,7 @@ def _files_dir():
 def _meta_path():
   """Return the path to the metadata YAML file."""
   p = str(config.files_meta) if config.files_meta else os.path.join(_files_dir(), "meta.yaml")
-  return p
+  return paths.resolve_data(p)
 
 
 def _valid_keys():

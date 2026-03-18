@@ -1,0 +1,288 @@
+============================================
+  DirtyFork Test Door v1.0
+============================================
+
+Communication: BIOS INT 14h (serial)
+COM port: COM1
+
+Command line arguments:
+  argv[0] = D:\TESTDOOR.EXE
+  argv[1] = /FOSSIL
+  argv[2] = /PORT:0
+
+--- C:\DOOR.SYS (raw) ---
+  0: COM1:
+  1: 115200
+  2: 8
+  3: 1
+  4: Y
+  5: N
+  6: Y
+  7: Y
+  8: inhahe
+  9: 
+ 10: {home_phone}
+ 11: 
+ 12: 
+ 13: 0
+ 14: 0
+ 15: 01/01/00
+ 16: 3600
+ 17: 60
+ 18: GR
+ 19: 24
+ 20: N
+ 21: 
+ 22: 
+ 23: 01/01/00
+ 24: 1
+ 25: Z
+ 26: 0
+ 27: 0
+ 28: 0
+ 29: 0
+ 30: 
+ 31: 
+ 32: doors\testdoor\node1
+ 33: My BBS
+ 34: Sysop
+ 35: 00:00
+ 36: Y
+ 37: N
+ 38: 
+ 39: 0
+ 40: 01/01/00
+ 41: 00:00:00
+ 42: 00:00:00
+ 43: 999
+ 44: 0
+ 45: 0
+ 46: 0
+ 47: 
+ 48: 0
+ 49: 0
+
+=== DOOR.SYS (parsed) ===
+  COM port: COM1:
+  Baud rate: 115200
+  Parity: 8
+  Node number: 1
+  DTE rate: Y
+  Screen display: N
+  Printer toggle: Y
+  Page bell: Y
+  Caller alarm: inhahe
+  User full name: 
+  Location: {home_phone}
+  Home phone: 
+  Work phone: 
+  Password: 0
+  Security level: 0
+  Times called: 01/01/00
+  Last called: 3600
+  Secs remaining: 60
+  Mins remaining: GR
+  GR (graphics): 24
+  Screen length: N
+  Expert mode: 
+  Conferences: 
+  Conf. joined: 01/01/00
+  Expiration date: 1
+  User record num: Z
+  Protocol: 0
+  Uploads: 0
+  Downloads: 0
+  DL bytes today: 0
+  Max DL bytes: 
+  [31]: 
+  BBS name: doors\testdoor\node1
+  Sysop first name: My BBS
+  Sysop last name: Sysop
+  COM port: 00:00
+  Baud/parity: Y
+  Reserved: N
+  User first name: 
+  User last name: 0
+  City/Location: 01/01/00
+  Terminal (0=TTY,1=ANSI,2=Avatar): 00:00:00
+  Security level: 00:00:00
+  Time remaining (min): 999
+  Fossil (-1=yes,0=no): 0
+  [45]: 0
+  User record num: 0
+  User handle: 
+  Real name: 0
+  Callsign: 0
+
+--- C:\DORINFO1.DEF (raw) ---
+  0: My BBS
+  1: Sysop
+  2: 
+  3: COM1
+  4: 115200 BAUD,N,8,1
+  5: 0
+  6: inhahe
+  7: 
+  8: 
+  9: 1
+ 10: 0
+ 11: 60
+ 12: -1
+
+=== DORINFO1.DEF (parsed) ===
+  BBS name: My BBS
+  Sysop first name: Sysop
+  Sysop last name: 
+  COM port: COM1
+  Baud/parity: 115200 BAUD,N,8,1
+  Reserved: 0
+  User first name: inhahe
+  User last name: 
+  City/Location: 
+  Terminal (0=TTY,1=ANSI,2=Avatar): 1
+  Security level: 0
+  Time remaining (min): 60
+  Fossil (-1=yes,0=no): -1
+
+--- C:\CHAIN.TXT (raw) ---
+  0: 1
+  1: inhahe
+  2: inhahe
+  3: 
+  4: 0
+  5: M
+  6: 0
+  7: 01/01/00
+  8: 80
+  9: 24
+ 10: 0
+ 11: 0
+ 12: 1
+ 13: 0
+ 14: 3600
+ 15: doors\testdoor\node1\
+ 16: 
+ 17: 
+ 18: Sysop
+ 19: My BBS
+ 20: 
+ 21: COM1
+ 22: 0000000
+ 23: 115200
+ 24: 
+ 25: 1
+
+=== CHAIN.TXT (parsed) ===
+  User record num: 1
+  User handle: inhahe
+  Real name: inhahe
+  Callsign: 
+  Age: 0
+  Sex: M
+  Gold: 0
+  Last logon: 01/01/00
+  Screen width: 80
+  Screen rows: 24
+  Security level: 0
+  Co-sysop: 0
+  ANSI: 1
+  Remote: 0
+  Time remaining (sec): 3600
+  Node directory: doors\testdoor\node1\
+  (reserved): 
+  (reserved): 
+  Sysop name: Sysop
+  BBS name: My BBS
+  (reserved): 
+  COM port: COM1
+  (reserved): 0000000
+  Baud rate: 115200
+  (reserved): 
+  Node number: 1
+
+--- C:\CALLINFO.BBS (raw) ---
+  0: inhahe
+  1: 
+  2: 
+  3: 115200
+  4: 1
+  5: 0
+  6: 60
+  7: 1
+  8: inhahe
+  9: 
+ 10: {home_phone}
+ 11: 
+ 12: 01/01/00
+ 13: 1
+ 14: 1
+ 15: 0
+ 16: 0
+ 17: 0
+ 18: 0
+ 19: 0
+ 20: 0
+
+=== CALLINFO.BBS (parsed) ===
+  First name: inhahe
+  Last name: 
+  City/Location: 
+  Baud rate: 115200
+  FOSSIL connected: 1
+  Security level: 0
+  Time remaining (min): 60
+  ANSI graphics: 1
+  Alias/handle: inhahe
+  Password: 
+  Home phone: {home_phone}
+  Data phone: 
+  Expiration date: 01/01/00
+  User record num: 1
+  COM port: 1
+  Times on today: 0
+  Total times on: 0
+  Total uploads: 0
+  Total downloads: 0
+  KB downloaded today: 0
+  Max KB per day: 0
+
+--- C:\SFDOORS.DAT (raw) ---
+  0: 1
+  1: inhahe
+  2: 
+  3: 0
+  4: 60
+  5: 1
+  6: 1
+  7: My BBS
+  8: Sysop
+  9: 115200
+ 10: COM1
+ 11: 8
+ 12: 1
+ 13: N
+
+=== SFDOORS.DAT (parsed) ===
+  User record num: 1
+  User name: inhahe
+  Password: 
+  Security level: 0
+  Mins remaining: 60
+  ANSI (1=yes): 1
+  Node number: 1
+  BBS name: My BBS
+  Sysop name: Sysop
+  Baud rate: 115200
+  COM port: COM1
+  Data bits: 8
+  Stop bits: 1
+  Parity: N
+
+
+============================================
+  Interactive echo test
+  Type text + Enter. Q to quit.
+============================================
+> q
+
+Goodbye from Test Do

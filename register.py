@@ -11,9 +11,10 @@ from input_fields import InputFields, InputField, show_message_box
 from input_output import send, send_wrapped, ansi_color, ansi_move, ansi_cls
 from definitions import RetVals, success, fail, cr, lf, null, white, black, red
 from config import get_config
+import paths
 
 config = get_config()
-register_config = get_config(path="register.yaml")
+register_config = get_config(path=paths.resolve_project("register.yaml"))
 time_zones = json.load(open(os.path.join(os.path.dirname(__file__), "time_zones.json"), "r"))
 
 FIELD_NAMES = ["handle", "password", "age", "sex", "location", "time_zone", "email", "bio"]
@@ -155,7 +156,7 @@ async def run(user, destination, menu_item=None):
       errors.append("Handle is required.")
       if first_bad_field is None: first_bad_field = FIELD_NAMES.index("handle")
     else:
-      con = sqlite3.connect(config.database)
+      con = sqlite3.connect(paths.resolve_data(str(config.database)))
       cur = con.cursor()
       cur.execute("SELECT id FROM USERS WHERE handle = ? COLLATE NOCASE LIMIT 1", (values["handle"],))
       if cur.fetchone():
@@ -201,7 +202,7 @@ async def run(user, destination, menu_item=None):
 
   cmd_line_handle = re.sub(r"[ ,.\-]", "_", values["handle"])
 
-  con = sqlite3.connect(config.database)
+  con = sqlite3.connect(paths.resolve_data(str(config.database)))
   con.row_factory = sqlite3.Row
   cur = con.cursor()
 
@@ -226,7 +227,7 @@ async def run(user, destination, menu_item=None):
   con.close()
 
   # YAML: profile data and preferences
-  user_conf_dir = str(config.user_configs or "user_configs")
+  user_conf_dir = paths.resolve_data(str(config.user_configs or "user_configs"))
   os.makedirs(user_conf_dir, exist_ok=True)
   user_conf_path = os.path.join(user_conf_dir, values["handle"] + ".yaml")
 

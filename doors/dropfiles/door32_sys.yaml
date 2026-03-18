@@ -1,0 +1,9 @@
+# DOOR32.SYS field defaults (modern 32-bit telnet door format).
+#
+# Shared variables: {security_level}, {user_record}
+# Session variables: {baud}, {node}, {handle}, {mins_remaining}
+
+comm_type: "2"    # 2 = telnet socket
+baud_rate: "{baud}"
+security_level: "{security_level}"
+emulation: "1"    # 1 = ANSI

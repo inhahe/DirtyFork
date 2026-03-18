@@ -1,0 +1,21 @@
+# CALLINFO.BBS field defaults (Wildcat! format).
+#
+# Shared variables: {security_level}, {ansi}, {home_phone}, {expiration_date}, {user_record}
+# Session variables: {baud}, {handle}, {first_name}, {last_name},
+#   {location}, {mins_remaining}
+
+baud_rate: "{baud}"
+fossil_connected: "1"
+security_level: "{security_level}"
+ansi: "{ansi}"
+home_phone: "{home_phone}"
+data_phone: ""
+expiration_date: "{expiration_date}"
+user_record: "{user_record}"
+com_port: "1"
+times_on_today: "0"
+total_times_on: "0"
+total_uploads: "0"
+total_downloads: "0"
+kb_dl_today: "0"
+max_kb_per_day: "0"

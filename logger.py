@@ -20,6 +20,7 @@ from datetime import timedelta
 from logging.handlers import RotatingFileHandler
 
 from config import get_config
+import paths
 
 log = logging.getLogger("dirtyfork")
 
@@ -95,14 +96,14 @@ def setup_logging():
     log_conf = config.log
 
     # Defaults
-    log_path = "DirtyFork.log"
+    log_path = paths.resolve_data("DirtyFork.log")
     split_at = 1_000_000
     max_length = 10_000_000
     max_age = "1 year"
 
     if log_conf:
         if log_conf.path:
-            log_path = str(log_conf.path)
+            log_path = paths.resolve_data(str(log_conf.path))
         if log_conf.split_at:
             split_at = int(log_conf.split_at)
         if log_conf.max_length:

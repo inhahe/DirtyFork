@@ -1,15 +1,43 @@
 default_config = "DirtyFork.yaml"
 
-import asyncio, logging, sys, traceback
+import asyncio, logging, os, sys, traceback
 
 import telnetlib3
 
-# Parse --debug flag before anything else
+# Parse flags before anything else so paths are set before any import touches the filesystem
 debug_mode = "--debug" in sys.argv
-config_args = [a for a in sys.argv[1:] if a != "--debug"]
+
+# Extract --data-dir PATH and any positional config-path argument
+_remaining = [a for a in sys.argv[1:] if a != "--debug"]
+data_dir_arg = None
+config_path_arg = None
+_i = 0
+while _i < len(_remaining):
+    if _remaining[_i] == "--data-dir" and _i + 1 < len(_remaining):
+        data_dir_arg = _remaining[_i + 1]
+        _i += 2
+    elif not _remaining[_i].startswith("--"):
+        config_path_arg = _remaining[_i]
+        _i += 1
+    else:
+        _i += 1
+
+if "--help" in sys.argv or "-h" in sys.argv:
+    print(f"Usage: python DirtyFork.py [config] [--data-dir PATH] [--debug]")
+    print()
+    print(f"  config          Path to config file (default: {default_config} in data dir)")
+    print(f"  --data-dir PATH Directory for data files: config, database, logs, user configs")
+    print(f"                  (default: current working directory)")
+    print(f"  --debug         Enable verbose debug logging")
+    sys.exit(0)
+
+import paths
+if data_dir_arg:
+    paths.data_dir = os.path.abspath(data_dir_arg)
 
 from config import get_config
-config = get_config(path=config_args[0] if config_args else default_config, main=True)
+_config_path = config_path_arg if config_path_arg else paths.resolve_data(default_config)
+config = get_config(path=_config_path, main=True)
 
 from logger import log, setup_logging
 setup_logging()

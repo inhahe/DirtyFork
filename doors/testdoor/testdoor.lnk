@@ -1,0 +1,6 @@
+format dos
+file testdoor.obj
+name testdoor.exe
+libpath d:\watcom_lib
+library clibs
+option quiet

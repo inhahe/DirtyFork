@@ -14,6 +14,7 @@ from input_fields import InputField, InputFields, Block, show_message_box
 from keyboard_codes import up, down, pgup, pgdn, home, end, back
 from config import get_config
 from logger import log
+import paths
 
 config = get_config()
 
@@ -33,7 +34,7 @@ _V   = bytes([179]).decode('cp437')  # vertical
 # ---------------------------------------------------------------------------
 
 def _get_db():
-  con = sqlite3.connect(config.database)
+  con = sqlite3.connect(paths.resolve_data(str(config.database)))
   con.row_factory = sqlite3.Row
   return con
 

@@ -1,0 +1,11 @@
+# DORINFO1.DEF field defaults (RBBS-PC format).
+#
+# Shared variables: {security_level}, {ansi}
+# Session variables: {baud}, {node}, {handle}, {first_name}, {last_name},
+#   {location}, {mins_remaining}, {bbs_name}, {sysop_name}
+
+com_port: "COM1"
+baud_parity: "{baud} BAUD,N,8,1"
+network_type: "0"
+ansi: "{ansi}"
+security_level: "{security_level}"

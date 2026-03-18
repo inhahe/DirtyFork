@@ -1,0 +1,11 @@
+# SFDOORS.DAT field defaults (Spitfire BBS format).
+#
+# Shared variables: {ansi}
+# Session variables: {baud}, {node}, {handle}, {mins_remaining}
+
+baud_rate: "{baud}"
+ansi: "{ansi}"
+com_port: "COM1"
+data_bits: "8"
+stop_bits: "1"
+parity: "N"

@@ -1,55 +1,85 @@
-# define colors for entries marked as invalid?
-# do we validate every time the user enters a character, every time they tab away from a field, or every time they try to submit? make it an option here?
-
-# we combine input when there's more than X characters in Y seconds. 
-# i have no idea if these values for X and Y are good.
-# but I'd bet nobody can type that fast..
-# should we put these values in the DirtyFork.yaml instead?
-# oh, wait, they could send 1000 characters and i wouldn't be buffering yet because it wouldn't have been one second yet..
-# i think I need something more complex, but it would be total guessing of the best values.
-# that means as long as there are 2 characters in .01 seconds, it buffers, and as long as there are 20 characters in 1 second, it buffers
-# i think this is totally wrong but this is toward the right direction.
-# buffer can be of any complexity - any number of tuples.
+# Input field style definitions.
+# These control colors, borders, and sizing of input fields throughout the BBS.
 
 input_field:
   outline: false
   height: 1
-  blank: 
-    char: 176 # this fills all the unused space with chr(176)'s. if null, uses space.
-    fg: gray
-    br_fg: false
+  margin_char: "|"
+  blank:
+    char: 176  # CP437 light shade — fills unused space; set to null for spaces
+    fg: white
+    fg_br: false
     bg: blue
     br_bg: false
   content:
-    fg: green
-    br_fg: false
+    fg: white
+    fg_br: false
     bg: black
-    br_bg: false
+    bg_br: false
+    active:
+      fg: green
+      bg: black
+      fg_br: true
+      bg_br: false
 
 input_command:
   height: 1
-  outline: false 
+  outline: false
   content:
     fg: green
     br_fg: false
     bg: black
     br_bg: false
-    length: null
-  length: null
-  length_from_end: 0 # number of characters short of reaching the end of the screen. if this is defined, length is ignored.
+    max_length: null
+  width_from_end: 0  # characters short of screen edge; if set, length is ignored
   height_from_end: null
   content_length: 300
 
 input_box:
-  outline: 
+  outline:
     fg: green
     bg: black
     fg_br: false
     bg_br: false
     double_lined: false
+    active:
+      fg: green
+      bg: black
+      fg_br: true
+      bg_br: false
   content:
-    fg: green
-    br_fg: false
+    fg: white
+    fg_br: false
     bg: black
-    br_bg: false
+    bg_br: false
+    active:
+      fg: white
+      fg_br: false
+      bg: black
+      bg_br: false
 
+submit:
+  width: 7
+  height: 1
+  text: "Submit"
+  outline:
+    fg: green
+    double_lined: false
+    fg_br: false
+    bg: black
+    bg_br: false
+    active:
+      fg: green
+      fg_br: true
+      bg: black
+      bg_br: false
+  content:
+    fg: white
+    fg_br: false
+    bg: black
+    bg_br: false
+    active:
+      fg: white
+      fg_br: true
+      bg: black
+      bg_br: false

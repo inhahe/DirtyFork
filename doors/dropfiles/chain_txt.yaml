@@ -1,0 +1,13 @@
+# CHAIN.TXT field defaults (WWIV extended format).
+#
+# Shared variables: {security_level}, {ansi}
+# Session variables: {node}, {handle}, {age}, {sex}, {rows}, {cols},
+#   {secs_remaining}, {bbs_name}, {sysop_name}, {node_dir}, {baud}
+
+user_record: "1"
+gold: "0"
+last_login: "01/01/00"
+security_level: "{security_level}"
+co_sysop: "0"
+ansi: "{ansi}"
+remote: "0"
