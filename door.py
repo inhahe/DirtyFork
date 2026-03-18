@@ -495,7 +495,7 @@ def _generate_dosbox_config(node_dir, door_dir, door_conf, variables, socket_por
     # Only [serial] and [autoexec] go here; everything else lives in the
     # sysop-editable doors/dosbox.conf which is loaded first by DOSBox-X.
     config_content = f"""[serial]
-serial1=nullmodem server:127.0.0.1 port:{socket_port} transparent:1
+serial1=nullmodem server:127.0.0.1 port:{socket_port} transparent:1 baudrate:115200
 
 [autoexec]
 mount c "{node_dir}"
@@ -1057,4 +1057,6 @@ async def run(user, destination, menu_item=None):
         log.info("Cleaned up %s node %s", door_name, node_num)
 
     await send(user, cr + lf + "Returning to BBS..." + cr + lf, drain=True)
-    return RetVals(status=success, next_destination=Destinations.main, next_menu_item=null)
+    from common import _find_fallback_destination
+    prev = _find_fallback_destination(user, avoid=Destinations.door)
+    return RetVals(status=success, next_destination=prev, next_menu_item=null)

@@ -9,7 +9,7 @@ import time
 from definitions import (RetVals, Disconnected, success, fail,
                          cr, lf, null,
                          white, black, green, cyan, red, blue, brown, magenta)
-from input_output import send, ansi_color, ansi_move, ansi_wrap, ansi_cls, get_input_key, send_wrapped
+from input_output import send, ansi_color, ansi_move_deferred, ansi_wrap, ansi_cls, get_input_key, send_wrapped
 from input_fields import InputField, InputFields, Block, show_message_box
 from keyboard_codes import up, down, pgup, pgdn, home, end, back
 from config import get_config
@@ -105,26 +105,26 @@ async def _show_message_list(user, messages, title):
 
     # Title
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move(user, row=1, col=1, drain=False)
+    await ansi_move_deferred(user, row=1, col=1, drain=False)
     padded_title = title[:user.screen_width].center(user.screen_width)
     await send(user, padded_title, drain=False)
 
     # Column header
     ansi_color(user, fg=white, fg_br=True, bg=black)
-    await ansi_move(user, row=2, col=1, drain=False)
+    await ansi_move_deferred(user, row=2, col=1, drain=False)
     hdr = "  Status  Date              From             Subject"
     await send(user, hdr[:user.screen_width].ljust(user.screen_width), drain=False)
 
     # Separator
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=3, col=1, drain=False)
+    await ansi_move_deferred(user, row=3, col=1, drain=False)
     await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
     # Message lines
     for i in range(list_height):
       msg_idx = scroll_offset + i
       row = header_rows + i + 1
-      await ansi_move(user, row=row, col=1, drain=False)
+      await ansi_move_deferred(user, row=row, col=1, drain=False)
 
       if msg_idx >= total:
         ansi_color(user, fg=white, fg_br=False, bg=black)
@@ -157,13 +157,13 @@ async def _show_message_list(user, messages, title):
     # Bottom separator
     sep_row = header_rows + list_height + 1
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=sep_row, col=1, drain=False)
+    await ansi_move_deferred(user, row=sep_row, col=1, drain=False)
     await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
     # Controls
     ctrl_row = sep_row + 1
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move(user, row=ctrl_row, col=1, drain=False)
+    await ansi_move_deferred(user, row=ctrl_row, col=1, drain=False)
     ctrl_text = " Up/Down: navigate  PgUp/PgDn: page  Enter: read  Q: back"
     await send(user, ctrl_text[:user.screen_width].ljust(user.screen_width), drain=False)
 
@@ -246,27 +246,27 @@ async def _read_message(user, msg, messages, msg_index, con):
     # Header
     row = 1
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move(user, row=row, col=1, drain=False)
+    await ansi_move_deferred(user, row=row, col=1, drain=False)
     await send(user, f"  From: {msg['from_handle']}"[:user.screen_width].ljust(user.screen_width), drain=False)
 
     row += 1
     ansi_color(user, fg=cyan, fg_br=False, bg=black)
-    await ansi_move(user, row=row, col=1, drain=False)
+    await ansi_move_deferred(user, row=row, col=1, drain=False)
     await send(user, f"    To: {msg['to_handle']}"[:user.screen_width].ljust(user.screen_width), drain=False)
 
     row += 1
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=row, col=1, drain=False)
+    await ansi_move_deferred(user, row=row, col=1, drain=False)
     await send(user, f"  Date: {_format_time(msg['time_created'])}"[:user.screen_width].ljust(user.screen_width), drain=False)
 
     row += 1
     ansi_color(user, fg=white, fg_br=True, bg=black)
-    await ansi_move(user, row=row, col=1, drain=False)
+    await ansi_move_deferred(user, row=row, col=1, drain=False)
     await send(user, f"  Subj: {msg.get('subject', '')}"[:user.screen_width].ljust(user.screen_width), drain=False)
 
     row += 1
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=row, col=1, drain=False)
+    await ansi_move_deferred(user, row=row, col=1, drain=False)
     await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
     # Message body — use InputField in read-only mode
@@ -279,7 +279,7 @@ async def _read_message(user, msg, messages, msg_index, con):
     blocks = _json_to_blocks(msg.get("message", "[]"))
 
     ansi_color(user)
-    await ansi_move(user, row=row, col=2, drain=True)
+    await ansi_move_deferred(user, row=row, col=2, drain=True)
     body_field = await InputField.create(
       parent=True,  # return field object, don't auto-run
       user=user,
@@ -296,12 +296,12 @@ async def _read_message(user, msg, messages, msg_index, con):
     # Controls row
     ctrl_row = user.screen_height - 1
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=ctrl_row, col=1, drain=False)
+    await ansi_move_deferred(user, row=ctrl_row, col=1, drain=False)
     await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
     ctrl_row += 1
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move(user, row=ctrl_row, col=1, drain=False)
+    await ansi_move_deferred(user, row=ctrl_row, col=1, drain=False)
     nav_info = f" ({msg_index + 1}/{len(messages)})"
     ctrl_text = f" R)eply  D)elete  N)ext  P)rev  Q)back{nav_info}"
     await send(user, ctrl_text[:user.screen_width].ljust(user.screen_width), drain=False)
@@ -362,12 +362,12 @@ async def _compose_message(user, con, reply_to_msg=None):
 
   # Title
   ansi_color(user, fg=cyan, fg_br=True, bg=black)
-  await ansi_move(user, row=1, col=1, drain=False)
+  await ansi_move_deferred(user, row=1, col=1, drain=False)
   title = "  Reply to Message" if reply_to_msg else "  Compose Message"
   await send(user, title[:user.screen_width].ljust(user.screen_width), drain=False)
 
   ansi_color(user, fg=green, fg_br=False, bg=black)
-  await ansi_move(user, row=2, col=1, drain=False)
+  await ansi_move_deferred(user, row=2, col=1, drain=False)
   await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
   # Recipient
@@ -405,7 +405,7 @@ async def _compose_message(user, con, reply_to_msg=None):
 
   # To field
   ansi_color(user, fg=white, fg_br=True, bg=black)
-  await ansi_move(user, row=3, col=1, drain=False)
+  await ansi_move_deferred(user, row=3, col=1, drain=False)
   await send(user, "    To: ", drain=True)
   to_field = await form.add_field(
     conf=config.input_fields.input_field,
@@ -436,7 +436,7 @@ async def _compose_message(user, con, reply_to_msg=None):
   if editor_height < 3:
     editor_height = 3
 
-  await ansi_move(user, row=editor_top, col=1, drain=True)
+  await ansi_move_deferred(user, row=editor_top, col=1, drain=True)
   editor_field = await form.add_field(
     conf=config.input_fields.input_field,
     content=content_blocks,
@@ -453,17 +453,17 @@ async def _compose_message(user, con, reply_to_msg=None):
   # Divider between editor and buttons
   divider_row = editor_top + editor_height
   ansi_color(user, fg=green, fg_br=False, bg=black)
-  await ansi_move(user, row=divider_row, col=1, drain=False)
+  await ansi_move_deferred(user, row=divider_row, col=1, drain=False)
   await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
   # Buttons
   button_row = divider_row + 1
-  await ansi_move(user, row=button_row, col=2, drain=True)
+  await ansi_move_deferred(user, row=button_row, col=2, drain=True)
   await form.add_button("send", content=" Send ")
   send_btn = form._buttons[-1][1]
   abort_col = send_btn.col_offset + send_btn.width + (1 if send_btn.outline else 0) + 1
   abort_row = send_btn.row_offset - (1 if send_btn.outline else 0)
-  await ansi_move(user, row=abort_row, col=abort_col, drain=True)
+  await ansi_move_deferred(user, row=abort_row, col=abort_col, drain=True)
   await form.add_button("cancel", content=" Cancel ")
 
   # Run the form — loop on validation errors
@@ -570,18 +570,18 @@ async def _search_messages(user):
 
     # Title
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move(user, row=1, col=1, drain=False)
+    await ansi_move_deferred(user, row=1, col=1, drain=False)
     await send(user, "  Search Messages"[:user.screen_width].ljust(user.screen_width), drain=False)
 
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=2, col=1, drain=False)
+    await ansi_move_deferred(user, row=2, col=1, drain=False)
     await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
     field_width = min(40, user.screen_width - 20)
 
     # Build form
     ansi_color(user, fg=white, fg_br=True, bg=black)
-    await ansi_move(user, row=3, col=1, drain=False)
+    await ansi_move_deferred(user, row=3, col=1, drain=False)
     await send(user, "  From user: ", drain=True)
     form = InputFields(user)
     from_field = await form.add_field(
@@ -590,7 +590,7 @@ async def _search_messages(user):
     )
 
     ansi_color(user, fg=white, fg_br=True, bg=black)
-    await ansi_move(user, row=5, col=1, drain=False)
+    await ansi_move_deferred(user, row=5, col=1, drain=False)
     await send(user, "  Subject:   ", drain=True)
     subj_field = await form.add_field(
       conf=config.input_fields.input_field,
@@ -598,7 +598,7 @@ async def _search_messages(user):
     )
 
     ansi_color(user, fg=white, fg_br=True, bg=black)
-    await ansi_move(user, row=7, col=1, drain=False)
+    await ansi_move_deferred(user, row=7, col=1, drain=False)
     await send(user, "  Body:      ", drain=True)
     body_field = await form.add_field(
       conf=config.input_fields.input_field,
@@ -606,7 +606,7 @@ async def _search_messages(user):
     )
 
     ansi_color(user, fg=white, fg_br=True, bg=black)
-    await ansi_move(user, row=9, col=1, drain=False)
+    await ansi_move_deferred(user, row=9, col=1, drain=False)
     await send(user, "  Date from: ", drain=True)
     date_from_field = await form.add_field(
       conf=config.input_fields.input_field,
@@ -614,7 +614,7 @@ async def _search_messages(user):
     )
 
     ansi_color(user, fg=white, fg_br=True, bg=black)
-    await ansi_move(user, row=11, col=1, drain=False)
+    await ansi_move_deferred(user, row=11, col=1, drain=False)
     await send(user, "  Date to:   ", drain=True)
     date_to_field = await form.add_field(
       conf=config.input_fields.input_field,
@@ -622,9 +622,9 @@ async def _search_messages(user):
     )
 
     # Buttons
-    await ansi_move(user, row=13, col=3, drain=True)
+    await ansi_move_deferred(user, row=13, col=3, drain=True)
     await form.add_button("search", content=" Search ")
-    await ansi_move(user, row=13, col=15, drain=True)
+    await ansi_move_deferred(user, row=13, col=15, drain=True)
     await form.add_button("cancel", content=" Cancel ")
 
     ansi_wrap(user, True)

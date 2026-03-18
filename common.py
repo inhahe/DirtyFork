@@ -163,6 +163,20 @@ def setup_user_session(user, handle, user_id, time_created):
   cur.execute("SELECT key FROM user_keys WHERE user_id = ?", (user_id,))
   key_rows = cur.fetchall()
   user.keys = set(kr["key"] for kr in key_rows)
+
+  # Auto-grant or revoke the sysop key based on sysop_handle in config.
+  # If sysop_handle is set, only that handle gets the sysop key; anyone else loses it on login.
+  sysop_handle_conf = str(config.sysop_handle) if config.sysop_handle else None
+  if sysop_handle_conf and handle.lower() == sysop_handle_conf.lower():
+    if 'sysop' not in user.keys:
+      cur.execute("INSERT INTO USER_KEYS (user_id, key) VALUES (?, ?)", (user_id, 'sysop'))
+      con.commit()
+      user.keys.add('sysop')
+  elif sysop_handle_conf and 'sysop' in user.keys:
+    cur.execute("DELETE FROM USER_KEYS WHERE user_id = ? AND key = 'sysop'", (user_id,))
+    con.commit()
+    user.keys.discard('sysop')
+
   user.input_timestamps = deque()
   user.batch_mode = False
   global_data.users_logging_in.discard(user)
@@ -210,8 +224,73 @@ def check_keys(user, destination, menu_item=None):
   bad_keys = black_set & user.keys
   return RetVals(status=fail if (lacking_keys or bad_keys) else success, lacking_keys=lacking_keys, bad_keys=bad_keys)
 
-def show_screen(user, path):
-  pass # todo
+# CGA color index (low 3 bits) → ANSI/BBS internal color
+_CGA_TO_ANSI = [0, 4, 2, 6, 1, 5, 3, 7]
+
+async def _render_screen_to_terminal(user):
+  """Render user.screen to the terminal using run-length color encoding."""
+  if not user.screen:
+    return
+  ansi_wrap(user, False)
+  for r in range(min(user.screen_height, len(user.screen))):
+    row_data = user.screen[r]
+    n = min(user.screen_width, len(row_data))
+    c = 0
+    await ansi_move_deferred(user, row=r + 1, col=1, drain=False)
+    while c < n:
+      cell = row_data[c]
+      run_end = c + 1
+      while run_end < n:
+        nc = row_data[run_end]
+        if (nc.fg == cell.fg and nc.fg_br == cell.fg_br and
+            nc.bg == cell.bg and nc.bg_br == cell.bg_br):
+          run_end += 1
+        else:
+          break
+      ansi_color(user, fg=cell.fg, fg_br=cell.fg_br, bg=cell.bg, bg_br=cell.bg_br)
+      await send(user, "".join(row_data[i].char for i in range(c, run_end)), drain=False)
+      c = run_end
+  ansi_wrap(user, True)
+  ansi_color(user)
+  await user.writer.drain()
+
+async def show_screen(user, path):
+  """Display an ANSI (.ans/.ansi) or BIN (.bin) screen file.
+  Clears the terminal, renders the file content, and updates user.screen."""
+  resolved = paths.resolve_data(str(path))
+  ext = os.path.splitext(resolved)[1].lower()
+  try:
+    with open(resolved, 'rb') as f:
+      data = f.read()
+  except OSError:
+    await ansi_cls(user)
+    return
+  ansi_wrap(user, False)
+  await ansi_cls(user)
+  if ext == '.bin':
+    cols = 80
+    total_cells = len(data) // 2
+    rows = min(total_cells // cols, user.screen_height)
+    for r in range(rows):
+      for c in range(min(cols, user.screen_width)):
+        idx = (r * cols + c) * 2
+        if idx + 1 >= len(data):
+          break
+        char_byte = data[idx]
+        attr_byte = data[idx + 1]
+        fg_cga = attr_byte & 0x0F
+        bg_cga = (attr_byte >> 4) & 0x07
+        bg_br = bool(attr_byte & 0x80)
+        fg_ansi = _CGA_TO_ANSI[fg_cga & 7]
+        fg_br = bool(fg_cga & 8)
+        bg_ansi = _CGA_TO_ANSI[bg_cga]
+        user.screen[r][c] = Char(bytes([char_byte]).decode('cp437'),
+                                  fg=fg_ansi, fg_br=fg_br, bg=bg_ansi, bg_br=bg_br)
+  else:
+    from ansi_emulator import AnsiEmulator
+    emu = AnsiEmulator(user)
+    emu.feed(data.decode('cp437', errors='replace'))
+  await _render_screen_to_terminal(user)
 
 async def get_screen_size(user):
    user.writer.write("Detecting screen size...")
@@ -594,6 +673,14 @@ async def user_director(user, next_destination, menu_item=null):
       if bad:
         parts.append(f"Restricted keys: {', '.join(bad)}")
       err_msg = f"Access denied to {dest_name}. " + "; ".join(parts)
+
+      parent_menu = getattr(next_destination, 'parent_menu', None)
+      if parent_menu:
+        # Return to the source menu and let it show the error inline or as a popup
+        user.pending_menu_error = err_msg
+        return RetVals(status=fail, err_msg=err_msg,
+                       next_destination=getattr(Destinations, parent_menu), next_menu_item=null)
+
       from input_fields import show_message_box
       await show_message_box(user, err_msg, title="Access Denied",
                              fg=white, fg_br=True, bg=black,
@@ -619,21 +706,21 @@ async def user_director(user, next_destination, menu_item=null):
     err_msg = traceback.format_exc()
     dest_name = getattr(next_destination, 'dest_name', '?')
     _log.error("Error in destination %s for user %s:\n%s", dest_name, getattr(user, 'handle', '?'), err_msg)
-    from input_fields import show_message_box
-    await show_message_box(user, err_msg, title="Error",
-                           fg=white, fg_br=True, bg=black,
-                           outline_fg=red, outline_fg_br=True,
-                           word_wrap=False, max_width=user.screen_width - 4)
     fallback = _find_fallback_destination(user, avoid=next_destination)
-    r = RetVals(status=fail, err_msg=err_msg,
+    if getattr(fallback, 'dest_name', None) == 'logout':
+      parent = getattr(next_destination, 'parent_menu', None)
+      fallback = getattr(Destinations, parent) if parent else next_destination
+    r = RetVals(status=fail, err_msg=err_msg, err_word_wrap=False,
                 next_destination=fallback, next_menu_item=null)
 
   # If the destination returned a failure with an error message, show it to the user
   if r.status == fail and getattr(r, 'err_msg', None):
     from input_fields import show_message_box
+    word_wrap = getattr(r, 'err_word_wrap', True)
     await show_message_box(user, r.err_msg, title="Error",
                            fg=white, fg_br=True, bg=black,
-                           outline_fg=red, outline_fg_br=True)
+                           outline_fg=red, outline_fg_br=True,
+                           word_wrap=word_wrap)
 
   # Record in history
   user.destination_history.append(RetVals(

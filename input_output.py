@@ -98,7 +98,7 @@ def ansi_wrap(user, wrap=True):
 
 # todo: have an ansi_leftright and an ansi_updown which can take negative numbers and call the appropriate function, just for convenience?
 
-async def ansi_move_absolute(user, row, col, drain=False):
+async def ansi_move(user, row, col, drain=False):
   """Move cursor using absolute positioning. Always sends ESC[row;colH
   regardless of current tracked state, and syncs all tracking."""
   user.writer.write(f"\x1b[{row};{col}H")
@@ -145,7 +145,7 @@ async def ansi_down(user, val=1, drain=False):
   if drain:
     await ansi_move_2(user, drain)
 
-async def ansi_move(user, row=None, col=None, drain=False): # we have the drain option because if we're moving the cursor in(to) an input field, the user will want to see where he's about to type.
+async def ansi_move_deferred(user, row=None, col=None, drain=False): # we have the drain option because if we're moving the cursor in(to) an input field, the user will want to see where he's about to type.
   user.new_row = row if row else user.new_row
   user.new_col = col if col else user.new_col
   user.new_row = max(1, min(user.new_row, user.screen_height or 25))

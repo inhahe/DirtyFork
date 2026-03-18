@@ -103,7 +103,7 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     else:
       title_len = 0
     longest = max((len(line) for line in wrapped), default=0)
-    min_prompt_width = 15  # enough for " Press any key " in the border
+    min_prompt_width = 16  # enough for " Press any key " + 1 spare before br_c
     inner_width = max(longest, title_len, min_prompt_width)
     inner_width = min(inner_width, max_width)
     # Re-wrap at the final width in case shrinking changed things
@@ -194,7 +194,7 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     # Top border with close button [■] in top-right
     close_str = "[" + close_char + "]"
     close_btn_col = save_left + inner_width - 2  # 1-based screen col of '['
-    await ansi_move(user, row=save_top, col=save_left, drain=False)
+    await ansi_move_deferred(user, row=save_top, col=save_left, drain=False)
     if title and title is not null:
       title_str = str(title)[:inner_width - 5]  # leave room for close btn
       fill_len = inner_width - len(title_str) - 3 - len(close_str)
@@ -228,7 +228,7 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     # Side borders + content
     for i in range(height):
       line_idx = scroll_offset + i
-      await ansi_move(user, row=row + i, col=save_left, drain=False)
+      await ansi_move_deferred(user, row=row + i, col=save_left, drain=False)
 
       # Left border
       ansi_color(user, fg=outline_fg, fg_br=outline_fg_br, bg=outline_bg, bg_br=outline_bg_br)
@@ -260,7 +260,7 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
         await send(user, vert, drain=False)
 
     # Bottom border — with horizontal scrollbar if h_scrollable
-    await ansi_move(user, row=save_bottom, col=save_left, drain=False)
+    await ansi_move_deferred(user, row=save_bottom, col=save_left, drain=False)
     ansi_color(user, fg=outline_fg, fg_br=outline_fg_br, bg=outline_bg, bg_br=outline_bg_br)
     if h_scrollable:
       max_h_offset = max_line_width - inner_width
@@ -309,10 +309,10 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
       if prompt_col < save_left + 2:
         prompt_col = save_left + 2
       prompt_row = save_top
-      await ansi_move(user, row=prompt_row, col=prompt_col, drain=False)
+      await ansi_move_deferred(user, row=prompt_row, col=prompt_col, drain=False)
     else:
       prompt_row = save_bottom
-      await ansi_move(user, row=prompt_row, col=save_left + 2, drain=False)
+      await ansi_move_deferred(user, row=prompt_row, col=save_left + 2, drain=False)
       prompt_col = save_left + 2
     await send(user, prompt_text, drain=False)
     # Track abort click region
@@ -324,7 +324,7 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
 
     # Position cursor: inside the box top-left if scrollable, otherwise hidden
     if scrollable:
-      await ansi_move(user, row=row, col=col, drain=False)
+      await ansi_move_deferred(user, row=row, col=col, drain=False)
 
     if need_nowrap:
       ansi_wrap(user, True)
@@ -432,7 +432,7 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     for ci, c in enumerate(range(save_left, save_right + 1)):
       if 1 <= r <= user.screen_height and 1 <= c <= user.screen_width:
         ch = saved[ri][ci]
-        await ansi_move(user, row=r, col=c, drain=False)
+        await ansi_move_deferred(user, row=r, col=c, drain=False)
         ansi_color(user, fg=ch.fg, fg_br=ch.fg_br, bg=ch.bg, bg_br=ch.bg_br)
         await send(user, ch.char, drain=False)
 
@@ -585,7 +585,7 @@ class InputFields:
             prev = self._get_field_or_button(last_index)
             await prev.draw_outline(active=False)
           # Just position the cursor on the field — no need to redraw content
-          await ansi_move(self.user,
+          await ansi_move_deferred(self.user,
                           row=current_field.row_offset + current_field.row,
                           col=current_field.col_offset + current_field.col,
                           drain=True)
@@ -730,7 +730,9 @@ class InputField:
     # Colors
     self.fg = _color(conf.content.fg, white) if fg is null else fg
     self.fg_br = (conf.content.fg_br or False) if fg_br is null else fg_br
-    self.bg = _color(conf.content.bg, black) if bg is null else bg
+    _fill_present = bool(conf.blank.char if fill is null else fill)
+    _fill_bg = _color(conf.blank.bg, black) if fill_bg is null else fill_bg
+    self.bg = _color(conf.content.bg, _fill_bg if _fill_present else black) if bg is null else bg
     self.bg_br = (conf.content.bg_br or False) if bg_br is null else bg_br
 
     # Fill character and colors
@@ -886,6 +888,12 @@ class InputField:
         last = i
     return last
 
+  def _set_updown_col(self):
+    """Set _updown_col as the offset of cursor_col within its display row.
+    Must be called after display_rows is up to date."""
+    dri = self._display_row_for_cursor()
+    self._updown_col = self.cursor_col - self.display_rows[dri].start_col
+
   def _first_display_row_for_line(self, line_index):
     """Find the first display row index for a given logical line."""
     for i, dr in enumerate(self.display_rows):
@@ -928,7 +936,7 @@ class InputField:
   async def _position_cursor(self, drain=True):
     """Move the terminal cursor to the current logical cursor position."""
     sr, sc = self._cursor_to_screen()
-    await ansi_move_absolute(self.user, sr, sc)
+    await ansi_move(self.user, sr, sc)
     if self.insert_mode:
       await self._show_insert_cursor(drain=drain)
     elif drain:
@@ -950,7 +958,7 @@ class InputField:
     if need_nowrap:
       ansi_wrap(self.user, False)
 
-    await ansi_move_absolute(self.user, screen_row, self.col_offset)
+    await ansi_move(self.user, screen_row, self.col_offset)
 
     if self.word_wrap:
       # Draw margin prefix
@@ -1021,7 +1029,7 @@ class InputField:
       need_nowrap = (self.col_offset + self.width - 1 >= self.user.screen_width)
       if need_nowrap:
         ansi_wrap(self.user, False)
-      await ansi_move_absolute(self.user, screen_row, self.col_offset)
+      await ansi_move(self.user, screen_row, self.col_offset)
       usable = self.width if self.no_cursor_margin else self.width - 1
       ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br, bg=self.fill_bg, bg_br=self.fill_bg_br)
       await send(self.user, self.fill * usable, drain=False)
@@ -1062,18 +1070,18 @@ class InputField:
     ansi_color(self.user, fg=ofg, fg_br=ofg_br, bg=obg, bg_br=obg_br)
 
     # Top border
-    await ansi_move_absolute(self.user, outline_row, outline_col)
+    await ansi_move(self.user, outline_row, outline_col)
     await send(self.user, tl + horiz * self.width + tr, drain=False)
 
     # Side borders
     for r in range(self.height):
-      await ansi_move_absolute(self.user, outline_row + 1 + r, outline_col)
+      await ansi_move(self.user, outline_row + 1 + r, outline_col)
       await send(self.user, vert, drain=False)
-      await ansi_move_absolute(self.user, outline_row + 1 + r, outline_col + self.width + 1)
+      await ansi_move(self.user, outline_row + 1 + r, outline_col + self.width + 1)
       await send(self.user, vert, drain=False)
 
     # Bottom border
-    await ansi_move_absolute(self.user, outline_row + self.height + 1, outline_col)
+    await ansi_move(self.user, outline_row + self.height + 1, outline_col)
     await send(self.user, bl + horiz * self.width + br_char, drain=False)
 
     # Restore cursor
@@ -1085,7 +1093,7 @@ class InputField:
   async def _show_insert_cursor(self, drain=True):
     """Show the insert-mode cursor: character at cursor with inverted colors."""
     sr, sc = self._cursor_to_screen()
-    await ansi_move_absolute(self.user, sr, sc)
+    await ansi_move(self.user, sr, sc)
     line = self.lines[self.cursor_line]
     if self.cursor_col < len(line.text):
       ch = line.text[self.cursor_col]
@@ -1093,14 +1101,14 @@ class InputField:
       if sc >= self.user.screen_width:
         ansi_wrap(self.user, False)
       await send(self.user, ch, drain=False)
-      await ansi_move_absolute(self.user, sr, sc)
+      await ansi_move(self.user, sr, sc)
       ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
     else:
       ansi_color(self.user, fg=self.fill_bg, fg_br=self.fill_bg_br, bg=self.fill_fg, bg_br=self.fill_fg_br)
       if sc >= self.user.screen_width:
         ansi_wrap(self.user, False)
       await send(self.user, self.fill, drain=False)
-      await ansi_move_absolute(self.user, sr, sc)
+      await ansi_move(self.user, sr, sc)
       ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
     if drain:
       await self.user.writer.drain()
@@ -1110,7 +1118,7 @@ class InputField:
     if not self.insert_mode:
       return
     sr, sc = self._cursor_to_screen()
-    await ansi_move_absolute(self.user, sr, sc)
+    await ansi_move(self.user, sr, sc)
     line = self.lines[self.cursor_line]
     if self.cursor_col < len(line.text):
       ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
@@ -1118,7 +1126,7 @@ class InputField:
     else:
       ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br, bg=self.fill_bg, bg_br=self.fill_bg_br)
       await send(self.user, self.fill, drain=False)
-    await ansi_move_absolute(self.user, sr, sc)
+    await ansi_move(self.user, sr, sc)
 
   # ---- Public content API ----
 
@@ -1182,7 +1190,7 @@ class InputField:
 
     self.cursor_line = dr.line_index
     self.cursor_col = text_col
-    self._updown_col = self.cursor_col
+    self._set_updown_col()
     self._ensure_cursor_visible()
 
   # ---- Main run loop ----
@@ -1200,19 +1208,19 @@ class InputField:
     if self.outline:
       outline_row = self.row_offset - 1
       outline_col = self.col_offset - 1
-      await ansi_move_absolute(self.user, outline_row, outline_col)
+      await ansi_move(self.user, outline_row, outline_col)
       await send(self.user, " " * (self.width + 2), drain=False)
       for r in range(self.height):
-        await ansi_move_absolute(self.user, outline_row + 1 + r, outline_col)
+        await ansi_move(self.user, outline_row + 1 + r, outline_col)
         await send(self.user, " ", drain=False)
-        await ansi_move_absolute(self.user, outline_row + 1 + r, outline_col + self.width + 1)
+        await ansi_move(self.user, outline_row + 1 + r, outline_col + self.width + 1)
         await send(self.user, " ", drain=False)
-      await ansi_move_absolute(self.user, outline_row + self.height + 1, outline_col)
+      await ansi_move(self.user, outline_row + self.height + 1, outline_col)
       await send(self.user, " " * (self.width + 2), drain=False)
     for r in range(self.height):
-      await ansi_move_absolute(self.user, self.row_offset + r, self.col_offset)
+      await ansi_move(self.user, self.row_offset + r, self.col_offset)
       await send(self.user, " " * self.width, drain=False)
-    await ansi_move_absolute(self.user, self.row_offset, self.col_offset)
+    await ansi_move(self.user, self.row_offset, self.col_offset)
     await send(self.user, cr + lf, drain=True)
 
   def _make_retvals(self, key):
@@ -1395,7 +1403,7 @@ class InputField:
       if self.insert_mode:
         await self._hide_insert_cursor()
       self.cursor_col -= 1
-      self._updown_col = self.cursor_col
+      self._set_updown_col()
       self._ensure_cursor_visible()
       self._ensure_h_scroll()
       await self._position_cursor(drain=True)
@@ -1404,7 +1412,7 @@ class InputField:
         await self._hide_insert_cursor()
       self.cursor_line -= 1
       self.cursor_col = len(self.lines[self.cursor_line].text)
-      self._updown_col = self.cursor_col
+      self._set_updown_col()
       self._ensure_cursor_visible()
       self._ensure_h_scroll()
       await self._redraw_or_reposition()
@@ -1422,7 +1430,7 @@ class InputField:
       if self.insert_mode:
         await self._hide_insert_cursor()
       self.cursor_col += 1
-      self._updown_col = self.cursor_col
+      self._set_updown_col()
       self._ensure_cursor_visible()
       self._ensure_h_scroll()
       await self._position_cursor(drain=True)
@@ -1508,9 +1516,10 @@ class InputField:
       dri = self._display_row_for_cursor()
       dr = self.display_rows[dri]
       self.cursor_col = min(dr.end_col, len(line.text))
+      self._updown_col = self.cursor_col - dr.start_col
     else:
       self.cursor_col = len(line.text)
-    self._updown_col = self.cursor_col
+      self._updown_col = self.cursor_col
     self._ensure_h_scroll()
     self._ensure_cursor_visible()
     if not self.word_wrap:
@@ -1550,8 +1559,8 @@ class InputField:
       # Delete char before cursor
       line.text = line.text[:self.cursor_col - 1] + line.text[self.cursor_col:]
       self.cursor_col -= 1
-      self._updown_col = self.cursor_col
       self._compute_display_rows()
+      self._set_updown_col()
       self._ensure_cursor_visible()
       self._ensure_h_scroll()
       await self._draw_visible()
@@ -1563,8 +1572,8 @@ class InputField:
       del self.lines[self.cursor_line]
       self.cursor_line -= 1
       self.cursor_col = join_col
-      self._updown_col = self.cursor_col
       self._compute_display_rows()
+      self._set_updown_col()
       self._ensure_cursor_visible()
       self._ensure_h_scroll()
       await self._draw_visible()
@@ -1584,11 +1593,11 @@ class InputField:
       line.text = line.text[:self.cursor_col] + ch + line.text[self.cursor_col:]
 
     self.cursor_col += 1
-    self._updown_col = self.cursor_col
 
     saved_lines = deepcopy(self.lines) if (self.word_wrap and self.max_lines) else None
 
     self._compute_display_rows()
+    self._set_updown_col()
 
     # Check max_lines (word wrap reflow might push over)
     if self.max_lines and len(self.display_rows) > 0:
@@ -1625,9 +1634,9 @@ class InputField:
       line.text = line.text[:self.cursor_col] + batch_str + line.text[self.cursor_col:]
 
     self.cursor_col += len(batch_str)
-    self._updown_col = self.cursor_col
 
     self._compute_display_rows()
+    self._set_updown_col()
     self._ensure_cursor_visible()
     self._ensure_h_scroll()
     await self._draw_visible()

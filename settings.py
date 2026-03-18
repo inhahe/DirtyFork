@@ -8,7 +8,7 @@ import os
 import yaml
 
 from input_fields import InputFields, InputField, show_message_box
-from input_output import send, ansi_color, ansi_move, ansi_cls
+from input_output import send, ansi_color, ansi_move_deferred, ansi_cls
 from definitions import RetVals, success, fail, cr, lf, null, white, black, green, red
 from config import get_config
 
@@ -90,7 +90,7 @@ async def run(user, destination, menu_item=None):
       padded_right = label2.rjust(max_right_label)
       right_label_col = right_col_start
       # Position cursor for right-column label — must drain to actually move
-      await ansi_move(user, row=label_row, col=right_label_col, drain=True)
+      await ansi_move_deferred(user, row=label_row, col=right_label_col, drain=True)
       ansi_color(user, fg=white, bg=black, fg_br=False, bg_br=False)
       await send(user, padded_right, drain=True)
       await inputFields.add_field(conf=style_conf, width=width2, max_length=max_length2, content=current[key2])
@@ -101,7 +101,7 @@ async def run(user, destination, menu_item=None):
   submit_btn = await inputFields.add_button("save", content="Save")
   abort_col = submit_btn.col_offset + submit_btn.width + (1 if submit_btn.outline else 0) + 1
   abort_row = submit_btn.row_offset - (1 if submit_btn.outline else 0)
-  await ansi_move(user, row=abort_row, col=abort_col, drain=True)
+  await ansi_move_deferred(user, row=abort_row, col=abort_col, drain=True)
   await inputFields.add_button("cancel", content="Cancel")
 
   r = await inputFields.run()

@@ -13,7 +13,7 @@ from definitions import (
     white, black, red, green, blue, magenta, cyan, yellow, brown,
 )
 from input_output import (
-    send, ansi_move, ansi_color, ansi_wrap, ansi_cls, get_input_key,
+    send, ansi_move_deferred, ansi_color, ansi_wrap, ansi_cls, get_input_key,
     ansi_set_region, ansi_set_region_strict,
 )
 from keyboard_codes import left, right, home, end, back, delete, up, down, pgup, pgdn
@@ -65,7 +65,7 @@ async def _display_message(target, parts, chat_bottom):
     saved_col = target.new_col
 
     # Move to the bottom of the chat region and issue a newline to scroll
-    await ansi_move(target, row=chat_bottom, col=1)
+    await ansi_move_deferred(target, row=chat_bottom, col=1)
     await send(target, cr + lf)
 
     # Now the cursor is on a fresh line at chat_bottom; write message parts
@@ -77,7 +77,7 @@ async def _display_message(target, parts, chat_bottom):
     target.writer.write("\x1b[K")
 
     # Restore cursor back to the input area
-    await ansi_move(target, row=saved_row, col=saved_col)
+    await ansi_move_deferred(target, row=saved_row, col=saved_col)
     await send(target, "", drain=True)
 
 
@@ -183,14 +183,14 @@ async def _draw_header(user, channel_key):
         pad = 0
     header_line = left_text + _HORIZ * pad
 
-    await ansi_move(user, row=1, col=1)
+    await ansi_move_deferred(user, row=1, col=1)
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
     await send(user, header_line[:user.screen_width])
 
 
 async def _draw_separator(user):
     sep_row = user.screen_height - 2
-    await ansi_move(user, row=sep_row, col=1)
+    await ansi_move_deferred(user, row=sep_row, col=1)
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
     await send(user, _HORIZ * user.screen_width)
 
@@ -207,7 +207,7 @@ async def _draw_typing_indicator(user, channel_key):
             if now - user_typing[u] < TYPING_TIMEOUT:
                 typers.append(u.handle)
     saved_r, saved_c = user.new_row, user.new_col
-    await ansi_move(user, row=2, col=1)
+    await ansi_move_deferred(user, row=2, col=1)
     if typers:
         if len(typers) == 1:
             text = f" {typers[0]} is typing..."
@@ -217,7 +217,7 @@ async def _draw_typing_indicator(user, channel_key):
         ansi_color(user, fg=white, fg_br=False, bg=black)
         await send(user, text)
     user.writer.write("\x1b[K")  # clear rest of line
-    await ansi_move(user, row=saved_r, col=saved_c, drain=True)
+    await ansi_move_deferred(user, row=saved_r, col=saved_c, drain=True)
 
 
 async def _broadcast_typing_indicator(channel_key):
@@ -234,7 +234,7 @@ async def _broadcast_typing_indicator(channel_key):
 
 async def _draw_input_prompt(user):
     row = _input_row(user)
-    await ansi_move(user, row=row, col=1)
+    await ansi_move_deferred(user, row=row, col=1)
     ansi_color(user, fg=green, fg_br=True, bg=black)
     await send(user, "> ", drain=True)
 
@@ -258,7 +258,7 @@ async def _setup_screen(user, channel_key):
 
     # Position cursor in input area
     row = _input_row(user)
-    await ansi_move(user, row=row, col=3, drain=True)
+    await ansi_move_deferred(user, row=row, col=3, drain=True)
 
 
 async def _restore_screen(user):
@@ -314,7 +314,7 @@ async def _join_channel(user, channel_key, display_name=None):
       try:
         saved_r, saved_c = u.new_row, u.new_col
         await _draw_header(u, channel_key)
-        await ansi_move(u, row=saved_r, col=saved_c, drain=True)
+        await ansi_move_deferred(u, row=saved_r, col=saved_c, drain=True)
       except Exception:
         pass
     if others:
@@ -337,7 +337,7 @@ async def _leave_channel(user, quiet=False):
               try:
                 saved_r, saved_c = u.new_row, u.new_col
                 await _draw_header(u, channel_key)
-                await ansi_move(u, row=saved_r, col=saved_c, drain=True)
+                await ansi_move_deferred(u, row=saved_r, col=saved_c, drain=True)
               except Exception:
                 pass
         # Clean up empty non-default channels
@@ -443,7 +443,7 @@ async def _process_command(user, line):
                     saved_r = u.new_row
                     saved_c = u.new_col
                     await _draw_header(u, channel_key)
-                    await ansi_move(u, row=saved_r, col=saved_c, drain=True)
+                    await ansi_move_deferred(u, row=saved_r, col=saved_c, drain=True)
                 except (Disconnected, Exception):
                     pass
 
@@ -484,11 +484,11 @@ async def _process_command(user, line):
         chat_top = 2
         chat_bot = _chat_bottom(user)
         for row in range(chat_top, chat_bot + 1):
-            await ansi_move(user, row=row, col=1)
+            await ansi_move_deferred(user, row=row, col=1)
             ansi_color(user, fg=white, bg=black)
             user.writer.write("\x1b[K")
         # Re-position cursor in input area
-        await ansi_move(user, row=_input_row(user), col=3, drain=True)
+        await ansi_move_deferred(user, row=_input_row(user), col=3, drain=True)
 
     else:
         await _send_error(user, f"Unknown command: {cmd}. Type /help for a list of commands.")
@@ -510,7 +510,7 @@ async def run(user, destination, menu_item=None):
         await _replay_history(user, channel_key)
         await _join_channel(user, channel_key, "General")
         await _draw_header(user, channel_key)
-        await ansi_move(user, row=_input_row(user), col=3, drain=True)
+        await ansi_move_deferred(user, row=_input_row(user), col=3, drain=True)
 
         # Input buffer state
         buf = []
@@ -566,14 +566,14 @@ async def run(user, destination, menu_item=None):
 
             visible = "".join(buf[scroll_off:scroll_off + max_visible])
 
-            await ansi_move(user, row=input_row, col=1)
+            await ansi_move_deferred(user, row=input_row, col=1)
             ansi_color(user, fg=green, fg_br=True, bg=black)
             await send(user, prompt)
             ansi_color(user, fg=white, fg_br=False, bg=black)
             await send(user, visible)
             user.writer.write("\x1b[K")  # clear to end of line
             display_col = len(prompt) + (cursor_pos - scroll_off) + 1
-            await ansi_move(user, row=input_row, col=display_col, drain=True)
+            await ansi_move_deferred(user, row=input_row, col=display_col, drain=True)
 
         while True:
             key = await get_input_key(user)

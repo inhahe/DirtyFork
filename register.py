@@ -8,7 +8,7 @@ import sqlite3
 import yaml
 
 from input_fields import InputFields, InputField, show_message_box
-from input_output import send, send_wrapped, ansi_color, ansi_move, ansi_cls
+from input_output import send, send_wrapped, ansi_color, ansi_move_deferred, ansi_cls
 from definitions import RetVals, success, fail, cr, lf, null, white, black, red
 from config import get_config
 import paths
@@ -130,7 +130,7 @@ async def run(user, destination, menu_item=None):
   # We want a gap then the next outline starts.
   abort_col = submit_btn.col_offset + submit_btn.width + (1 if submit_btn.outline else 0) + 1
   abort_row = submit_btn.row_offset - (1 if submit_btn.outline else 0)
-  await ansi_move(user, row=abort_row, col=abort_col, drain=True)
+  await ansi_move_deferred(user, row=abort_row, col=abort_col, drain=True)
   await inputFields.add_button("abort", content="Abort")
 
   # Loop: run the form, validate, show errors, repeat until success or abort

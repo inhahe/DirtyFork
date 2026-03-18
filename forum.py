@@ -11,7 +11,7 @@ import time
 from definitions import (RetVals, Disconnected, success, fail,
                          cr, lf, null,
                          white, black, green, cyan, red, blue, brown, magenta)
-from input_output import send, ansi_color, ansi_move, ansi_wrap, ansi_cls, get_input_key, send_wrapped
+from input_output import send, ansi_color, ansi_move_deferred, ansi_wrap, ansi_cls, get_input_key, send_wrapped
 from input_fields import InputField, InputFields, Block, show_message_box
 from keyboard_codes import up, down, pgup, pgdn, home, end, back
 from config import get_config
@@ -107,26 +107,26 @@ async def _show_post_list(user, posts, title):
 
     # Title
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move(user, row=1, col=1, drain=False)
+    await ansi_move_deferred(user, row=1, col=1, drain=False)
     padded_title = title[:user.screen_width].center(user.screen_width)
     await send(user, padded_title, drain=False)
 
     # Column header
     ansi_color(user, fg=white, fg_br=True, bg=black)
-    await ansi_move(user, row=2, col=1, drain=False)
+    await ansi_move_deferred(user, row=2, col=1, drain=False)
     hdr = "  Status  Date              From             Subject"
     await send(user, hdr[:user.screen_width].ljust(user.screen_width), drain=False)
 
     # Separator
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=3, col=1, drain=False)
+    await ansi_move_deferred(user, row=3, col=1, drain=False)
     await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
     # Post lines
     for i in range(list_height):
       post_idx = scroll_offset + i
       row = header_rows + i + 1
-      await ansi_move(user, row=row, col=1, drain=False)
+      await ansi_move_deferred(user, row=row, col=1, drain=False)
 
       if post_idx >= total:
         ansi_color(user, fg=white, fg_br=False, bg=black)
@@ -160,13 +160,13 @@ async def _show_post_list(user, posts, title):
     # Bottom separator
     sep_row = header_rows + list_height + 1
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=sep_row, col=1, drain=False)
+    await ansi_move_deferred(user, row=sep_row, col=1, drain=False)
     await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
     # Controls
     ctrl_row = sep_row + 1
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move(user, row=ctrl_row, col=1, drain=False)
+    await ansi_move_deferred(user, row=ctrl_row, col=1, drain=False)
     ctrl_text = " Up/Down: navigate  PgUp/PgDn: page  Enter: read  Q: back"
     await send(user, ctrl_text[:user.screen_width].ljust(user.screen_width), drain=False)
 
@@ -243,22 +243,22 @@ async def _read_post(user, post, posts, post_index, con, forum_id):
     # Header
     row = 1
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move(user, row=row, col=1, drain=False)
+    await ansi_move_deferred(user, row=row, col=1, drain=False)
     await send(user, f"  From: {post['from_handle']}"[:user.screen_width].ljust(user.screen_width), drain=False)
 
     row += 1
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=row, col=1, drain=False)
+    await ansi_move_deferred(user, row=row, col=1, drain=False)
     await send(user, f"  Date: {_format_time(post['time_created'])}"[:user.screen_width].ljust(user.screen_width), drain=False)
 
     row += 1
     ansi_color(user, fg=white, fg_br=True, bg=black)
-    await ansi_move(user, row=row, col=1, drain=False)
+    await ansi_move_deferred(user, row=row, col=1, drain=False)
     await send(user, f"  Subj: {post.get('subject', '')}"[:user.screen_width].ljust(user.screen_width), drain=False)
 
     row += 1
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=row, col=1, drain=False)
+    await ansi_move_deferred(user, row=row, col=1, drain=False)
     await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
     # Body - read-only InputField
@@ -271,7 +271,7 @@ async def _read_post(user, post, posts, post_index, con, forum_id):
     blocks = _json_to_blocks(post.get("message", "[]"))
 
     ansi_color(user)
-    await ansi_move(user, row=row, col=2, drain=True)
+    await ansi_move_deferred(user, row=row, col=2, drain=True)
     body_field = await InputField.create(
       parent=True,  # return field object, don't auto-run
       user=user,
@@ -288,12 +288,12 @@ async def _read_post(user, post, posts, post_index, con, forum_id):
     # Controls
     ctrl_row = user.screen_height - 1
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=ctrl_row, col=1, drain=False)
+    await ansi_move_deferred(user, row=ctrl_row, col=1, drain=False)
     await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
     ctrl_row += 1
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move(user, row=ctrl_row, col=1, drain=False)
+    await ansi_move_deferred(user, row=ctrl_row, col=1, drain=False)
     nav_info = f" ({post_index + 1}/{len(posts)})"
     ctrl_text = f" R)eply  N)ext  P)rev  Q)back{nav_info}"
     await send(user, ctrl_text[:user.screen_width].ljust(user.screen_width), drain=False)
@@ -338,12 +338,12 @@ async def _compose_post(user, con, forum_id, reply_to_post=None):
 
   # Title
   ansi_color(user, fg=cyan, fg_br=True, bg=black)
-  await ansi_move(user, row=1, col=1, drain=False)
+  await ansi_move_deferred(user, row=1, col=1, drain=False)
   title = "  Reply to Post" if reply_to_post else "  New Post"
   await send(user, title[:user.screen_width].ljust(user.screen_width), drain=False)
 
   ansi_color(user, fg=green, fg_br=False, bg=black)
-  await ansi_move(user, row=2, col=1, drain=False)
+  await ansi_move_deferred(user, row=2, col=1, drain=False)
   await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
   # Defaults for reply
@@ -368,7 +368,7 @@ async def _compose_post(user, con, forum_id, reply_to_post=None):
 
   # Subject field
   ansi_color(user, fg=white, fg_br=True, bg=black)
-  await ansi_move(user, row=3, col=1, drain=False)
+  await ansi_move_deferred(user, row=3, col=1, drain=False)
   await send(user, "  Subj: ", drain=True)
   subj_field = await form.add_field(
     conf=config.input_fields.input_field,
@@ -388,7 +388,7 @@ async def _compose_post(user, con, forum_id, reply_to_post=None):
   if editor_height < 3:
     editor_height = 3
 
-  await ansi_move(user, row=editor_top, col=1, drain=True)
+  await ansi_move_deferred(user, row=editor_top, col=1, drain=True)
   editor_field = await form.add_field(
     conf=config.input_fields.input_field,
     content=content_blocks,
@@ -403,17 +403,17 @@ async def _compose_post(user, con, forum_id, reply_to_post=None):
   # Divider
   divider_row = editor_top + editor_height
   ansi_color(user, fg=green, fg_br=False, bg=black)
-  await ansi_move(user, row=divider_row, col=1, drain=False)
+  await ansi_move_deferred(user, row=divider_row, col=1, drain=False)
   await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
   # Buttons
   button_row = divider_row + 1
-  await ansi_move(user, row=button_row, col=2, drain=True)
+  await ansi_move_deferred(user, row=button_row, col=2, drain=True)
   await form.add_button("post", content=" Post ")
   post_btn = form._buttons[-1][1]
   cancel_col = post_btn.col_offset + post_btn.width + (1 if post_btn.outline else 0) + 1
   cancel_row = post_btn.row_offset - (1 if post_btn.outline else 0)
-  await ansi_move(user, row=cancel_row, col=cancel_col, drain=True)
+  await ansi_move_deferred(user, row=cancel_row, col=cancel_col, drain=True)
   await form.add_button("cancel", content=" Cancel ")
 
   ansi_wrap(user, True)
@@ -481,11 +481,11 @@ async def _search_posts(user, con, forum_id, forum_name):
 
   # Title
   ansi_color(user, fg=cyan, fg_br=True, bg=black)
-  await ansi_move(user, row=1, col=1, drain=False)
+  await ansi_move_deferred(user, row=1, col=1, drain=False)
   await send(user, f"  Search - {forum_name}"[:user.screen_width].ljust(user.screen_width), drain=False)
 
   ansi_color(user, fg=green, fg_br=False, bg=black)
-  await ansi_move(user, row=2, col=1, drain=False)
+  await ansi_move_deferred(user, row=2, col=1, drain=False)
   await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
   field_width = min(40, user.screen_width - 20)
@@ -493,7 +493,7 @@ async def _search_posts(user, con, forum_id, forum_name):
   form = InputFields(user)
 
   ansi_color(user, fg=white, fg_br=True, bg=black)
-  await ansi_move(user, row=3, col=1, drain=False)
+  await ansi_move_deferred(user, row=3, col=1, drain=False)
   await send(user, "  From user: ", drain=True)
   from_field = await form.add_field(
     conf=config.input_fields.input_field,
@@ -501,7 +501,7 @@ async def _search_posts(user, con, forum_id, forum_name):
   )
 
   ansi_color(user, fg=white, fg_br=True, bg=black)
-  await ansi_move(user, row=5, col=1, drain=False)
+  await ansi_move_deferred(user, row=5, col=1, drain=False)
   await send(user, "  Subject:   ", drain=True)
   subj_field = await form.add_field(
     conf=config.input_fields.input_field,
@@ -509,7 +509,7 @@ async def _search_posts(user, con, forum_id, forum_name):
   )
 
   ansi_color(user, fg=white, fg_br=True, bg=black)
-  await ansi_move(user, row=7, col=1, drain=False)
+  await ansi_move_deferred(user, row=7, col=1, drain=False)
   await send(user, "  Body:      ", drain=True)
   body_field = await form.add_field(
     conf=config.input_fields.input_field,
@@ -517,7 +517,7 @@ async def _search_posts(user, con, forum_id, forum_name):
   )
 
   ansi_color(user, fg=white, fg_br=True, bg=black)
-  await ansi_move(user, row=9, col=1, drain=False)
+  await ansi_move_deferred(user, row=9, col=1, drain=False)
   await send(user, "  Date from: ", drain=True)
   date_from_field = await form.add_field(
     conf=config.input_fields.input_field,
@@ -525,7 +525,7 @@ async def _search_posts(user, con, forum_id, forum_name):
   )
 
   ansi_color(user, fg=white, fg_br=True, bg=black)
-  await ansi_move(user, row=11, col=1, drain=False)
+  await ansi_move_deferred(user, row=11, col=1, drain=False)
   await send(user, "  Date to:   ", drain=True)
   date_to_field = await form.add_field(
     conf=config.input_fields.input_field,
@@ -533,9 +533,9 @@ async def _search_posts(user, con, forum_id, forum_name):
   )
 
   # Buttons
-  await ansi_move(user, row=13, col=3, drain=True)
+  await ansi_move_deferred(user, row=13, col=3, drain=True)
   await form.add_button("search", content=" Search ")
-  await ansi_move(user, row=13, col=15, drain=True)
+  await ansi_move_deferred(user, row=13, col=15, drain=True)
   await form.add_button("cancel", content=" Cancel ")
 
   ansi_wrap(user, True)

@@ -3,7 +3,7 @@ File Library — browse, search, upload, and download files via ZMODEM or YMODEM
 
 Files live in `config.files_dir` (default "files").
 Metadata (keys + description per file) lives in `config.files_meta` (default "files/meta.yaml").
-Valid keys are defined in `config.file_keys`.
+Valid tags are defined in `config.file_tags`.
 """
 
 import os
@@ -12,7 +12,7 @@ import yaml
 from definitions import (RetVals, Disconnected, success, fail,
                          cr, lf, null,
                          white, black, green, cyan, red, blue, brown, magenta)
-from input_output import send, ansi_color, ansi_move, ansi_wrap, ansi_cls, get_input_key
+from input_output import send, ansi_color, ansi_move_deferred, ansi_wrap, ansi_cls, get_input_key
 from input_fields import show_message_box, InputFields
 from file_transfer import (send_file_zmodem, recv_file_zmodem,
                            send_file_ymodem, recv_file_ymodem,
@@ -58,7 +58,7 @@ def _meta_path():
 
 def _valid_keys():
   """Return the list of sysop-defined valid file keys."""
-  keys = config.file_keys
+  keys = config.file_tags
   if keys and keys is not null:
     return list(keys)
   return []
@@ -207,26 +207,26 @@ async def _show_file_list(user, files_with_meta, title):
 
     # Title
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move(user, row=1, col=1, drain=False)
+    await ansi_move_deferred(user, row=1, col=1, drain=False)
     padded_title = title[:user.screen_width].center(user.screen_width)
     await send(user, padded_title, drain=False)
 
     # Column header
     ansi_color(user, fg=white, fg_br=True, bg=black)
-    await ansi_move(user, row=2, col=1, drain=False)
+    await ansi_move_deferred(user, row=2, col=1, drain=False)
     hdr = f"  {'#':>{num_width}}  {'Filename':<20} {'Size':>10}  {'Keys':<16} Description"
     await send(user, hdr[:user.screen_width].ljust(user.screen_width), drain=False)
 
     # Separator
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=3, col=1, drain=False)
+    await ansi_move_deferred(user, row=3, col=1, drain=False)
     await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
     # File lines
     for i in range(list_height):
       file_idx = scroll_offset + i
       row = header_rows + i + 1
-      await ansi_move(user, row=row, col=1, drain=False)
+      await ansi_move_deferred(user, row=row, col=1, drain=False)
 
       if file_idx >= total:
         ansi_color(user, fg=white, fg_br=False, bg=black)
@@ -281,13 +281,13 @@ async def _show_file_list(user, files_with_meta, title):
     # Bottom separator
     sep_row = header_rows + list_height + 1
     ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move(user, row=sep_row, col=1, drain=False)
+    await ansi_move_deferred(user, row=sep_row, col=1, drain=False)
     await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
     # Controls
     ctrl_row = sep_row + 1
     ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move(user, row=ctrl_row, col=1, drain=False)
+    await ansi_move_deferred(user, row=ctrl_row, col=1, drain=False)
     ctrl_text = " Up/Down: scroll  PgUp/PgDn: page  Enter/#: download  Q: back"
     await send(user, ctrl_text[:user.screen_width].ljust(user.screen_width), drain=False)
 
@@ -519,18 +519,18 @@ async def _browse_files(user):
       # Header
       path_str = "/" + "/".join(path_keys) + "/" if path_keys else "/"
       ansi_color(user, fg=cyan, fg_br=True, bg=black)
-      await ansi_move(user, row=1, col=1, drain=False)
+      await ansi_move_deferred(user, row=1, col=1, drain=False)
       await send(user, f"Browse: {path_str}".ljust(user.screen_width), drain=False)
 
       ansi_color(user, fg=green, fg_br=False, bg=black)
-      await ansi_move(user, row=2, col=1, drain=False)
+      await ansi_move_deferred(user, row=2, col=1, drain=False)
       await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
       # Items
       for i in range(list_height):
         item_idx = scroll_offset + i
         row = header_rows + i + 1
-        await ansi_move(user, row=row, col=1, drain=False)
+        await ansi_move_deferred(user, row=row, col=1, drain=False)
 
         if item_idx >= total:
           ansi_color(user, fg=white, fg_br=False, bg=black)
@@ -596,12 +596,12 @@ async def _browse_files(user):
       # Footer
       sep_row = header_rows + list_height + 1
       ansi_color(user, fg=green, fg_br=False, bg=black)
-      await ansi_move(user, row=sep_row, col=1, drain=False)
+      await ansi_move_deferred(user, row=sep_row, col=1, drain=False)
       await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
 
       ctrl_row = sep_row + 1
       ansi_color(user, fg=cyan, fg_br=True, bg=black)
-      await ansi_move(user, row=ctrl_row, col=1, drain=False)
+      await ansi_move_deferred(user, row=ctrl_row, col=1, drain=False)
       ctrl = " Up/Down: navigate  Enter: open/download  Backspace: up  Q: quit"
       await send(user, ctrl[:user.screen_width].ljust(user.screen_width), drain=False)
 
