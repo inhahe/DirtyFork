@@ -11,6 +11,7 @@ from input_fields import InputFields, InputField, show_message_box
 from input_output import send, ansi_color, ansi_move_deferred, ansi_cls
 from definitions import RetVals, success, fail, cr, lf, null, white, black, green, red
 from config import get_config
+import paths
 
 config = get_config()
 time_zones = json.load(open(os.path.join(os.path.dirname(__file__), "time_zones.json"), "r"))
@@ -18,7 +19,8 @@ time_zones = json.load(open(os.path.join(os.path.dirname(__file__), "time_zones.
 # Settings layout: list of rows. Each row is a list of (key, label, width, max_length) tuples.
 # Rows with 2 items are two-column; rows with 1 item span the full width.
 SETTINGS_LAYOUT = [
-  [("encoding",          "Encoding: ",     10, 9),    ("time_zone",   "Time zone: ",   11, 10)],
+  [("encoding",          "Encoding (cp437/utf-8): ", 10, 9), ("time_zone",   "Time zone: ",   11, 10)],
+  [("start_destination", "Start at: ",     30, 50)],
   [("email",             "Email: ",        50, 100)],
   [("age",               "Age: ",          11, 10),   ("sex",         "Sex: ",         11, 10)],
   [("location",          "Location: ",     50, 100)],
@@ -35,20 +37,34 @@ for row in SETTINGS_LAYOUT:
     SETTINGS_KEYS.append(item[0])
 
 
-async def run(user, destination, menu_item=None):
-  from common import Destinations, _set_connection_encoding
+async def edit_settings(user, target_handle, return_destination, return_menu_item=null):
+  """Edit settings for target_handle. Called by both the user's own settings
+  page and the sysop module. The form is displayed to `user` but the config
+  read/written belongs to `target_handle`."""
+  from common import Destinations, _set_connection_encoding, global_data
 
-  # Clear screen
+  is_self = (target_handle.lower() == (user.handle or "").lower())
+
+  # Load target user's config
+  user_conf_dir = paths.resolve_data(str(config.user_configs or "user_configs"))
+  user_conf_path = os.path.join(str(user_conf_dir), target_handle + ".yaml")
+
+  from config import get_config as gc, ConfigView
+  try:
+    target_conf = ConfigView(gc(path=user_conf_path), gc()) if os.path.exists(user_conf_path) else ConfigView(gc(), gc())
+  except Exception:
+    target_conf = ConfigView(gc(), gc())
+
   await ansi_cls(user)
 
   ansi_color(user, fg=white, bg=black, fg_br=True, bg_br=False)
-  await send(user, f"Settings for {user.handle}" + cr + lf + cr + lf, drain=False)
+  await send(user, f"Settings for {target_handle}" + cr + lf + cr + lf, drain=False)
   ansi_color(user, fg=white, bg=black, fg_br=False, bg_br=False)
 
-  # Load current values from user config
+  # Load current values from target config
   current = {}
   for key in SETTINGS_KEYS:
-    val = user.conf[key] if user.conf else null
+    val = target_conf[key] if target_conf else null
     if val is null or val is None:
       val = ""
     elif isinstance(val, list):
@@ -107,7 +123,7 @@ async def run(user, destination, menu_item=None):
   r = await inputFields.run()
 
   if r.button == "cancel":
-    return RetVals(status=success, next_destination=Destinations.main, next_menu_item=null)
+    return RetVals(status=success, next_destination=return_destination, next_menu_item=return_menu_item)
 
   # Save settings
   values = {}
@@ -120,10 +136,24 @@ async def run(user, destination, menu_item=None):
     await show_message_box(user, "Encoding must be 'cp437' or 'utf-8'.",
                            title="Error", outline_fg=red, outline_fg_br=True,
                            fg=white, fg_br=True, bg=black)
-    return RetVals(status=success, next_destination=Destinations.settings, next_menu_item=null)
+    return await edit_settings(user, target_handle, return_destination, return_menu_item)
   if enc == "utf8":
     enc = "utf-8"
   values["encoding"] = enc
+
+  # Validate start destination
+  sd_raw = values.get("start_destination", "").strip()
+  if sd_raw:
+    from menu import resolve_jump
+    dest_name, mi, parent_menu, err = resolve_jump(sd_raw)
+    if err:
+      await show_message_box(user, err,
+                           title="Error", outline_fg=red, outline_fg_br=True,
+                           fg=white, fg_br=True, bg=black)
+      return await edit_settings(user, target_handle, return_destination, return_menu_item)
+    values["start_destination"] = sd_raw
+  else:
+    values["start_destination"] = ""
 
   # Validate time zone
   tz_raw = values.get("time_zone", "").strip()
@@ -134,7 +164,7 @@ async def run(user, destination, menu_item=None):
       await show_message_box(user, tz_err,
                            title="Error", outline_fg=red, outline_fg_br=True,
                            fg=white, fg_br=True, bg=black)
-      return RetVals(status=success, next_destination=Destinations.settings, next_menu_item=null)
+      return await edit_settings(user, target_handle, return_destination, return_menu_item)
     tz_letters, tz_hours, tz_mins = _parse_timezone(tz_raw)
     values["time_zone"] = tz_letters
     values["time_zone_hours"] = tz_hours
@@ -164,9 +194,7 @@ async def run(user, destination, menu_item=None):
     values["blocked_users"] = []
 
   # Write to user YAML config
-  user_conf_dir = str(config.user_configs or "user_configs")
-  os.makedirs(user_conf_dir, exist_ok=True)
-  user_conf_path = os.path.join(user_conf_dir, user.handle + ".yaml")
+  os.makedirs(str(user_conf_dir), exist_ok=True)
 
   # Load existing config to preserve any keys we don't show in settings
   existing = {}
@@ -182,27 +210,34 @@ async def run(user, destination, menu_item=None):
   with open(user_conf_path, "w") as f:
     yaml.dump(existing, f, default_flow_style=False)
 
-  # Apply encoding change immediately
-  user.encoding = enc
-  _set_connection_encoding(user)
+  # Apply changes to the live session if the target user is online
+  live_user = global_data.users.get(target_handle.lower())
+  if live_user:
+    live_user.encoding = enc
+    if is_self:
+      _set_connection_encoding(live_user)
 
-  # Reload user config so user.conf reflects changes
-  from config import get_config as gc, ConfigView
-  try:
-    conf1 = gc(path=user_conf_path)
-  except Exception:
-    conf1 = gc()
-  user.conf = ConfigView(conf1, gc())
+    # Reload config
+    try:
+      conf1 = gc(path=user_conf_path)
+    except Exception:
+      conf1 = gc()
+    live_user.conf = ConfigView(conf1, gc())
 
-  # Apply profile fields to user object
-  user.email = values.get("email") or None
-  user.age = values.get("age") or None
-  user.sex = values.get("sex") or None
-  user.location = values.get("location") or None
-  user.bio = values.get("bio") or None
+    # Apply profile fields
+    live_user.email = values.get("email") or None
+    live_user.age = values.get("age") or None
+    live_user.sex = values.get("sex") or None
+    live_user.location = values.get("location") or None
+    live_user.bio = values.get("bio") or None
 
-  await show_message_box(user, "Settings saved successfully.",
+  await show_message_box(user, f"Settings for {target_handle} saved successfully.",
                          title="Settings", outline_fg=green, outline_fg_br=True,
                          fg=white, fg_br=True, bg=black)
 
-  return RetVals(status=success, next_destination=Destinations.main, next_menu_item=null)
+  return RetVals(status=success, next_destination=return_destination, next_menu_item=return_menu_item)
+
+
+async def run(user, destination, menu_item=None):
+  from common import Destinations
+  return await edit_settings(user, user.handle, Destinations.main)

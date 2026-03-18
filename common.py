@@ -162,7 +162,7 @@ def setup_user_session(user, handle, user_id, time_created):
   user.user_id = user_id
   cur.execute("SELECT key FROM user_keys WHERE user_id = ?", (user_id,))
   key_rows = cur.fetchall()
-  user.keys = set(kr["key"] for kr in key_rows)
+  user.keys = expand_keys(set(kr["key"] for kr in key_rows))
 
   # Auto-grant or revoke the sysop key based on sysop_handle in config.
   # If sysop_handle is set, only that handle gets the sysop key; anyone else loses it on login.
@@ -172,6 +172,7 @@ def setup_user_session(user, handle, user_id, time_created):
       cur.execute("INSERT INTO USER_KEYS (user_id, key) VALUES (?, ?)", (user_id, 'sysop'))
       con.commit()
       user.keys.add('sysop')
+      user.keys = expand_keys(user.keys)
   elif sysop_handle_conf and 'sysop' in user.keys:
     cur.execute("DELETE FROM USER_KEYS WHERE user_id = ? AND key = 'sysop'", (user_id,))
     con.commit()
@@ -204,6 +205,25 @@ def setup_user_session(user, handle, user_id, time_created):
   if user.conf.encoding:
     user.encoding = str(user.conf.encoding)
     _set_connection_encoding(user)
+
+
+def expand_keys(keys):
+  """Expand a set of keys through key_groups, resolving recursively."""
+  groups = config.key_groups
+  if not groups or groups is null:
+    return keys
+  expanded = set(keys)
+  queue = list(keys)
+  while queue:
+    key = queue.pop()
+    members = getattr(groups, key, None) if not isinstance(groups, dict) else groups.get(key)
+    if not members:
+      continue
+    for member in members:
+      if member not in expanded:
+        expanded.add(member)
+        queue.append(member)
+  return expanded
 
 
 def check_keys(user, destination, menu_item=None):
@@ -321,133 +341,38 @@ _UTF8_TERMINALS = {"xterm", "xterm-256color", "vt100", "vt220", "linux",
 _CP437_TERMINALS = {"ansi", "ansi-bbs", "avatar", "pcansi"}
 
 async def detect_terminal(user):
-  """Detect terminal encoding. Uses TTYPE negotiation as a hint, then asks the user."""
-  # Try to get terminal type from telnet negotiation
+  """Detect terminal encoding from TTYPE negotiation. Defaults to CP437 if unknown.
+  Any saved encoding preference in user.conf overrides this after login."""
   ttype = None
   try:
     ttype = user.writer.get_extra_info("TERM")
   except Exception:
     pass
-  if ttype:
-    ttype_lower = ttype.lower()
-    user.ttype = ttype
-  else:
-    ttype_lower = ""
-    user.ttype = "unknown"
-
-  # Auto-detect based on known terminal names
-  auto = null
-  if ttype_lower:
-    for name in _CP437_TERMINALS:
-      if name in ttype_lower:
-        auto = "cp437"
-        break
-    if auto is null:
-      for name in _UTF8_TERMINALS:
-        if name in ttype_lower:
-          auto = "utf8"
-          break
-
-  # Even for auto-detected terminals, always ask — auto-detect just sets the default
-  if not auto or auto is null:
-    # No auto-detect yet; wait a moment for TTYPE negotiation to complete, then try again
+  if not ttype:
     await asyncio.sleep(0.5)
     try:
       ttype = user.writer.get_extra_info("TERM")
-      if ttype:
-        user.ttype = ttype
-        ttype_lower = ttype.lower()
-        for name in _CP437_TERMINALS:
-          if name in ttype_lower:
-            auto = "cp437"
-            break
-        if auto is null:
-          for name in _UTF8_TERMINALS:
-            if name in ttype_lower:
-              auto = "utf8"
-              break
     except Exception:
       pass
 
-  # Determine default choice and label — default to CP437 for a BBS
-  if auto == "utf8":
-    default_choice = "1"
-    default_label = "UTF-8"
+  if ttype:
+    user.ttype = ttype
+    ttype_lower = ttype.lower()
+    for name in _CP437_TERMINALS:
+      if name in ttype_lower:
+        user.encoding = "cp437"
+        _set_connection_encoding(user)
+        return
+    for name in _UTF8_TERMINALS:
+      if name in ttype_lower:
+        user.encoding = "utf-8"
+        _set_connection_encoding(user)
+        return
   else:
-    default_choice = "2"
-    default_label = "CP437"
+    user.ttype = "unknown"
 
-  # Send a CP437 test character (byte 0xB0 = light shade block in CP437)
-  # In CP437 mode this shows as ░, in UTF-8 mode it shows as something else (often ° or garbage)
-  test_char = bytes([0xB0]).decode('cp437')  # ░
-
-  prompt = (cr+lf +
-    "What character encoding does your terminal use?" + cr+lf +
-    cr+lf +
-    "  Test character: [" + test_char + "]" + cr+lf +
-    cr+lf +
-    "  If that looks like a shaded block, choose CP437." + cr+lf +
-    "  If it looks like a degree symbol or garbage, choose UTF-8." + cr+lf +
-    cr+lf +
-    "  1) UTF-8  -- PuTTY (default), xterm, Windows Terminal," + cr+lf +
-    "               most modern terminals, SyncTERM in UTF-8 mode" + cr+lf +
-    "  2) CP437  -- SyncTERM (CP437 mode), NetRunner, mTelnet," + cr+lf +
-    "               classic DOS/BBS terminals" + cr+lf +
-    cr+lf)
-
-  if user.ttype and user.ttype != "unknown":
-    prompt += f"Detected terminal: {user.ttype}" + cr+lf
-
-  # Show countdown line first, then the prompt below it
-  from input_output import _get_input_key as _gik
-  response = null
-  timeout_secs = 15
-  countdown_prefix = "Auto-selecting in "
-  countdown_str = f"{timeout_secs:02d}s..."
-
-  # Write countdown line
-  prompt += countdown_prefix + countdown_str + cr + lf
-  # Then the prompt line
-  prompt += f"Enter 1 or 2 [default: {default_choice} = {default_label}]: "
-  user.writer.write(prompt)
-  await user.writer.drain()
-
-  # Save cursor position at end of prompt (where user types)
-  user.writer.write("\x1b[s")
-  await user.writer.drain()
-
-  for remaining in range(timeout_secs, 0, -1):
-    countdown_str = f"{remaining:02d}s..."
-    # Move up one line to the countdown, write it, then restore cursor to prompt
-    user.writer.write("\x1b[u")  # go to prompt
-    user.writer.write("\x1b[A")  # move up one line
-    user.writer.write("\x0d" + countdown_prefix + countdown_str)  # overwrite countdown
-    user.writer.write("\x1b[u")  # back to prompt
-    await user.writer.drain()
-    try:
-      response = await asyncio.wait_for(_gik(user), timeout=1.0)
-      break
-    except asyncio.TimeoutError:
-      pass
-  # Erase the countdown line
-  user.writer.write("\x1b[u")  # go to prompt
-  user.writer.write("\x1b[A")  # up to countdown line
-  user.writer.write("\x0d" + " " * (len(countdown_prefix) + len(countdown_str)))
-  user.writer.write("\x1b[u")  # back to prompt
-  if not response or response is null:
-    response = default_choice
-
-  # Only accept "1" or "2"; anything else (Enter, Ctrl+C, random keys) uses the default
-  if response not in ("1", "2"):
-    response = default_choice
-
-  if response == "2":
-    user.encoding = "cp437"
-    user.writer.write(cr+lf + "Using CP437 encoding." + cr+lf)
-  else:
-    user.encoding = "utf-8"
-    user.writer.write(cr+lf + "Using UTF-8 encoding." + cr+lf)
-  await user.writer.drain()
+  # Unknown terminal — default to CP437
+  user.encoding = "cp437"
   _set_connection_encoding(user)
 
 
@@ -485,6 +410,7 @@ class _DestinationRegistry:
     # Clear screen for login prompt
     await ansi_cls(user)
     await send(user, f"Welcome to {config.bbs_name}" + cr+lf)
+    await send(user, f"Encoding: {user.encoding}  (change in Settings if graphics look wrong)" + cr+lf)
     allowed_attempts = config.login.allowed_attempts or 3
     for x in range(allowed_attempts):
       await send(user, cr+lf + 'Enter your handle or "new" to sign up.' + cr+lf+cr+lf, drain=True)
@@ -504,7 +430,8 @@ class _DestinationRegistry:
             return RetVals(status=success, next_destination=self.main, next_menu_item=null)
           # Registration aborted or failed — clear screen and loop back to login
           await ansi_cls(user)
-          await send(user, f"Welcome to {config.bbs_name}" + cr+lf, drain=True)
+          await send(user, f"Welcome to {config.bbs_name}" + cr+lf)
+          await send(user, f"Encoding: {user.encoding}  (change in Settings if graphics look wrong)" + cr+lf, drain=True)
         continue
       r = check_handle(handle)
       if r.status == fail:
@@ -519,7 +446,19 @@ class _DestinationRegistry:
       if r.status == success:
         uid = user_in_db["id"] if "id" in user_in_db.keys() else null
         setup_user_session(user, user_in_db["handle"], uid, user_in_db["time_created"])
-        return RetVals(status=success, next_destination=self.main, next_menu_item=null)
+        if 'banned' in user.keys:
+          await send(user, cr+lf+cr+lf + "Your account has been banned." + cr+lf, drain=True)
+          return RetVals(status=fail, next_destination=self.logout, next_menu_item=null)
+        # Check for user-defined start destination
+        start_dest = self.main
+        start_item = null
+        if user.conf.start_destination:
+          from menu import resolve_jump
+          dest_name, menu_item, parent_menu, err = resolve_jump(str(user.conf.start_destination))
+          if dest_name and not err:
+            start_dest = getattr(Destinations, dest_name, self.main)
+            start_item = menu_item if menu_item else null
+        return RetVals(status=success, next_destination=start_dest, next_menu_item=start_item)
       user.login_tries.append((handle, password))
       await send(user, cr+lf+cr+lf + r.err_msg)
     return RetVals(status=fail, err_msg="max failed attempts", next_destination=self.logout, next_menu_item=null)

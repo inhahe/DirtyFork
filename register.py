@@ -212,10 +212,11 @@ async def run(user, destination, menu_item=None):
     (cmd_line_handle.replace("_", "$_") + "%",)
   )
   existing = [row[0].lower() for row in cur.fetchall()]
-  n = 1
-  while (cmd_line_handle.lower() + str(n)) in existing:
-    n += 1
-  cmd_line_handle = cmd_line_handle + str(n)
+  if cmd_line_handle.lower() in existing:
+    n = 1
+    while (cmd_line_handle.lower() + str(n)) in existing:
+      n += 1
+    cmd_line_handle = cmd_line_handle + str(n)
 
   # Database: only credentials and identity
   cur.execute(

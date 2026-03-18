@@ -732,7 +732,12 @@ class InputField:
     self.fg_br = (conf.content.fg_br or False) if fg_br is null else fg_br
     _fill_present = bool(conf.blank.char if fill is null else fill)
     _fill_bg = _color(conf.blank.bg, black) if fill_bg is null else fill_bg
-    self.bg = _color(conf.content.bg, _fill_bg if _fill_present else black) if bg is null else bg
+    if bg is not null:
+      self.bg = bg
+    elif _fill_present:
+      self.bg = _fill_bg
+    else:
+      self.bg = _color(conf.content.bg, black)
     self.bg_br = (conf.content.bg_br or False) if bg_br is null else bg_br
 
     # Fill character and colors

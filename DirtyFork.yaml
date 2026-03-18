@@ -5,6 +5,7 @@
 
 bbs_name: My BBS
 sysop_name: Sysop
+sysop_handle: ""   # handle that automatically receives the 'sysop' key on login
 hostname: 0.0.0.0   # bind on all interfaces; set to a specific IP to restrict
 port: 23
 
@@ -17,7 +18,7 @@ min_edit_width: 10  # minimum characters reserved for editing when quote margins
 database: DirtyFork.db
 files_dir: files
 files_meta: files/meta.yaml   # maps filename -> {keys: [...], description: "..."}
-file_keys:                     # sysop-defined list of valid file keys
+file_tags:                     # sysop-defined list of valid file tags
   - game
   - utility
   - dos
@@ -70,6 +71,13 @@ user_defaults:
   keys:
     - doors  # all users can access doors by default; add 'banned' key to block individuals
 
+# Known keys: sysop, debug, doors, banned
+# Key groups: a key that grants all keys in its list.
+# Groups can include other groups (resolved recursively).
+# Example: a user with "sysop" effectively has doors, debug, etc.
+key_groups:
+  sysop: [doors]
+
 destinations:
   main:
     type: menu
@@ -96,6 +104,12 @@ destinations:
     type: module
   settings:
     type: module
+  sysop:
+    type: menu
+    white_keys: [sysop]
+  sysop_module:
+    type: module
+    white_keys: [sysop]
   user_director:
     type: func
   forums:
@@ -134,22 +148,31 @@ menu_system:
       Forums:
         target: forums
         type: menu
+      Edit Forums:
+        target: edit_forums
+        type: menu
+        white_keys: [sysop]
       File Library:
         target: files
         type: menu
       Settings:
         target: settings
         type: module
+      Sysop:
+        target: sysop
+        type: menu
+        white_keys: [sysop]
   forums:
     option_defaults:
       target: forum
     options:
       <<: *forum_list
-      Edit Forum:
-        option_defaults:
-          action: edit
-        options:
-          <<: *forum_list
+  edit_forums:
+    option_defaults:
+      target: forum
+      action: edit
+    options:
+      <<: *forum_list
   doors:
     option_defaults:
       target: door
@@ -218,3 +241,13 @@ menu_system:
         action: compose
       Search:
         action: search
+  sysop:
+    option_defaults:
+      target: sysop_module
+    options:
+      Keys:
+        action: user_keys
+      Groups:
+        action: key_groups
+      Settings:
+        action: user_settings
