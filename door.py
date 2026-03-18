@@ -502,7 +502,7 @@ mount c "{node_dir}"
 mount d "{door_dir}"
 c:
 {copy_cmds}d:
-{resolved_command}
+CALL {resolved_command}
 exit
 """
     return config_content
