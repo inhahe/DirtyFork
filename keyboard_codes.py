@@ -31,18 +31,91 @@ pgup, pgdn, insert, ctrl_pgdn, ctrl_end, ctrl_left, ctrl_right, shift_tab, delet
 click, position, middle, release, partial_code = range(1, 63)
 
 keyboard_codes = {
+  # Standard ANSI/VT100 arrow keys
   "\x1b[D": left,
   "\x1b[C": right,
   "\x1b[A": up,
   "\x1b[B": down,
+
+  # Home/End — multiple conventions
   "\x1b[H": home,
-  "\x1b[K": end,
-  "\x1b[L": ctrl_home,
-  "\x1b[M": ctrl_pgup,
+  "\x1b[F": end,          # xterm/VT220
+  "\x1b[K": end,          # some terminals
+  "\x1b[1~": home,        # VT220/PuTTY
+  "\x1b[4~": end,         # VT220/PuTTY
+  "\x1bOH": home,         # xterm application mode
+  "\x1bOF": end,          # xterm application mode
+
+  # Insert/Delete/PageUp/PageDown — VT220 style
+  "\x1b[2~": insert,
+  "\x1b[3~": delete,
+  "\x1b[5~": pgup,
+  "\x1b[6~": pgdn,
+
+  # Shift+Tab (back tab)
+  "\x1b[Z": shift_tab,
+
+  # Ctrl+arrow keys — xterm style
+  "\x1b[1;5D": ctrl_left,
+  "\x1b[1;5C": ctrl_right,
+
+  # Ctrl+Home/End — xterm style
+  "\x1b[1;5H": ctrl_home,
+  "\x1b[1;5F": ctrl_end,
+
+  # Ctrl+PageUp/PageDown — xterm style
+  "\x1b[5;5~": ctrl_pgup,
+  "\x1b[6;5~": ctrl_pgdn,
+
+  # F1-F10 — VT220/xterm style (ESC O P-S for F1-F4, ESC [nn~ for F5-F10)
   "\x1bOP": f1,
   "\x1bOQ": f2,
+  "\x1bOR": f3,
+  "\x1bOS": f4,
+  "\x1b[15~": f5,
+  "\x1b[17~": f6,
+  "\x1b[18~": f7,
+  "\x1b[19~": f8,
+  "\x1b[20~": f9,
+  "\x1b[21~": f10,
+
+  # F1-F4 alternate (some terminals send ESC [11~ through ESC [14~)
+  "\x1b[11~": f1,
+  "\x1b[12~": f2,
+  "\x1b[13~": f3,
+  "\x1b[14~": f4,
+
+  # Shift+F1-F10 — xterm style
+  "\x1b[1;2P": shift_f1,
+  "\x1b[1;2Q": shift_f2,
+  "\x1b[1;2R": shift_f3,
+  "\x1b[1;2S": shift_f4,
+  "\x1b[15;2~": shift_f5,
+  "\x1b[17;2~": shift_f6,
+  "\x1b[18;2~": shift_f7,
+  "\x1b[19;2~": shift_f8,
+  "\x1b[20;2~": shift_f9,
+  "\x1b[21;2~": shift_f10,
+
+  # Ctrl+F1-F10 — xterm style
+  "\x1b[1;5P": ctrl_f1,
+  "\x1b[1;5Q": ctrl_f2,
+  "\x1b[1;5R": ctrl_f3,
+  "\x1b[1;5S": ctrl_f4,
+  "\x1b[15;5~": ctrl_f5,
+  "\x1b[17;5~": ctrl_f6,
+  "\x1b[18;5~": ctrl_f7,
+  "\x1b[19;5~": ctrl_f8,
+  "\x1b[20;5~": ctrl_f9,
+  "\x1b[21;5~": ctrl_f10,
+
+  # SyncTERM-specific (kept from original — F3/F4 mapped differently)
   "\x1bOw": f3,
   "\x1bOx": f4,
+
+  # Legacy SyncTERM codes
+  "\x1b[L": ctrl_home,
+  "\x1b[M": ctrl_pgup,
 
   "\x00\x4b": left,
   "\x00\x4d": right,

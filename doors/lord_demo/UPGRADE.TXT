@@ -1,0 +1,25 @@
+
+Upgrade Instructions for Legend of the Red Dragon 4.07
+
+
+   ° TO UPGRADE TO 4.07 °
+
+   1) Contact GamePort to obtain new registration codes if you
+      have a registered game
+
+      NOTE! If you have a registered game, LORD will NOT run until you
+      obtain new registration codes!
+
+   2) Unzip LORD.ZIP over your existing LORD directory.
+
+   3) Edit START.BAT to reflect your directories.
+
+   4) Run LORDCFG.EXE
+      A) When prompted to re-enter your registration information, do so.
+
+      B) Do a complete reset of the game
+
+      C) Go through the rest of LORDCFG and make sure the game is setup
+         the way you want it.
+
+   5) ENJOY THE GAME!

@@ -7,8 +7,8 @@ import sqlite3
 
 import yaml
 
-from input_fields import InputFields, InputField, show_message_box
-from input_output import send, send_wrapped, ansi_color, ansi_move_deferred, ansi_cls
+from input_fields import InputFields, InputField, SelectField, show_message_box
+from input_output import send, send_wrapped, send_markup, _markup_re, ansi_color, ansi_move_deferred, ansi_cls
 from definitions import RetVals, success, fail, cr, lf, null, white, black, red
 from config import get_config
 import paths
@@ -18,6 +18,14 @@ register_config = get_config(path=paths.resolve_project("register.yaml"))
 time_zones = json.load(open(os.path.join(os.path.dirname(__file__), "time_zones.json"), "r"))
 
 FIELD_NAMES = ["handle", "password", "age", "sex", "location", "time_zone", "email", "bio"]
+
+# Fields that get a "Public:" yes/no toggle, with default values
+PUBLIC_FIELDS = {
+  "age": "yes",
+  "sex": "yes",
+  "location": "yes",
+  "email": "no",
+}
 
 
 def _validate_timezone(tz_raw):
@@ -83,10 +91,12 @@ async def run(user, destination, menu_item=None):
     ansi_color(user, fg=white, bg=black, fg_br=False, bg_br=False)
     await send(user, register_config.label + cr + lf, drain=False)
 
-  # Right-align all labels so input fields line up
-  max_label_len = max(len(str(getattr(register_config, name).label or "")) for name in FIELD_NAMES)
+  # Right-align all labels so input fields line up (visible length, ignoring markup tags)
+  max_label_len = max(len(_markup_re.sub('', str(getattr(register_config, name).label or ""))) for name in FIELD_NAMES)
 
   # Create an InputField for each registration field
+  field_indices = {}   # name -> field index in inputFields.fields
+  public_fields = {}   # name -> field index for public toggles
   for name in FIELD_NAMES:
     field_conf = getattr(register_config, name)
 
@@ -96,10 +106,13 @@ async def run(user, destination, menu_item=None):
       await send(user, cr + lf, drain=False)
 
     # Reset colors and right-justify the label
-    ansi_color(user, fg=white, bg=black, fg_br=False, bg_br=False)
     label = str(field_conf.label or "")
-    padded_label = label.rjust(max_label_len)
-    await send(user, padded_label, drain=True)
+    # Strip markup tags for visible length calculation
+    visible_label = _markup_re.sub('', label)
+    padding = max_label_len - len(visible_label)
+    padded_label = ' ' * padding + label if padding > 0 else label
+    ansi_color(user, fg=white, bg=black, fg_br=False, bg_br=False)
+    await send_markup(user, padded_label, fg=white, bg=black, drain=True)
 
     # Resolve the styling config from input_fields.yaml based on the field's type
     style_conf = getattr(config.input_fields, field_conf.type)
@@ -112,16 +125,43 @@ async def run(user, destination, menu_item=None):
 
     # Pass optional multiline parameters if present
     if field_conf.height:
-      kwargs["height"] = field_conf.height
+      kwargs["height"] = int(field_conf.height)
+    if field_conf.height_from_end:
+      kwargs["height_from_end"] = int(field_conf.height_from_end)
     if field_conf.max_lines:
       kwargs["max_lines"] = field_conf.max_lines
     if field_conf.word_wrap:
       kwargs["word_wrap"] = field_conf.word_wrap
+    if name == "password":
+      kwargs["mask_char"] = "*"
 
-    await inputFields.add_field(**kwargs)
-    await send(user, cr + lf, drain=False)
+    label_row = user.cur_row
+    field = await inputFields.add_field(**kwargs)
+    field_indices[name] = len(inputFields.fields) - 1
 
-  # Add Submit and Login buttons side by side
+    # Add "Public:" toggle for applicable fields (on same row)
+    if name in PUBLIC_FIELDS:
+      public_col = field.col_offset + field.width + 2
+      await ansi_move_deferred(user, row=label_row, col=public_col, drain=True)
+      ansi_color(user, fg=white, bg=black, fg_br=False, bg_br=False)
+      await send(user, "Public: ", drain=True)
+      public_select = await inputFields.add_select(
+        options=["yes", "no"], value=PUBLIC_FIELDS[name],
+        conf=config.input_fields.input_field)
+      public_fields[name] = len(inputFields.fields) - 1  # index of the select
+
+    # Move cursor past the field (important for multiline fields)
+    past_row = field.row_offset + field.height
+    await ansi_move_deferred(user, row=past_row, col=1, drain=True)
+
+    # Show allowed characters hint after handle field
+    if name == "handle":
+      from common import get_handle_allowed_label
+      hint = get_handle_allowed_label()
+      ansi_color(user, fg=white, bg=black, fg_br=False, bg_br=False)
+      await send(user, " " * max_label_len + "(" + hint + ")" + cr + lf, drain=False)
+
+  # Add Submit and Abort buttons side by side
   submit_btn = await inputFields.add_button("submit", content="Submit")
   # Position the abort button next to the submit button on the same row.
   # create() will add +1 to cur_row and cur_col if outline is True,
@@ -145,8 +185,13 @@ async def run(user, destination, menu_item=None):
 
     # Map field results to names
     values = {}
-    for i, name in enumerate(FIELD_NAMES):
-      values[name] = r.fields[i].content
+    for name in FIELD_NAMES:
+      values[name] = r.fields[field_indices[name]].content
+
+    # Read public toggle values
+    public_values = {}
+    for name, idx in public_fields.items():
+      public_values[name] = r.fields[idx].content.lower() == "yes"
 
     # --- Validation ---
     errors = []
@@ -156,18 +201,23 @@ async def run(user, destination, menu_item=None):
       errors.append("Handle is required.")
       if first_bad_field is None: first_bad_field = FIELD_NAMES.index("handle")
     else:
-      con = sqlite3.connect(paths.resolve_data(str(config.database)))
-      cur = con.cursor()
-      cur.execute("SELECT id FROM USERS WHERE handle = ? COLLATE NOCASE LIMIT 1", (values["handle"],))
-      if cur.fetchone():
+      from common import handle_exists
+      if handle_exists(values["handle"]):
         errors.append("That handle is already taken.")
         if first_bad_field is None: first_bad_field = FIELD_NAMES.index("handle")
-      con.close()
 
     handle_min = register_config.handle.min_length or 1
     if values["handle"] and len(values["handle"].strip()) < handle_min:
       errors.append(f"Handle must be at least {handle_min} characters.")
       if first_bad_field is None: first_bad_field = FIELD_NAMES.index("handle")
+
+    # Character validation
+    if values["handle"] and values["handle"].strip():
+      from common import validate_handle_chars
+      char_ok, char_err = validate_handle_chars(values["handle"].strip())
+      if not char_ok:
+        errors.append(char_err)
+        if first_bad_field is None: first_bad_field = FIELD_NAMES.index("handle")
 
     password_min = register_config.password.min_length or 6
     if not values["password"] or len(values["password"]) < password_min:
@@ -197,7 +247,8 @@ async def run(user, destination, menu_item=None):
     break
 
   password_bytes = values["password"].encode("utf-8")
-  salt = bcrypt.gensalt()
+  _bcrypt_rounds = int(config.bcrypt_rounds) if config.bcrypt_rounds else 8
+  salt = bcrypt.gensalt(rounds=_bcrypt_rounds)
   password_hash = bcrypt.hashpw(password_bytes, salt)
 
   cmd_line_handle = re.sub(r"[ ,.\-]", "_", values["handle"])
@@ -218,16 +269,25 @@ async def run(user, destination, menu_item=None):
       n += 1
     cmd_line_handle = cmd_line_handle + str(n)
 
+  # Generate filesystem-safe config filename
+  from common import safe_filename
+  existing_cf = [row[0].lower() for row in cur.execute(
+    "SELECT config_filename FROM USERS WHERE config_filename IS NOT NULL AND config_filename != ''"
+  ).fetchall()]
+  config_filename = safe_filename(values["handle"], set(existing_cf))
+
   # Database: only credentials and identity
   cur.execute(
-    """INSERT INTO USERS (handle, cmd_line_handle, password_hash, password_salt, time_created)
-       VALUES (?, ?, ?, ?, ?)""",
-    (values["handle"], cmd_line_handle, password_hash, salt, int(time.time()))
+    """INSERT INTO USERS (handle, cmd_line_handle, config_filename, password_hash, password_salt, time_created)
+       VALUES (?, ?, ?, ?, ?, ?)""",
+    (values["handle"], cmd_line_handle, config_filename, password_hash, salt, int(time.time()))
   )
   user_id = cur.lastrowid
+  from logger import log
+  log.info("New user registered: '%s' (id=%d)", values["handle"], user_id)
 
   # Insert default keys from config
-  default_keys = config.user_defaults.keys if config.user_defaults and config.user_defaults.keys else []
+  default_keys = config.user_defaults["keys"] if config.user_defaults and config.user_defaults["keys"] else []
   if default_keys:
     for key in default_keys:
       cur.execute("INSERT INTO USER_KEYS (user_id, key) VALUES (?, ?)", (user_id, str(key)))
@@ -238,7 +298,7 @@ async def run(user, destination, menu_item=None):
   # YAML: profile data and preferences
   user_conf_dir = paths.resolve_data(str(config.user_configs or "user_configs"))
   os.makedirs(user_conf_dir, exist_ok=True)
-  user_conf_path = os.path.join(user_conf_dir, values["handle"] + ".yaml")
+  user_conf_path = os.path.join(user_conf_dir, config_filename + ".yaml")
 
   tz_letters, tz_hours, tz_mins = _parse_timezone(values["time_zone"] or "")
 
@@ -252,6 +312,10 @@ async def run(user, destination, menu_item=None):
     "time_zone": tz_letters,
     "time_zone_hours": tz_hours,
     "time_zone_mins": tz_mins,
+    "public_age": public_values.get("age", True),
+    "public_sex": public_values.get("sex", True),
+    "public_location": public_values.get("location", True),
+    "public_email": public_values.get("email", False),
   }
   with open(user_conf_path, "w") as f:
     yaml.dump(user_settings, f, default_flow_style=False)

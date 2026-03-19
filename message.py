@@ -40,10 +40,9 @@ def _get_db():
 
 
 def _lookup_handle(con, handle):
-  """Look up a user by handle (case-insensitive). Returns user row or None."""
-  cur = con.cursor()
-  cur.execute("SELECT id, handle FROM USERS WHERE handle = ? COLLATE NOCASE", (handle,))
-  return cur.fetchone()
+  """Look up a user by handle (case-insensitive). Returns HandleRow(id, handle) or None."""
+  from common import lookup_handle
+  return lookup_handle(handle, db=con)
 
 
 def _get_handle_by_id(con, user_id):
@@ -376,7 +375,7 @@ async def _compose_message(user, con, reply_to_msg=None):
     recipient_id = reply_to_msg["from_user"] if "from_user" in reply_to_msg else None
     if not recipient_id:
       row = _lookup_handle(con, recipient_handle)
-      recipient_id = row["id"] if row else None
+      recipient_id = row.id if row else None
   else:
     recipient_handle = None
     recipient_id = None
@@ -484,8 +483,8 @@ async def _compose_message(user, con, reply_to_msg=None):
     if not row:
       await show_message_box(user, f"User '{recipient_handle}' not found.")
       continue
-    recipient_id = row["id"]
-    recipient_handle = row["handle"]
+    recipient_id = row.id
+    recipient_handle = row.handle
 
     subject = result.fields[1].content.strip()
     blocks = editor_field.get_blocks()
@@ -648,7 +647,7 @@ async def _search_messages(user):
       from_row = _lookup_handle(con, from_text)
       if from_row:
         conditions.append("pm.from_user = ?")
-        params.append(from_row["id"])
+        params.append(from_row.id)
       else:
         await show_message_box(user, f"User '{from_text}' not found.")
         return

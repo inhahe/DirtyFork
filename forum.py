@@ -41,9 +41,8 @@ def _get_handle_by_id(con, user_id):
 
 
 def _lookup_handle(con, handle):
-  cur = con.cursor()
-  cur.execute("SELECT id, handle FROM USERS WHERE handle = ? COLLATE NOCASE", (handle,))
-  return cur.fetchone()
+  from common import lookup_handle
+  return lookup_handle(handle, db=con)
 
 
 def _get_or_create_forum(con, forum_name):
@@ -559,7 +558,7 @@ async def _search_posts(user, con, forum_id, forum_name):
     from_row = _lookup_handle(con, from_text)
     if from_row:
       conditions.append("fm.from_user = ?")
-      params.append(from_row["id"])
+      params.append(from_row.id)
     else:
       await show_message_box(user, f"User '{from_text}' not found.")
       return

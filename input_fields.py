@@ -458,6 +458,494 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
   return result
 
 
+class SelectField:
+  """Inline cycling selector. Shows the current option with arrow indicators.
+  Left/Right cycle through options. Tab/Enter return to container."""
+
+  @classmethod
+  async def create(cls, parent, user, options, value="", conf=null,
+                   fg=null, fg_br=null, bg=null, bg_br=null,
+                   fill=null, fill_fg=null, fill_bg=null,
+                   fill_fg_br=null, fill_bg_br=null,
+                   arrow_fg=null, arrow_fg_br=null):
+    self = cls()
+    self.user = user
+    self.parent = parent
+    self.options = list(options)
+    self.outline = False
+    self.allow_edit = True
+    self.no_cursor_margin = True
+    self.insert_mode = False
+
+    self.row_offset = user.cur_row
+    self.col_offset = user.cur_col
+
+    # Find initial selection
+    self._index = 0
+    val_lower = str(value).lower()
+    for i, opt in enumerate(self.options):
+      if str(opt).lower() == val_lower:
+        self._index = i
+        break
+
+    if conf is null:
+      conf = config.input_fields.input_field
+
+    def _color(val, default=white):
+      if val and val in colors:
+        return colors[val]
+      if isinstance(val, int):
+        return val
+      return default
+
+    self.fg = _color(conf.content.fg, white) if fg is null else fg
+    self.fg_br = (conf.content.fg_br or False) if fg_br is null else fg_br
+    _fill_present = bool(conf.blank.char if fill is null else fill)
+    _fill_bg = _color(conf.blank.bg, black) if fill_bg is null else fill_bg
+    if bg is not null:
+      self.bg = bg
+    elif _fill_present:
+      self.bg = _fill_bg
+    else:
+      self.bg = _color(conf.content.bg, black)
+    self.bg_br = (conf.content.bg_br or False) if bg_br is null else bg_br
+
+    self.fill = conf.blank.char if fill is null else fill
+    self.fill = self.fill or " "
+    if type(self.fill) is int:
+      self.fill = bytes([self.fill]).decode('cp437')
+    self.fill_fg = _color(conf.blank.fg, white) if fill_fg is null else fill_fg
+    self.fill_fg_br = (conf.blank.fg_br or False) if fill_fg_br is null else fill_fg_br
+    self.fill_bg = _color(conf.blank.bg, black) if fill_bg is null else fill_bg
+    self.fill_bg_br = (conf.blank.bg_br or False) if fill_bg_br is null else fill_bg_br
+
+    self.arrow_fg = arrow_fg if arrow_fg is not null else self.fg
+    self.arrow_fg_br = arrow_fg_br if arrow_fg_br is not null else True
+
+    # Width: enough for longest option + arrows + padding
+    max_opt_len = max((len(str(o)) for o in self.options), default=1)
+    self.width = max_opt_len + 4  # "< " + option + " >"
+    self.height = 1
+
+    # Compat with InputFields container
+    self.row = 0
+    self.col = 0
+    self.cursor_line = 0
+    self.cursor_col = 0
+
+    return self
+
+  def get_text(self):
+    return str(self.options[self._index])
+
+  content = property(lambda self: self.get_text())
+
+  def _contains_screen_pos(self, screen_row, screen_col):
+    return (screen_row == self.row_offset and
+            self.col_offset <= screen_col < self.col_offset + self.width)
+
+  def _place_cursor_at_screen_pos(self, screen_row, screen_col):
+    pass  # no internal cursor positioning
+
+  async def draw_outline(self, active=False):
+    pass  # no outline
+
+  async def draw_field(self, start_at=None, end_row=null):
+    opt = str(self.options[self._index])
+    max_opt_len = self.width - 4
+    display = opt.ljust(max_opt_len)
+
+    await ansi_move(self.user, self.row_offset, self.col_offset)
+
+    # Left arrow
+    ansi_color(self.user, fg=self.arrow_fg, fg_br=self.arrow_fg_br, bg=self.bg, bg_br=self.bg_br)
+    lt = bytes([17]).decode('cp437')  # CP437 left-pointing triangle
+    await send(self.user, lt + " ", drain=False)
+
+    # Option text
+    ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
+    await send(self.user, display, drain=False)
+
+    # Right arrow
+    ansi_color(self.user, fg=self.arrow_fg, fg_br=self.arrow_fg_br, bg=self.bg, bg_br=self.bg_br)
+    rt = bytes([16]).decode('cp437')  # CP437 right-pointing triangle
+    await send(self.user, " " + rt, drain=True)
+
+  async def run(self):
+    while True:
+      key = await get_input_key(self.user)
+
+      if key == cr:
+        return RetVals(key=cr, content=self.get_text(), row=self.row, col=self.col,
+                       insert_mode=False)
+      if key == tab:
+        return RetVals(key=tab, content=self.get_text(), row=self.row, col=self.col,
+                       insert_mode=False)
+      if key == shift_tab:
+        return RetVals(key=shift_tab, content=self.get_text(), row=self.row, col=self.col,
+                       insert_mode=False)
+
+      if key == left:
+        self._index = (self._index - 1) % len(self.options)
+        await self.draw_field()
+        continue
+      if key == right or key == " ":
+        self._index = (self._index + 1) % len(self.options)
+        await self.draw_field()
+        continue
+
+      if key == up:
+        if self.parent:
+          return RetVals(key=up, content=self.get_text(), row=self.row, col=self.col,
+                         insert_mode=False)
+      if key == down:
+        if self.parent:
+          return RetVals(key=down, content=self.get_text(), row=self.row, col=self.col,
+                         insert_mode=False)
+
+      if key == click:
+        btn = getattr(key, 'button', None)
+        if btn == left:
+          click_row, click_col = key.row, key.col
+          if self._contains_screen_pos(click_row, click_col):
+            # Click on left half = prev, right half = next
+            mid = self.col_offset + self.width // 2
+            if click_col < mid:
+              self._index = (self._index - 1) % len(self.options)
+            else:
+              self._index = (self._index + 1) % len(self.options)
+            await self.draw_field()
+          elif self.parent:
+            return RetVals(key=click, button=btn, click_row=click_row, click_col=click_col,
+                           content=self.get_text(), row=self.row, col=self.col,
+                           insert_mode=False)
+
+
+class ListField:
+  """Vertical list editor. Shows items one per line with a highlighted cursor.
+  Enter adds a new item (inline input), Delete/Backspace removes the highlighted item.
+  Up/Down navigate within the list. Tab returns to container."""
+
+  @classmethod
+  async def create(cls, parent, user, items=None, height=5, width=30,
+                   validate=None, conf=null,
+                   fg=null, fg_br=null, bg=null, bg_br=null,
+                   sel_fg=null, sel_fg_br=null, sel_bg=null, sel_bg_br=null,
+                   outline=True, outline_fg=null, outline_fg_br=null,
+                   outline_bg=null, outline_bg_br=null,
+                   outline_active_fg=null, outline_active_fg_br=null,
+                   outline_active_bg=null, outline_active_bg_br=null,
+                   outline_double=null, title=null):
+    self = cls()
+    self.user = user
+    self.parent = parent
+    self.items = list(items) if items else []
+    self.validate = validate  # async fn(item_text) -> (bool, error_msg)
+    self.allow_edit = True
+    self.no_cursor_margin = True
+    self.insert_mode = False
+    self._cursor = 0
+    self._scroll = 0
+    self._adding = False
+    self.title = title
+
+    self.row_offset = user.cur_row
+    self.col_offset = user.cur_col
+
+    if conf is null:
+      conf = config.input_fields.input_field
+
+    def _color(val, default=white):
+      if val and val in colors:
+        return colors[val]
+      if isinstance(val, int):
+        return val
+      return default
+
+    self.fg = _color(conf.content.fg, white) if fg is null else fg
+    self.fg_br = (conf.content.fg_br or False) if fg_br is null else fg_br
+    _fill_present = bool(conf.blank.char)
+    _fill_bg = _color(conf.blank.bg, black)
+    if bg is not null:
+      self.bg = bg
+    elif _fill_present:
+      self.bg = _fill_bg
+    else:
+      self.bg = _color(conf.content.bg, black)
+    self.bg_br = (conf.content.bg_br or False) if bg_br is null else bg_br
+
+    # Selected/highlighted item colors
+    self.sel_fg = sel_fg if sel_fg is not null else self.bg
+    self.sel_fg_br = sel_fg_br if sel_fg_br is not null else self.bg_br
+    self.sel_bg = sel_bg if sel_bg is not null else self.fg
+    self.sel_bg_br = sel_bg_br if sel_bg_br is not null else self.fg_br
+
+    self.width = width
+    self.height = height
+
+    # Outline
+    conf_outline = conf.outline if outline is True else outline
+    # conf_outline might be a bare bool (True) rather than a config section with colors
+    has_outline_conf = hasattr(conf_outline, 'fg') and not isinstance(conf_outline, bool)
+    self.outline = bool(outline)
+    self.outline_double = False
+    if outline_double is not null:
+      self.outline_double = outline_double
+    elif self.outline and has_outline_conf and hasattr(conf_outline, 'double_lined'):
+      self.outline_double = bool(conf_outline.double_lined)
+    self.outline_fg = _color(conf_outline.fg, green) if (self.outline and has_outline_conf and outline_fg is null) else (outline_fg if outline_fg is not null else green)
+    self.outline_fg_br = (conf_outline.fg_br if (self.outline and has_outline_conf) else False) if outline_fg_br is null else outline_fg_br
+    self.outline_bg = _color(conf_outline.bg, black) if (self.outline and has_outline_conf and outline_bg is null) else (outline_bg if outline_bg is not null else black)
+    self.outline_bg_br = (conf_outline.bg_br if (self.outline and has_outline_conf) else False) if outline_bg_br is null else outline_bg_br
+    self.outline_active_fg = _color(conf_outline.active.fg, green) if (self.outline and has_outline_conf and outline_active_fg is null) else (outline_active_fg if outline_active_fg is not null else green)
+    self.outline_active_fg_br = (conf_outline.active.fg_br if (self.outline and has_outline_conf) else False) if outline_active_fg_br is null else outline_active_fg_br
+    self.outline_active_bg = _color(conf_outline.active.bg, black) if (self.outline and has_outline_conf and outline_active_bg is null) else (outline_active_bg if outline_active_bg is not null else black)
+    self.outline_active_bg_br = (conf_outline.active.bg_br if (self.outline and has_outline_conf) else False) if outline_active_bg_br is null else outline_active_bg_br
+
+    if self.outline:
+      self.row_offset += 1
+      self.col_offset += 1
+
+    # Compat with InputFields container
+    self.row = 0
+    self.col = 0
+    self.cursor_line = 0
+    self.cursor_col = 0
+
+    return self
+
+  def get_text(self):
+    return ", ".join(self.items)
+
+  content = property(lambda self: self.get_text())
+
+  def _contains_screen_pos(self, screen_row, screen_col):
+    top = self.row_offset - (1 if self.outline else 0)
+    bottom = self.row_offset + self.height - 1 + (1 if self.outline else 0)
+    left_edge = self.col_offset - (1 if self.outline else 0)
+    right_edge = self.col_offset + self.width - 1 + (1 if self.outline else 0)
+    return top <= screen_row <= bottom and left_edge <= screen_col <= right_edge
+
+  def _place_cursor_at_screen_pos(self, screen_row, screen_col):
+    vis_row = screen_row - self.row_offset
+    if 0 <= vis_row < self.height:
+      idx = self._scroll + vis_row
+      if idx < len(self.items):
+        self._cursor = idx
+
+  def _ensure_cursor_visible(self):
+    if self.items:
+      self._cursor = max(0, min(self._cursor, len(self.items) - 1))
+    else:
+      self._cursor = 0
+    if self._cursor < self._scroll:
+      self._scroll = self._cursor
+    elif self._cursor >= self._scroll + self.height:
+      self._scroll = self._cursor - self.height + 1
+
+  async def draw_outline(self, active=False):
+    if not self.outline:
+      return
+    if active:
+      ofg, ofg_br = self.outline_active_fg, self.outline_active_fg_br
+      obg, obg_br = self.outline_active_bg, self.outline_active_bg_br
+    else:
+      ofg, ofg_br = self.outline_fg, self.outline_fg_br
+      obg, obg_br = self.outline_bg, self.outline_bg_br
+
+    if self.outline_double:
+      tl, horiz, tr, vert, bl, br_char = (bytes([c]).decode('cp437') for c in (201, 205, 187, 186, 200, 188))
+    else:
+      tl, horiz, tr, vert, bl, br_char = (bytes([c]).decode('cp437') for c in (218, 196, 191, 179, 192, 217))
+
+    outline_row = self.row_offset - 1
+    outline_col = self.col_offset - 1
+
+    need_nowrap = (outline_col - 1 + self.width + 2) >= self.user.screen_width
+    if need_nowrap:
+      ansi_wrap(self.user, False)
+
+    ansi_color(self.user, fg=ofg, fg_br=ofg_br, bg=obg, bg_br=obg_br)
+
+    # Top border (with optional title)
+    await ansi_move(self.user, outline_row, outline_col)
+    if self.title and self.title is not null:
+      title_text = str(self.title)[:self.width - 2]
+      remaining = self.width - len(title_text)
+      left_bar = remaining // 2
+      right_bar = remaining - left_bar
+      await send(self.user, tl + horiz * left_bar + title_text + horiz * right_bar + tr, drain=False)
+    else:
+      await send(self.user, tl + horiz * self.width + tr, drain=False)
+
+    for r in range(self.height):
+      await ansi_move(self.user, outline_row + 1 + r, outline_col)
+      await send(self.user, vert, drain=False)
+      await ansi_move(self.user, outline_row + 1 + r, outline_col + self.width + 1)
+      await send(self.user, vert, drain=False)
+
+    await ansi_move(self.user, outline_row + self.height + 1, outline_col)
+    hint = " Ins:Add Del:Rem "
+    if len(hint) <= self.width:
+      remaining = self.width - len(hint)
+      left_bar = remaining // 2
+      right_bar = remaining - left_bar
+      await send(self.user, bl + horiz * left_bar + hint + horiz * right_bar + br_char, drain=False)
+    else:
+      await send(self.user, bl + horiz * self.width + br_char, drain=False)
+
+    if need_nowrap:
+      ansi_wrap(self.user, True)
+
+    await self.user.writer.drain()
+
+  async def draw_field(self, start_at=None, end_row=null):
+    self._ensure_cursor_visible()
+    for vis_row in range(self.height):
+      idx = self._scroll + vis_row
+      await ansi_move(self.user, self.row_offset + vis_row, self.col_offset)
+      if idx < len(self.items):
+        item_text = str(self.items[idx])[:self.width]
+        padded = item_text.ljust(self.width)
+        if idx == self._cursor:
+          ansi_color(self.user, fg=self.sel_fg, fg_br=self.sel_fg_br, bg=self.sel_bg, bg_br=self.sel_bg_br)
+        else:
+          ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
+        await send(self.user, padded, drain=False)
+      else:
+        ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
+        await send(self.user, " " * self.width, drain=False)
+    await self.user.writer.drain()
+
+  async def _do_add(self):
+    """Show inline input at bottom of the list field for adding a new item."""
+    # Use the row below the outline (or below the field if no outline)
+    input_row = self.row_offset + self.height + (1 if self.outline else 0)
+    if input_row > self.user.screen_height:
+      input_row = self.user.screen_height
+
+    await ansi_move(self.user, input_row, self.col_offset)
+    ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=False)
+    await send(self.user, "Add: ", drain=True)
+
+    result = await InputField.create(
+      parent=null, user=self.user,
+      conf=config.input_fields.input_field,
+      width=self.width - 5, max_length=50, content=""
+    )
+
+    new_item = result.content.strip() if result and hasattr(result, 'content') else ""
+
+    # Clear the add line
+    await ansi_move(self.user, input_row, self.col_offset)
+    ansi_color(self.user, fg=self.fg, fg_br=False, bg=self.bg, bg_br=False)
+    await send(self.user, " " * self.width, drain=True)
+
+    if not new_item:
+      return
+
+    # Check duplicate
+    if new_item.lower() in (i.lower() for i in self.items):
+      await self._show_error("Already in list.")
+      return
+
+    # Validate
+    if self.validate:
+      ok, err = await self.validate(new_item)
+      if not ok:
+        await self._show_error(err or "Invalid.")
+        return
+
+    self.items.append(new_item)
+    self._cursor = len(self.items) - 1
+    self._ensure_cursor_visible()
+    await self.draw_field()
+
+  async def _show_error(self, msg):
+    """Flash an error message below the field."""
+    err_row = self.row_offset + self.height + (1 if self.outline else 0)
+    if err_row > self.user.screen_height:
+      err_row = self.user.screen_height
+    await ansi_move(self.user, err_row, self.col_offset)
+    ansi_color(self.user, fg=red, fg_br=True, bg=self.bg, bg_br=False)
+    await send(self.user, msg[:self.width].ljust(self.width), drain=True)
+    await asyncio.sleep(1.5)
+    await ansi_move(self.user, err_row, self.col_offset)
+    ansi_color(self.user, fg=self.fg, fg_br=False, bg=self.bg, bg_br=False)
+    await send(self.user, " " * self.width, drain=True)
+
+  async def run(self):
+    while True:
+      key = await get_input_key(self.user)
+
+      if key == tab:
+        return RetVals(key=tab, content=self.get_text(), row=self.row, col=self.col,
+                       insert_mode=False)
+      if key == shift_tab:
+        return RetVals(key=shift_tab, content=self.get_text(), row=self.row, col=self.col,
+                       insert_mode=False)
+      if key == cr:
+        return RetVals(key=cr, content=self.get_text(), row=self.row, col=self.col,
+                       insert_mode=False)
+
+      if key == up:
+        if self.items and self._cursor > 0:
+          self._cursor -= 1
+          self._ensure_cursor_visible()
+          await self.draw_field()
+        elif not self.items and self.parent:
+          return RetVals(key=up, content=self.get_text(), row=self.row, col=self.col,
+                         insert_mode=False)
+        continue
+
+      if key == down:
+        if self.items and self._cursor < len(self.items) - 1:
+          self._cursor += 1
+          self._ensure_cursor_visible()
+          await self.draw_field()
+        elif not self.items and self.parent:
+          return RetVals(key=down, content=self.get_text(), row=self.row, col=self.col,
+                         insert_mode=False)
+        continue
+
+      if key == left:
+        if self.parent:
+          return RetVals(key=left, content=self.get_text(), row=self.row, col=self.col,
+                         insert_mode=False)
+
+      if key == right:
+        if self.parent:
+          return RetVals(key=right, content=self.get_text(), row=self.row, col=self.col,
+                         insert_mode=False)
+
+      if key == insert:
+        await self._do_add()
+        continue
+
+      if key == delete or key == back:
+        if self.items:
+          del self.items[self._cursor]
+          if self._cursor >= len(self.items) and self.items:
+            self._cursor = len(self.items) - 1
+          self._ensure_cursor_visible()
+          await self.draw_field()
+        continue
+
+      if key == click:
+        btn = getattr(key, 'button', None)
+        if btn == left:
+          click_row, click_col = key.row, key.col
+          if self._contains_screen_pos(click_row, click_col):
+            self._place_cursor_at_screen_pos(click_row, click_col)
+            self._ensure_cursor_visible()
+            await self.draw_field()
+          elif self.parent:
+            return RetVals(key=click, button=btn, click_row=click_row, click_col=click_col,
+                           content=self.get_text(), row=self.row, col=self.col,
+                           insert_mode=False)
+        continue
+
+
 class InputFields:
   BUTTONS_START = -100  # button indices are -100, -101, -102, etc.
 
@@ -500,6 +988,24 @@ class InputFields:
       )
     # create() already draws the outline and field, so don't draw again here
     self._buttons.append((name, field))
+    return field
+
+  async def add_select(self, options, value="", **kwargs):
+    """Add a SelectField (inline cycling selector) to the form."""
+    field = await SelectField.create(parent=self, user=self.user, options=options, value=value, **kwargs)
+    bottom = field.row_offset + field.height - 1
+    if bottom > self.user.screen_height:
+      raise ValueError(f"SelectField does not fit on screen: bottom row {bottom} exceeds screen height {self.user.screen_height}.")
+    self.fields.append(field)
+    return field
+
+  async def add_list(self, items=None, **kwargs):
+    """Add a ListField (vertical list editor) to the form."""
+    field = await ListField.create(parent=self, user=self.user, items=items, **kwargs)
+    bottom = field.row_offset + field.height - 1 + (1 if field.outline else 0)
+    if bottom > self.user.screen_height:
+      raise ValueError(f"ListField does not fit on screen: bottom row {bottom} exceeds screen height {self.user.screen_height}.")
+    self.fields.append(field)
     return field
 
   async def add_submit_button(self, **kwargs):
@@ -624,6 +1130,8 @@ class InputFields:
           current_index = self._next_index(current_index)
         elif r.key == tab:
           current_index = self._next_index(current_index)
+        elif r.key == shift_tab:
+          current_index = self._prev_index(current_index)
         elif r.key == left or r.key == up:
           current_index = self._prev_index(current_index)
         elif r.key == right or r.key == down:
@@ -669,7 +1177,7 @@ class InputField:
                    outline_active_fg=null, outline_active_fg_br=null,
                    outline_active_bg=null, outline_active_bg_br=null,
                    insert_mode=null, word_wrap=null, content="", allow_edit=null,
-                   margin_char=null, no_cursor_margin=False):
+                   margin_char=null, no_cursor_margin=False, mask_char=null):
     self = cls()
     self.user = user if user is not null else parent.user
     self.parent = parent
@@ -730,8 +1238,8 @@ class InputField:
     self.height_from_end = conf.height_from_end if height_from_end is null else height_from_end
     self.width_from_end = conf.width_from_end if width_from_end is null else width_from_end
 
-    if (not self.height or self.height is null) and self.height_from_end is not null:
-      self.height = self.user.screen_height - self.row_offset + 1 - self.height_from_end
+    if self.height_from_end and self.height_from_end is not null and height is null:
+      self.height = self.user.screen_height - self.row_offset + 1 - int(self.height_from_end)
     if (not self.width or self.width is null) and self.width_from_end is not null:
       self.width = self.user.screen_width - self.col_offset + 1 - self.width_from_end
 
@@ -768,16 +1276,27 @@ class InputField:
     conf_margin = conf.margin_char if conf and conf.margin_char else ">"
     self.margin_char = conf_margin if margin_char is null else margin_char
     self.no_cursor_margin = no_cursor_margin
+    self.mask_char = mask_char if mask_char is not null else None
 
-    # Horizontal scroll step
-    user_conf = getattr(self.user, 'conf', null)
-    if user_conf and user_conf is not null and user_conf.scroll_step:
-      try:
-        self.scroll_step = int(user_conf.scroll_step)
-      except (ValueError, TypeError):
-        self.scroll_step = 8
+    # Warn if masked field can scroll (user can't see scrolling with masked input)
+    if self.mask_char and self.max_length > self.width - (0 if self.no_cursor_margin else 1):
+      import logging
+      logging.getLogger("dirtyfork").warning(
+        "Masked field has max_length (%d) > visible width (%d) — scrolling will be invisible to the user",
+        self.max_length, self.width - (0 if self.no_cursor_margin else 1))
+
+    # Horizontal scroll step (single-line fields always scroll by 1 for smoother UX)
+    if self.height == 1:
+      self.scroll_step = 1
     else:
-      self.scroll_step = 8
+      user_conf = getattr(self.user, 'conf', null)
+      if user_conf and user_conf is not null and user_conf.scroll_step:
+        try:
+          self.scroll_step = int(user_conf.scroll_step)
+        except (ValueError, TypeError):
+          self.scroll_step = 8
+      else:
+        self.scroll_step = 8
 
     # Parse initial content into self.lines
     if not content and conf.text:
@@ -985,7 +1504,7 @@ class InputField:
       text_slice = line.text[dr.start_col:dr.end_col]
       if text_slice:
         ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
-        await send(self.user, text_slice, drain=False)
+        await send(self.user, self.mask_char * len(text_slice) if self.mask_char else text_slice, drain=False)
       # Fill remainder
       drawn = mw + len(text_slice)
       fill_count = usable - drawn
@@ -1017,7 +1536,7 @@ class InputField:
           pass  # already started drawing from prefix
         if text_vis:
           ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
-          await send(self.user, text_vis, drain=False)
+          await send(self.user, self.mask_char * len(text_vis) if self.mask_char else text_vis, drain=False)
           drawn += len(text_vis)
       # Fill
       fill_count = usable - drawn
@@ -1112,7 +1631,7 @@ class InputField:
     await ansi_move(self.user, sr, sc)
     line = self.lines[self.cursor_line]
     if self.cursor_col < len(line.text):
-      ch = line.text[self.cursor_col]
+      ch = self.mask_char if self.mask_char else line.text[self.cursor_col]
       ansi_color(self.user, fg=self.bg, fg_br=self.bg_br, bg=self.fg, bg_br=self.fg_br)
       if sc >= self.user.screen_width:
         ansi_wrap(self.user, False)
@@ -1138,7 +1657,7 @@ class InputField:
     line = self.lines[self.cursor_line]
     if self.cursor_col < len(line.text):
       ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
-      await send(self.user, line.text[self.cursor_col], drain=False)
+      await send(self.user, self.mask_char if self.mask_char else line.text[self.cursor_col], drain=False)
     else:
       ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br, bg=self.fill_bg, bg_br=self.fill_bg_br)
       await send(self.user, self.fill, drain=False)
@@ -1260,10 +1779,14 @@ class InputField:
           return r
         continue
 
-      # -- Tab --
+      # -- Tab / Shift+Tab --
       if key == tab:
         if self.parent:
           return self._make_retvals(tab)
+        continue
+      if key == shift_tab:
+        if self.parent:
+          return self._make_retvals(shift_tab)
         continue
 
       # -- Arrow keys --
@@ -1418,10 +1941,13 @@ class InputField:
     if self.cursor_col > 0:
       if self.insert_mode:
         await self._hide_insert_cursor()
+      old_h = self.h_scroll
       self.cursor_col -= 1
       self._set_updown_col()
       self._ensure_cursor_visible()
       self._ensure_h_scroll()
+      if self.h_scroll != old_h:
+        await self._draw_visible()
       await self._position_cursor(drain=True)
     elif self.cursor_line > 0:
       if self.insert_mode:
@@ -1445,10 +1971,13 @@ class InputField:
     if self.cursor_col < len(line.text):
       if self.insert_mode:
         await self._hide_insert_cursor()
+      old_h = self.h_scroll
       self.cursor_col += 1
       self._set_updown_col()
       self._ensure_cursor_visible()
       self._ensure_h_scroll()
+      if self.h_scroll != old_h:
+        await self._draw_visible()
       await self._position_cursor(drain=True)
     elif self.cursor_line + 1 < len(self.lines):
       if self.insert_mode:
@@ -1673,10 +2202,12 @@ class InputField:
     if cpos < self.h_scroll:
       self.h_scroll = max(0, cpos - self.scroll_step)
       self.h_scroll = max(0, self.h_scroll)
-    elif cpos >= self.h_scroll + usable:
-      self.h_scroll = cpos - usable + 1
-      # Snap to scroll_step
+    elif cpos > self.h_scroll + usable:
+      self.h_scroll = cpos - usable
+      # Snap to scroll_step, but don't scroll past cursor
       self.h_scroll = ((self.h_scroll + self.scroll_step - 1) // self.scroll_step) * self.scroll_step
+      if self.h_scroll > cpos:
+        self.h_scroll = max(0, cpos)
 
   async def _redraw_or_reposition(self):
     """After cursor movement, redraw if scrolled, otherwise just reposition."""

@@ -472,7 +472,8 @@ async def _process_command(user, line):
             popup_text = f"{user.handle} is paging you from Teleconference!"
         shown, reason = await send_popup_to_user(
             target_handle, popup_text,
-            title="Page", from_user=user.handle, from_handle=user.handle
+            title="Page", from_user=user.handle, from_handle=user.handle,
+            sender=user
         )
         if shown:
             await _send_to_user(user, [(green, True, f"Page sent to {target.handle}.")])

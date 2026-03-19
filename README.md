@@ -1,6 +1,6 @@
 # DirtyFork BBS
 
-A modern async Python telnet BBS with full ANSI/CP437 support, DOS door games, forums, private messaging, file transfers, and real-time teleconference chat.
+A modern async Python BBS supporting telnet and dial-up modem connections, with full ANSI/CP437 support, DOS door games, forums, private messaging, file transfers, and real-time teleconference chat.
 
 ## Features
 
@@ -9,10 +9,14 @@ A modern async Python telnet BBS with full ANSI/CP437 support, DOS door games, f
 - **Private messages** with threading
 - **Teleconference** — split-screen multi-channel real-time chat
 - **File library** with ZMODEM/YMODEM-G upload and download
-- **Full ANSI/CP437** rendering with cursor and color state tracking
-- **Per-user settings** — handle, password, profile, preferences
-- **Access control** via white/black key system
-- **Configurable menus** with prefix matching and multi-column layout
+- **Full ANSI/CP437 and UTF-8** with automatic encoding detection
+- **Per-user settings** — profile, preferences, encoding, start destination
+- **Access control** via white/black key system with recursive key groups
+- **Sysop panel** — manage user keys, key groups, and user settings
+- **Configurable menus** with prefix matching, multi-column layout, and `/jump` navigation
+- **Popup system** with queueing, scrolling, and mouse support
+- **Modem support** via pyserial-asyncio with AT command handling (untested — see below)
+- **Idle timeout** with configurable warning prompt and separate modem/telnet timeouts
 - **Rotating logs** and SQLite database (auto-created on first run)
 
 ## Requirements
@@ -128,7 +132,79 @@ destinations:
     black_keys: [banned]  # user must NOT have this key
 ```
 
-Keys are assigned to users in the `USER_KEYS` database table. All users get the `doors` key by default (configurable in `user_defaults.keys`).
+Keys are assigned to users in the `USER_KEYS` database table. New users receive default keys from `user_defaults.keys` (e.g., `[doors]`).
+
+### Key Groups
+
+Key groups let a single key automatically grant other keys, with recursive expansion:
+
+```yaml
+key_groups:
+  sysop:
+  - doors
+  - debug
+```
+
+A user with the `sysop` key effectively has `doors` and `debug` too. Groups can include other groups. The sysop can edit groups at runtime via the sysop panel.
+
+### Banned Users
+
+The `banned` key is checked at login. If a user's expanded key set contains `banned`, they are immediately logged out — no need to add `banned` to every destination's `black_keys`.
+
+## Menu Navigation
+
+Menus support **prefix matching** — type the shortest unambiguous prefix of an option name (e.g., `m` for "Messages", `fo` for "Forums"). Type `x` to exit, `xx` to go up two levels, etc.
+
+The **`/jump`** command (or `/j`) navigates directly using dotted paths:
+
+```
+/j forums.philosophy     → opens the Philosophy forum
+/j files.search          → opens file search
+```
+
+Users can set a **start destination** in their settings (same `/jump` syntax) to skip the main menu on login.
+
+## Sysop Panel
+
+The sysop menu (requires the `sysop` key group) provides:
+
+- **Keys** — view and edit any user's keys
+- **Groups** — edit key group definitions (saved to YAML, applied live)
+- **Settings** — edit any user's profile and preferences
+
+## Modem Support (Experimental)
+
+Modem/serial connections are supported via pyserial-asyncio. The BBS listens for incoming calls using AT commands (RING detection, ATA to answer, ATH to hang up). Multiple serial ports can be configured for multi-line setups.
+
+**Note:** Modem support is currently untested — the developer does not have a modem. If you try it, please report issues.
+
+```yaml
+modem:
+  baudrate: 115200        # serial port speed — 115200 is ideal because
+                          # modem compression can exceed the line rate
+  init_string: ATZ        # default AT init command for all ports
+  idle_timeout: 300       # modem idle timeout in seconds (0 = disabled)
+  ports:
+    - port: COM1
+    - port: COM2
+    - port: COM3
+      baudrate: 9600      # per-port override
+```
+
+Modem connections auto-detect as ANSI/CP437 terminals. Each port gets its own listener task.
+
+## Idle Timeout
+
+Configurable inactivity timeout with optional "are you still there?" warning prompt. Separate timeout values for telnet and modem connections. The warning shows as a popup that saves/restores the screen.
+
+```yaml
+idle_timeout: 300         # telnet timeout in seconds (0 = disabled)
+idle_warning: 30          # seconds before timeout to show warning (0 = no warning)
+```
+
+## Documentation
+
+See [DOCS.md](DOCS.md) for detailed documentation covering architecture, configuration, all modules, the input field system, ANSI state tracking, and more.
 
 ## License
 

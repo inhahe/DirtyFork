@@ -44,31 +44,31 @@ def _get_blocked_users(user):
     return set()
 
 
-def check_can_page(target, from_handle=None):
+def check_can_page(target, from_handle=None, from_user=None):
   """Check whether a popup/page can be sent to target.
 
   Returns (allowed: bool, reason: str or None).
   reason is a human-readable explanation when not allowed.
+  from_user is the User object of the sender (used to check sysop bypass).
   """
   # No screen set up yet
   if not target.screen or not target.screen_width:
     return False, "User is not fully connected."
 
+  # Sysops bypass all page restrictions
+  is_sysop = from_user and hasattr(from_user, 'keys') and 'sysop' in from_user.keys
+
   # Check if pages are allowed
-  if not _get_conf_bool(target, 'allow_pages', default=True):
+  if not is_sysop and not _get_conf_bool(target, 'allow_pages', default=True):
     return False, f"{target.handle} has paging disabled."
 
-  # Check if BBS messages are allowed
-  if not _get_conf_bool(target, 'allow_bbs_messages', default=True):
-    return False, f"{target.handle} has BBS messages disabled."
-
   # Check if door popups are allowed (only matters if they're in a door)
-  if target.in_door:
+  if not is_sysop and target.in_door:
     if not _get_conf_bool(target, 'allow_door_popups', default=True):
       return False, f"{target.handle} has do-not-disturb enabled during door games."
 
   # Check if the sender is blocked
-  if from_handle:
+  if from_handle and not is_sysop:
     blocked = _get_blocked_users(target)
     if from_handle.lower() in blocked:
       return False, f"{target.handle} is blocking you."
@@ -80,7 +80,7 @@ async def send_popup(user, text, title=null, from_user=null,
                      fg=white, fg_br=True, bg=black, bg_br=False,
                      outline_fg=cyan, outline_fg_br=True,
                      outline_bg=black, outline_bg_br=False,
-                     from_handle=None, skip_checks=False):
+                     from_handle=None, skip_checks=False, sender=None):
   """Send a popup message to a user. Works even if they're in a door game.
 
   If a popup is already showing, the new one is queued and will display
@@ -91,7 +91,7 @@ async def send_popup(user, text, title=null, from_user=null,
   Queued popups return (True, None) — they will be shown eventually.
   """
   if not skip_checks:
-    allowed, reason = check_can_page(user, from_handle=from_handle)
+    allowed, reason = check_can_page(user, from_handle=from_handle, from_user=sender)
     if not allowed:
       return False, reason
 
@@ -153,7 +153,7 @@ async def send_popup_to_all(text, title=null, from_user=null, exclude=None, **kw
 
 
 async def send_popup_to_user(handle, text, title=null, from_user=null,
-                             from_handle=None, **kwargs):
+                             from_handle=None, sender=None, **kwargs):
   """Send a popup to a specific user by handle.
 
   Returns (shown: bool, reason: str or None).
@@ -163,4 +163,4 @@ async def send_popup_to_user(handle, text, title=null, from_user=null,
   if not user:
     return False, f"User '{handle}' is not online."
   return await send_popup(user, text, title=title, from_user=from_user,
-                          from_handle=from_handle, **kwargs)
+                          from_handle=from_handle, sender=sender, **kwargs)

@@ -6,21 +6,23 @@ screen_path: null
 
 handle:
   type: input_field
-  label: "Handle: "
-  chars: 'A-Za-z0-9_,\.\-'
-  allowed_chars: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_0123456789"
+  label: "Handle{!red,br}*{!}: "
+  # Regex character class syntax: ranges (a-z, A-X), shortcuts (\d, \w, \s),
+  # escaped literals (\-, \\, \[, \]). Brackets optional. Use \- for literal dash.
+  allowed_chars: "a-zA-Z0-9_\\-"
+  # allowed_chars_label: "letters, numbers, underscore, dash"  # auto-generated if omitted
   max_length: 29
   min_length: 1
 password:
-  label: "Password: "
+  label: "Password{!red,br}*{!}: "
   type: input_field
   blurb: "Note that a password of four easily rememberable words is more secure than an 11-character password full of special characters. (See https://xkcd.com/936/.) Minimum length: 6"
   row: null
   col: null
   height: 1
-  width: 50
+  width: 20
   min_length: 6
-  max_length: 49
+  max_length: 19
 age:
   label: "Age: "
   type: input_field
@@ -39,24 +41,26 @@ location:
   max_length: 100
   row: null
   col: null
-  width: 50
+  width: 40
 time_zone:
-  label: "Time zone: "
+  label: "Time zone{!red,br}*{!}: "
   blurb: "Enter a time zone abbreviation (e.g. EST, PST, UTC) or UTC offset (e.g. UTC+8, UTC-5:30)."
   type: input_field
   max_length: 10
   width: 11
 email:
-  label: "Email address: "
+  label: "Email: "
   type: input_field
   max_length: 100
   chars: 'A-Za-z0-9\._%\+\-@'
   row: null
   col: null
-  width: 50
+  width: 40
   height: null
 bio:
   label: "Bio: "
   type: input_field
   width: 50
   max_length: 400
+  height_from_end: 3
+  word_wrap: true

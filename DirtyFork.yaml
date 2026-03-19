@@ -9,11 +9,38 @@ sysop_handle: ""   # handle that automatically receives the 'sysop' key on login
 hostname: 0.0.0.0   # bind on all interfaces; set to a specific IP to restrict
 port: 23
 
+# BBS info screen (shown from main menu "About" option)
+# bbs_location: ""           # city/state/country
+# bbs_description: ""        # short description of the BBS
+# bbs_phone: ""              # modem phone number(s)
+# bbs_website: ""            # website URL
+# bbs_established: ""        # year established
+# bbs_info_screen: ""        # path to .ans or .bin file (shown instead of auto-generated info)
+
 # Menu layout compactness: how much to prefer shorter/wider over taller/narrower.
 # 1.0 = balanced. >1 = more columns (shorter). <1 = fewer columns (taller).
 menu_compactness: 1.0
 
 min_edit_width: 10  # minimum characters reserved for editing when quote margins get deep
+
+# Idle timeout in seconds (0 = disabled). Separate values for telnet and modem.
+idle_timeout: 0
+# Seconds before timeout to show "are you still there?" warning (0 = no warning, just disconnect)
+idle_warning: 30
+
+# Modem/serial support (optional — comment out to disable)
+# modem:
+#   baudrate: 115200        # serial port speed, not modem line speed — 115200 is ideal
+#                           # because modem compression can exceed the line rate
+#   init_string: ATZ        # default AT init command for all ports
+#   idle_timeout: 300       # modem idle timeout in seconds (0 = disabled)
+#   ports:
+#     - port: COM1
+#     - port: COM2
+#     - port: COM3
+#       baudrate: 115200    # per-port override
+#   # Legacy single-port format also supported:
+#   # port: COM1
 
 database: DirtyFork.db
 files_dir: files
@@ -32,6 +59,11 @@ file_tags:                     # sysop-defined list of valid file tags
   - bbs
   - adult
 user_configs: user_configs
+
+# bcrypt cost factor for password hashing. Higher = more secure but slower.
+# Approximate times: 4=1ms, 6=3ms, 8=13ms, 10=50ms, 12=200ms (default bcrypt is 12)
+# Existing passwords are re-hashed at this cost on next login.
+bcrypt_rounds: 8
 
 login:
   type: func
@@ -110,6 +142,14 @@ destinations:
   sysop_module:
     type: module
     white_keys: [sysop]
+  bbsinfo:
+    type: module
+  user_info:
+    type: module
+  whos_online:
+    type: module
+  user_list:
+    type: module
   user_director:
     type: func
   forums:
@@ -155,6 +195,18 @@ menu_system:
       File Library:
         target: files
         type: menu
+      About:
+        target: bbsinfo
+        type: module
+      Lookup:
+        target: user_info
+        type: module
+      Who's Online:
+        target: whos_online
+        type: module
+      Users:
+        target: user_list
+        type: module
       Settings:
         target: settings
         type: module
@@ -206,6 +258,14 @@ menu_system:
       #   communication_type: COM
       #   command: 'START.BAT {node}'
       #   dir: 'lord'
+      Legend of the Red Dragon:
+        max_nodes: 10
+        white_keys: [doors]
+        black_keys: [banned]
+        communication_type: COM
+        dropfile_type: DOOR.SYS
+        command: 'START.BAT {node}'
+        dir: 'lord_demo'
       1 - Test Door (FOSSIL):
         max_nodes: 10
         communication_type: COM
@@ -249,5 +309,5 @@ menu_system:
         action: user_keys
       Groups:
         action: key_groups
-      Settings:
+      Edit User:
         action: user_settings

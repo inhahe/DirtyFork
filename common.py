@@ -82,6 +82,91 @@ def _ensure_tables():
 
 _ensure_tables()
 
+# Add config_filename column if missing (migration for existing databases)
+try:
+  cur.execute("SELECT config_filename FROM USERS LIMIT 0")
+except Exception:
+  cur.execute("ALTER TABLE USERS ADD COLUMN config_filename TEXT")
+  con.commit()
+  # Backfill existing users: use safe_filename based on their handle
+  # (done after safe_filename is defined, see _backfill_config_filenames below)
+
+# Add last_login column if missing
+try:
+  cur.execute("SELECT last_login FROM USERS LIMIT 0")
+except Exception:
+  cur.execute("ALTER TABLE USERS ADD COLUMN last_login INT")
+  con.commit()
+
+# Characters unsafe on any of Windows, macOS, Linux
+_UNSAFE_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED = {
+  'con', 'prn', 'aux', 'nul',
+  'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+  'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9',
+}
+
+def safe_filename(name, existing=None):
+  """Convert a name to a filesystem-safe filename (without extension).
+  Replaces unsafe characters with '_'. If existing is a set of lowercase
+  names already taken, appends a number to ensure uniqueness."""
+  safe = _UNSAFE_FILENAME_CHARS.sub('_', name).strip('. ').lower()
+  if not safe:
+    safe = '_'
+  # Windows reserved names
+  if safe in _WINDOWS_RESERVED:
+    safe = safe + '_'
+  # Uniqueness
+  if existing is not None:
+    if safe in existing:
+      n = 1
+      while (safe + str(n)) in existing:
+        n += 1
+      safe = safe + str(n)
+  return safe
+
+def _backfill_config_filenames():
+  """Fill in config_filename for any users that don't have one yet."""
+  rows = cur.execute("SELECT id, handle FROM USERS WHERE config_filename IS NULL OR config_filename = ''").fetchall()
+  if not rows:
+    return
+  # Get all existing config_filenames for uniqueness
+  existing_rows = cur.execute("SELECT config_filename FROM USERS WHERE config_filename IS NOT NULL AND config_filename != ''").fetchall()
+  existing = set(r[0].lower() if isinstance(r[0], str) else r["config_filename"].lower() for r in existing_rows)
+  for row in rows:
+    uid = row[0] if isinstance(row, tuple) else row["id"]
+    handle = row[1] if isinstance(row, tuple) else row["handle"]
+    fname = safe_filename(handle, existing)
+    existing.add(fname.lower())
+    cur.execute("UPDATE USERS SET config_filename = ? WHERE id = ?", (fname, uid))
+  con.commit()
+
+_backfill_config_filenames()
+
+
+_HandleRow = collections.namedtuple("HandleRow", ["id", "handle"])
+
+def lookup_handle(handle, db=None):
+  """Look up a user by handle (case-insensitive).
+  Returns HandleRow(id, handle) or None if not found.
+  Uses the provided db connection, or the module-level one if omitted."""
+  c = db or con
+  row = c.execute(
+    "SELECT id, handle FROM USERS WHERE handle = ? COLLATE NOCASE LIMIT 1",
+    (handle,)
+  ).fetchone()
+  if row is None:
+    return None
+  uid = row[0] if isinstance(row, tuple) else row["id"]
+  uhandle = row[1] if isinstance(row, tuple) else row["handle"]
+  return _HandleRow(uid, uhandle)
+
+
+def handle_exists(handle, db=None):
+  """Check if a handle exists (case-insensitive). Returns True/False."""
+  return lookup_handle(handle, db) is not None
+
+
 class GlobalData:
   def __init__(self):
     self.users = {}
@@ -146,7 +231,248 @@ class User:
 
 line_pos_re = re.compile('\x1b\\[(\\d+);(\\d+)R')
 email_re = re.compile(r'''(?:[a-z0-9!#$%&'*+\x2f=?^_`\x7b-\x7d~\x2d]+(?:\.[a-z0-9!#$%&'*+\x2f=?^_`\x7b-\x7d~\x2d]+)*|"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])*")@(?:(?:[a-z0-9](?:[a-z0-9\x2d]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9\x2d]*[a-z0-9])?|\[(?:(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9]))\.){3}(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9])|[a-z0-9\x2d]*[a-z0-9]:(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21-\x5a\x53-\x7f]|\\\\[\x01-\x09\x0b\x0c\x0e-\x7f])+)\])''')
-handle_re = re.compile("[A-Za-z0-9_]")
+_CHAR_CLASS_SETS = {
+  'd': set('0123456789'),
+  'w': set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'),
+  's': set(' \t\n\r'),
+  'D': set(chr(c) for c in range(32, 127) if chr(c) not in '0123456789'),
+  'W': set(chr(c) for c in range(32, 127) if chr(c) not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'),
+  'S': set(chr(c) for c in range(33, 127)),
+}
+
+class CharClassError(ValueError):
+  """Raised when a character class spec is invalid."""
+  pass
+
+def _parse_char_class(spec):
+  """Parse a regex-style character class interior into a set of characters.
+  Supports: literal chars, ranges (a-z, A-\\[), shortcuts (\\d, \\w, \\s),
+  and escaped literals (\\-, \\\\, \\[, \\]).
+  Brackets around the spec are stripped if present.
+  Raises CharClassError on invalid specs (reversed ranges, bad escapes)."""
+  spec = spec.strip()
+  if spec.startswith('[') and spec.endswith(']'):
+    spec = spec[1:-1]
+
+  # Tokenize into (char, set, escaped) tuples.
+  # char: single character or None (if set token)
+  # set: character set or None (if single char)
+  # escaped: True if this token came from a backslash escape
+  tokens = []
+  i = 0
+  while i < len(spec):
+    if spec[i] == '\\' and i + 1 < len(spec):
+      esc = spec[i + 1]
+      if esc in _CHAR_CLASS_SETS:
+        tokens.append((None, _CHAR_CLASS_SETS[esc], True))
+      else:
+        tokens.append((esc, None, True))  # literal escaped char
+      i += 2
+    elif spec[i] == '\\':
+      raise CharClassError(f"Trailing backslash in allowed_chars: {spec!r}")
+    else:
+      tokens.append((spec[i], None, False))
+      i += 1
+
+  # Process tokens, looking for char-dash-char ranges.
+  # Only an unescaped '-' can be a range separator.
+  chars = set()
+  j = 0
+  while j < len(tokens):
+    ch, st, esc = tokens[j]
+    # Check for range: single_char  unescaped'-'  single_char
+    if (ch is not None and
+        j + 2 < len(tokens) and
+        tokens[j + 1] == ('-', None, False) and
+        tokens[j + 2][0] is not None):
+      start, end = ord(ch), ord(tokens[j + 2][0])
+      if start > end:
+        raise CharClassError(
+          f"Invalid range '{ch}-{tokens[j+2][0]}' in allowed_chars: "
+          f"start ({ch!r}, {start}) is greater than end ({tokens[j+2][0]!r}, {end})")
+      chars.update(chr(c) for c in range(start, end + 1))
+      j += 3
+    elif ch is not None:
+      chars.add(ch)
+      j += 1
+    elif st is not None:
+      chars.update(st)
+      j += 1
+    else:
+      j += 1
+  return chars
+
+
+def _describe_char_set(chars):
+  """Generate a human-readable description of a character set."""
+  parts = []
+  remaining = set(chars)
+
+  lower = set('abcdefghijklmnopqrstuvwxyz')
+  upper = set('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+  digits = set('0123456789')
+
+  has_all_lower = lower <= remaining
+  has_all_upper = upper <= remaining
+
+  # Check for full or partial letter ranges
+  if has_all_lower and has_all_upper:
+    parts.append("letters")
+    remaining -= lower | upper
+  elif has_all_lower:
+    parts.append("lowercase letters")
+    remaining -= lower
+    # Check for partial uppercase
+    partial_upper = remaining & upper
+    if partial_upper:
+      remaining -= partial_upper
+      parts.append(_describe_partial_range(partial_upper, upper))
+  elif has_all_upper:
+    parts.append("uppercase letters")
+    remaining -= upper
+    partial_lower = remaining & lower
+    if partial_lower:
+      remaining -= partial_lower
+      parts.append(_describe_partial_range(partial_lower, lower))
+  else:
+    # Check for partial ranges in both
+    partial_lower = remaining & lower
+    partial_upper = remaining & upper
+    if partial_lower:
+      remaining -= partial_lower
+      parts.append(_describe_partial_range(partial_lower, lower))
+    if partial_upper:
+      remaining -= partial_upper
+      parts.append(_describe_partial_range(partial_upper, upper))
+
+  # Digits
+  if digits <= remaining:
+    parts.append("numbers")
+    remaining -= digits
+  else:
+    partial_digits = remaining & digits
+    if partial_digits:
+      remaining -= partial_digits
+      parts.append(_describe_partial_range(partial_digits, digits))
+
+  # Name remaining special characters
+  char_names = {
+    ' ': 'space', '_': 'underscore', '-': 'dash', '.': 'period',
+    ',': 'comma', '@': 'at sign', '!': 'exclamation', '?': 'question mark',
+    '#': 'hash', '$': 'dollar', '%': 'percent', '&': 'ampersand',
+    '*': 'asterisk', '+': 'plus', '=': 'equals', '/': 'slash',
+    '\\': 'backslash', "'": 'apostrophe', '"': 'quote',
+    '(': 'parentheses', ')': 'parentheses',
+    '[': 'brackets', ']': 'brackets',
+    '{': 'braces', '}': 'braces',
+    '<': 'angle brackets', '>': 'angle brackets',
+    '~': 'tilde', '`': 'backtick', '^': 'caret', '|': 'pipe',
+    ':': 'colon', ';': 'semicolon', '\t': 'tab',
+  }
+  named = set()
+  for c in sorted(remaining):
+    name = char_names.get(c)
+    if name and name not in named:
+      parts.append(name)
+      named.add(name)
+    elif not name:
+      parts.append(repr(c))
+
+  return ", ".join(parts) if parts else "any characters"
+
+
+def _describe_partial_range(chars, full_set):
+  """Describe a partial range like A-X."""
+  sorted_chars = sorted(chars)
+  if len(sorted_chars) <= 3:
+    return ", ".join(sorted_chars)
+  return f"{sorted_chars[0]}-{sorted_chars[-1]}"
+
+
+_HANDLE_CHARS_DEFAULT = "a-zA-Z0-9_\\- "
+
+def _get_handle_allowed_chars():
+  """Get the allowed character spec from register.yaml or use default."""
+  try:
+    reg_conf = get_config(path=paths.resolve_project("register.yaml"))
+    if reg_conf.handle and reg_conf.handle.allowed_chars:
+      return str(reg_conf.handle.allowed_chars)
+  except Exception:
+    pass
+  return _HANDLE_CHARS_DEFAULT
+
+
+# Validate the configured allowed_chars at startup
+_handle_allowed_set = None
+_handle_allowed_spec = None
+
+def _has_custom_label():
+  """Check if the sysop has set a custom allowed_chars_label."""
+  try:
+    reg_conf = get_config(path=paths.resolve_project("register.yaml"))
+    if reg_conf.handle and reg_conf.handle.allowed_chars_label:
+      return True
+  except Exception:
+    pass
+  return False
+
+def _validate_handle_config():
+  """Parse and validate the handle allowed_chars at startup.
+  Exits if invalid — registration would be broken otherwise.
+  If a custom label is set, validates with re module instead of our parser."""
+  global _handle_allowed_set, _handle_allowed_spec, _handle_allowed_re
+  _handle_allowed_spec = _get_handle_allowed_chars()
+
+  if _has_custom_label():
+    # Custom label provided — use re module for validation, skip our parser
+    try:
+      _handle_allowed_re = re.compile(r'^[' + _handle_allowed_spec + r']+$')
+      _handle_allowed_set = None  # not used in this mode
+    except re.error as e:
+      import sys
+      print(f"FATAL: Invalid handle allowed_chars regex in register.yaml: {e}", file=sys.stderr)
+      sys.exit(1)
+  else:
+    # No custom label — use our parser (needed for auto-generating the label)
+    _handle_allowed_re = None
+    try:
+      _handle_allowed_set = _parse_char_class(_handle_allowed_spec)
+      if not _handle_allowed_set:
+        raise CharClassError("allowed_chars produced an empty character set")
+    except CharClassError as e:
+      import sys
+      print(f"FATAL: Invalid handle allowed_chars in register.yaml: {e}", file=sys.stderr)
+      sys.exit(1)
+
+_handle_allowed_re = None
+_validate_handle_config()
+
+
+def get_handle_allowed_label():
+  """Get the human-readable label for allowed handle characters.
+  Uses allowed_chars_label from register.yaml if set, otherwise auto-generates."""
+  try:
+    reg_conf = get_config(path=paths.resolve_project("register.yaml"))
+    if reg_conf.handle and reg_conf.handle.allowed_chars_label:
+      return str(reg_conf.handle.allowed_chars_label)
+  except Exception:
+    pass
+  return _describe_char_set(_handle_allowed_set)
+
+
+def validate_handle_chars(handle):
+  """Check if a handle contains only allowed characters.
+  Uses re module if custom label is set, our parser's character set otherwise.
+  Returns (ok, error_msg)."""
+  if _handle_allowed_re is not None:
+    if _handle_allowed_re.match(handle):
+      return True, None
+  else:
+    bad = [c for c in handle if c not in _handle_allowed_set]
+    if not bad:
+      return True, None
+  label = get_handle_allowed_label()
+  return False, f"Handle can only contain: {label}"
 
 async def read_cursor_position(user):
   while True:
@@ -157,9 +483,12 @@ async def read_cursor_position(user):
 def setup_user_session(user, handle, user_id, time_created):
   """Set up a user's session after successful login or registration.
   Loads their keys from DB, their YAML config, and applies preferences."""
+  import time as _time
   user.handle = handle
   user.time_created = time_created
   user.user_id = user_id
+  cur.execute("UPDATE USERS SET last_login = ? WHERE id = ?", (int(_time.time()), user_id))
+  con.commit()
   cur.execute("SELECT key FROM user_keys WHERE user_id = ?", (user_id,))
   key_rows = cur.fetchall()
   user.keys = expand_keys(set(kr["key"] for kr in key_rows))
@@ -173,21 +502,29 @@ def setup_user_session(user, handle, user_id, time_created):
       con.commit()
       user.keys.add('sysop')
       user.keys = expand_keys(user.keys)
+      from logger import log as _log
+      _log.info("Auto-granted sysop key to '%s' (sysop_handle match)", handle)
   elif sysop_handle_conf and 'sysop' in user.keys:
     cur.execute("DELETE FROM USER_KEYS WHERE user_id = ? AND key = 'sysop'", (user_id,))
     con.commit()
     user.keys.discard('sysop')
+    from logger import log as _log
+    _log.info("Revoked sysop key from '%s' (sysop_handle mismatch)", handle)
 
   user.input_timestamps = deque()
   user.batch_mode = False
   global_data.users_logging_in.discard(user)
   global_data.users[handle.lower()] = user
 
+  # Load config_filename from DB
+  cf_row = cur.execute("SELECT config_filename FROM USERS WHERE id = ?", (user_id,)).fetchone()
+  user.config_filename = cf_row["config_filename"] if cf_row and cf_row["config_filename"] else handle
+
   # Load user's YAML config (profile data, preferences)
   conf3 = get_config()
   try:
     user_conf_dir = paths.resolve_data(str(config.user_configs or "user_configs"))
-    user_conf_path = os.path.join(str(user_conf_dir), handle + ".yaml")
+    user_conf_path = os.path.join(str(user_conf_dir), user.config_filename + ".yaml")
     conf1 = get_config(path=user_conf_path) if os.path.exists(user_conf_path) else conf3
   except Exception:
     conf1 = conf3
@@ -403,7 +740,22 @@ class _DestinationRegistry:
       return RetVals(status=success, user_in_db=user_in_db)
 
     async def check_password(user_in_db, password):
-      if user_in_db["password_hash"] == bcrypt.hashpw(password.encode("utf-8"), user_in_db["password_salt"]):
+      pw_hash = await asyncio.get_event_loop().run_in_executor(
+        None, bcrypt.hashpw, password.encode("utf-8"), user_in_db["password_salt"])
+      if user_in_db["password_hash"] == pw_hash:
+        # Re-hash with lower cost if the stored salt uses a higher cost factor
+        stored_salt = user_in_db["password_salt"]
+        if isinstance(stored_salt, bytes):
+          cost = int(stored_salt.split(b"$")[2])
+        else:
+          cost = int(stored_salt.encode().split(b"$")[2])
+        target_rounds = int(config.bcrypt_rounds) if config.bcrypt_rounds else 8
+        if cost > target_rounds:
+          new_salt = bcrypt.gensalt(rounds=target_rounds)
+          new_hash = bcrypt.hashpw(password.encode("utf-8"), new_salt)
+          cur.execute("UPDATE USERS SET password_hash = ?, password_salt = ? WHERE id = ?",
+                      (new_hash, new_salt, user_in_db["id"]))
+          con.commit()
         return RetVals(status=success)
       return RetVals(status=fail, err_msg="The password you entered is incorrect.")
 
@@ -436,17 +788,21 @@ class _DestinationRegistry:
       r = check_handle(handle)
       if r.status == fail:
         user.login_tries.append((handle, None))
+        from logger import log as _log
+        _log.info("Failed login: handle '%s' not found", handle)
         await send(user, cr+lf + r.err_msg)
         continue
       user_in_db = r.user_in_db
       await send(user, cr+lf + "Enter your password." + cr+lf, drain=True)
-      password_r = await InputField.create(user=user, conf=config.input_fields.input_field, width=50, max_length=49, height=1)
+      password_r = await InputField.create(user=user, conf=config.input_fields.input_field, width=20, max_length=19, height=1, mask_char="*")
       password = password_r.content if hasattr(password_r, 'content') else str(password_r)
       r = await check_password(user_in_db, password)
       if r.status == success:
         uid = user_in_db["id"] if "id" in user_in_db.keys() else null
         setup_user_session(user, user_in_db["handle"], uid, user_in_db["time_created"])
         if 'banned' in user.keys:
+          from logger import log as _log
+          _log.info("Banned user '%s' blocked at login", user_in_db["handle"])
           await send(user, cr+lf+cr+lf + "Your account has been banned." + cr+lf, drain=True)
           return RetVals(status=fail, next_destination=self.logout, next_menu_item=null)
         # Check for user-defined start destination
@@ -460,6 +816,8 @@ class _DestinationRegistry:
             start_item = menu_item if menu_item else null
         return RetVals(status=success, next_destination=start_dest, next_menu_item=start_item)
       user.login_tries.append((handle, password))
+      from logger import log as _log
+      _log.info("Failed login: wrong password for '%s'", handle)
       await send(user, cr+lf+cr+lf + r.err_msg)
     return RetVals(status=fail, err_msg="max failed attempts", next_destination=self.logout, next_menu_item=null)
   login.dest_name = "login"

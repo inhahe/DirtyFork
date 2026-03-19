@@ -61,13 +61,8 @@ async def _lookup_handle(user, style_conf, title):
         if not handle:
             continue
 
-        con, db = _get_db()
-        try:
-            row = db.execute(
-                "SELECT id, handle FROM users WHERE handle = ? COLLATE NOCASE", (handle,)
-            ).fetchone()
-        finally:
-            con.close()
+        from common import lookup_handle
+        row = lookup_handle(handle)
 
         if not row:
             await show_message_box(user, f"User '{handle}' not found.",
@@ -75,7 +70,7 @@ async def _lookup_handle(user, style_conf, title):
                                    outline_fg=red, outline_fg_br=True)
             continue
 
-        return row["handle"], row["id"]
+        return row.handle, row.id
 
 
 async def _edit_user_keys(user, style_conf, global_data):
@@ -134,6 +129,8 @@ async def _edit_user_keys(user, style_conf, global_data):
         if live:
             live.keys = expand_keys(set(new_keys))
 
+        from logger import log
+        log.info("Sysop '%s' changed keys for '%s': %s", user.handle, handle, ", ".join(new_keys))
         await show_message_box(user, f"Keys for '{handle}' updated successfully.",
                                title="Saved", fg=white, fg_br=True, bg=black,
                                outline_fg=green, outline_fg_br=True)
@@ -234,6 +231,8 @@ async def _edit_key_groups(user, style_conf, global_data):
         # Re-expand keys for all online users
         _reexpand_all_users(global_data)
 
+        from logger import log
+        log.info("Sysop '%s' changed key group '%s': %s", user.handle, group_name, ", ".join(new_members))
         await show_message_box(user, f"Group '{group_name}' saved: {', '.join(new_members)}",
                                title="Saved", fg=white, fg_br=True, bg=black,
                                outline_fg=green, outline_fg_br=True)

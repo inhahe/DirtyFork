@@ -119,6 +119,7 @@ def setup_logging():
 
     # Configure the logger
     log.setLevel(logging.DEBUG)
+    log.propagate = False  # Don't propagate to root logger (prevents duplicate output)
 
     # Prevent duplicate handlers if setup_logging is called more than once
     log.handlers.clear()

@@ -1,0 +1,28 @@
+# Personal data (sysop-local configs, database, logs, uploads)
+me/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Build output
+*.obj
+*.exe
+*.map
+
+# Log files generated at runtime (in project root when no --data-dir)
+DirtyFork.log
+DirtyFork.log.*
+DirtyFork.db
+
+# User data generated at runtime (in project root when no --data-dir)
+user_configs/
+files/

@@ -690,7 +690,7 @@ async def do_menu(user, menu_name):
         from bbs_msg import send_popup_to_user
         shown, reason = await send_popup_to_user(
           target_handle, page_msg,
-          from_user=user.handle, from_handle=user.handle)
+          from_user=user.handle, from_handle=user.handle, sender=user)
         msg = f"Page sent to {target_handle}." if shown else reason
         if await _err(msg): continue
         else: error_msg = msg
@@ -712,19 +712,35 @@ async def do_menu(user, menu_name):
                        next_destination=_resolve_destination(dest_name, parent_name),
                        next_menu_item=menu_item_name)
 
+      # /info <user> — view user profile
+      if lower.startswith("/info ") or lower.startswith("/i "):
+        rest = option_text.split(" ", 1)
+        if len(rest) < 2 or not rest[1].strip():
+          if await _err("Usage: /info <user>"): continue
+          else: error_msg = "Usage: /info <user>"
+          continue
+        from userinfo import show_user_info
+        result_msg = await show_user_info(user, rest[1].strip())
+        if result_msg:
+          if await _err(result_msg): continue
+          else: error_msg = result_msg
+          continue
+        needs_render = True
+        continue
+
       # /crash — sysop-only test command to trigger a traceback popup
       if lower == "/crash":
         if "sysop" not in user.keys:
-          if await _err("Unknown command: /crash. Try /jump, /page, /quit"): continue
-          else: error_msg = "Unknown command: /crash. Try /jump, /page, /quit"
+          if await _err("Unknown command: /crash. Try /jump, /page, /info, /quit"): continue
+          else: error_msg = "Unknown command: /crash. Try /jump, /page, /info, /quit"
           continue
         raise RuntimeError("Test crash triggered by /crash command.")
 
       # /testpopups — sysop-only: queue several popups to test queueing
       if lower == "/testpopups":
         if "sysop" not in user.keys:
-          if await _err("Unknown command. Try /jump, /page, /quit"): continue
-          else: error_msg = "Unknown command. Try /jump, /page, /quit"
+          if await _err("Unknown command. Try /jump, /page, /info, /quit"): continue
+          else: error_msg = "Unknown command. Try /jump, /page, /info, /quit"
           continue
         # Queue popups 2 and 3 first, then show popup 1 (which drains the queue)
         user.popup_queue.append(dict(text="Popup 2 of 3: This is the second queued popup.", title="Test 2/3", fg=white, fg_br=True, bg=black, bg_br=False, outline_fg=yellow, outline_fg_br=True, outline_bg=black, outline_bg_br=False))
@@ -736,7 +752,7 @@ async def do_menu(user, menu_name):
 
       # Unknown slash command
       if lower.startswith("/"):
-        msg = f"Unknown command: {option_text.split()[0]}. Try /jump, /page, /quit"
+        msg = f"Unknown command: {option_text.split()[0]}. Try /jump, /page, /info, /quit"
         if await _err(msg): continue
         else: error_msg = msg
         continue

@@ -1,0 +1,363 @@
+Note: I try to log stuff step by step.. If anything, Ill at least know what
+I spent all day doing.. ;> Ill also try to log which things were requested,
+and by who first.. The version numbers are followed by the date that that
+version was released to the public.
+
+*** 4.07 (not released yet)
+-- In Lord
+   * CPU usage is at an all-time low. 100% cpu usage is gone on most
+     machines.. Dos/Win32/Desqview are great, win98 is good with my
+     personal testing, am told that XP does good too. Note: For
+     BEST performancem, go into your node*.dat files and change the
+     line "STATUS ON" to "STATUS OFF" - NOTE! The status bar can now
+     be turned off in LordCfg's NodeCfg.
+   * There was a small memory leak.. You wouldn't notice it until
+     the game had been played 50 or so times in the same dos window.. Fixed.
+   * Made the monsters and dragon harder.. Everytime you beat the dragon,
+     theyll get stronger and have more hitpoints..
+   * the maint.bat bug is gone. that is.. lord would exit out to start.bat
+     but after running maint.bat, it would exit back to the bbs. That
+     is fixed now.
+   * Moved the Bard's songs to events.ldy .. That's right, you can
+     now change the songs, add more, whatever your heart desires..
+   * "ask for a blessing" . .you get extra forest fights.. didnt
+     check to see if you had "room" for them (added range checking here)
+   * Locally, output is _tons_ faster. (this is the first thing that
+     people notice)
+   * the more prompt would go real slowly for people on slow connections..
+     thats been changed..
+   * updated the Dragons Lair ansi with "proper grammer" (thanks to
+     Winston Smith..)
+   * when gold was transfered in the bank, it printed the sansi codes,
+     instead of the colors. fixed.
+   * Although the bbs software shouldnt allow for multiple logins at one time,
+     none the less, added some checking so that wont happen.
+     This means that if a player is marked as "on now", they wont be
+     let back in.
+   * Added "walk up to the old man" in the dark tavern in 4.05, but
+     forgot to include the update lordtxt.dat (wheres my memory at?)
+   * when you reset the game, "last time the player editor was used"
+     wasnt being reset. fixed.
+   * if default FF's were set high, and you had a horse, you would end up
+     with negative forest fights. fixed.
+   * if you had a lot of ff's, and the fairies gave you a horse, youd end up
+     with negative forest fights. fixed.
+   * when a player was reset after killing the dragon, his player fights
+     were automatically set to 3 instead of the configured amount.. Now,
+     the forest fights get set to whatever the game is configured for.
+   * "continue, stop, nonstop" added back to the daily news. (for anyone
+     wondering, it was being handled by ddplus's displayfile().. now, its
+     handled internally.. aka, messages and whatnot can be done there as well)
+   * if killed in the forest, the player could hang up at the "youve been
+     killed by <monster>" prompt.. this would add the kill to the daily log,
+     but not save the player. thus they could come back and play more. fixed.
+   * with the fairy garden.. If you added text, itd kick you back to the
+     main menu.. Not any more..
+   * Added "No fancy More prompts".. "Fancy More" prompts print 'more' to the
+     screen and wait for a keypress, then delete 'more' from the screen. "No
+     Fancy More" waits for keypress then goes to next line.
+   * the bug in 4.06 that ate text from the left side on local screens
+     is gone (strike #1 against global variables)
+   * the bug that caused extra <more> prompts is gone (strike 2 against
+     global variables)
+   * for being such a good person and reading the whatsnew.txt,
+     do a: lordcfg /g
+   * Another one of those undocumented features: if the file hello.txt exists,
+     it will be displayed before the intro ansi. hello.txt can contain ansi,
+     sansi, or plain ol text.
+   * If you had a horse and fought the dragon, there was a chance that
+     the "Death Crystal" event would happen.. Your horse would get killed,
+     and the dragon would get automatically killed by you. Dragon's are
+     stronger than that.. And now, Lord reflects this.. (d.tidmore)
+   * For Death Knights and Thieves, 4 skill points should be 1 use. It
+     was set at 5 skill points for 1 use. This has been changed. Its
+     at 4 skill points for 1 use now. (d.tidmore)
+   * Blink codes, clear screen, and background colors can no longer be used
+     in the flowers. This was changed to make the flowers uniform with the
+     other chat boards. Besides. Its annoying when the flowers screw up the
+     screen and prevent the conversation from being displayed.
+   * Added the troll event
+   * Whenever you go into the healers, it checks your current hit points,
+     and max hit points. If either are below 0, theyre set to 1.
+   * if the player had been kicked out the game with 0 hitpoints, but
+     not marked as dead, they could come back into the game. Theres now
+     a check when entering the game and when coming back from an IGM.
+   * Quick cosmetic change.. fixed the background ansi for the blackjack game
+   * speaking of blackjack cosmetics, the screen draws a lot faster now.
+   * blackjack: max bet is level * 1000 now..
+   * the blackjack game requires ansi (not for colors, but for moving the
+     cursor around to the right places to draw the cards and whatnot).. A
+     check has been added for that. If the person doesnt have ansi, a Lady
+     event is ran instead.
+   * redid the bard menu from the rdi
+   * instead of just sending <ESC>[2J to clear the screen and assuming the
+     cursor i moved to 1x1, Lord now sends <ESC>[2J<ESC>[H.. This will make
+     things look better for *nix users..
+   * another cosmetic bit.. Edited @#DEMON in lordtxt.dat .. This ansi
+     should display properly now. (does in my testing)
+   * When getting a room at the inn, if charm > 100, the room is free.
+     The game told the player it was free, but it really wasnt. Fixed.
+   * When returning from an igm, lord didnt re-read in lord.dat, which
+     means that registration codes, default forest fights, and the like
+     were all default values. This has been fixed.
+   *** MAJOR change to how weapons and armor are sold. That is.. You have
+     to have a certain amount of strength to buy higher level weapons, and
+     you have to have a certain about of defense to buy the higher level
+     sets of armor. The value needed is based on what you would gain from
+     beating the level master of that item. Say you are level 1, that means
+     you have the starting 10 strength. So you can buy the first weapon.
+     By default, you gain 5 strength when you beat Halder, the 1st trainer.
+     Thatd give you a total of 15. So, youd need 15 to buy the second armor
+     OR.. You could be level 1, and get enough gems to up your strength
+     to the needed amount. Or an IGM could help you.
+   * If you're lucky, and leaving the bank, a man may approach you
+     about an Amulet of Accuracy
+   * If you save the princess, an entry is added to the daily news. If
+     you get the Hol instead, an entry is added to the daily news. If
+     you kill most everyone in the castle trying to save the princess,
+     an entry is added to the daily news. (Marty Blankenship)
+   * Princess used to say "How can I ever replay you?". says "repay"
+     now (Marty Blankenship)
+   * Dark Cloak Tavern .. Gamble with the locals.. the guess the number
+     game.. It was possible that the old man didnt guess your number, but
+     it'd say that it did. Not anymore. (found this one while working on
+     weblord)
+   * When raising your Death Knight skills, theres a random event that
+     involves Olivia. Seth had if (random(1)=1) then begin .. end ..
+     Which would _never_ equal 1 (random(x) returns a number between
+     0 and x-1).. I removed the if (random(1)=1) bit .. now the event will
+     actually happen.
+   *** Another Major change.. Weapons and Armors are now editable!
+   * The id number of the player thats married to Violet is stored in
+     marrage.dat .. if shes not married, that file will either not
+     exist, or contain -1 .. That file is loaded whenever the player
+     logs into the game. Imagine node 1 and node 2 both going into the
+     game at the same time, and violet is not married. node 1 marrys her.
+     Node 2 doesnt know this. Node 2 then marries her. Now marrage.dat
+     holds node2's player id, but both node 1 and node 2 are marked as
+     married to her. This bug has been fixed.
+   * The Jennie code 'FAIR' is supposed to allow the player to write
+     romantic mail again for the day. It wasnt. But it does now.
+   * I added the bit where it takes a certain amount of strength to
+     use a weapon, but never told the player what was needed. I do now.
+   * Same for armor
+   * Now the first 2 (armor/swords) require 0 (def/str) points to purchase
+   * Reported by Firestarter .. You can transfer gold to yourself. Not
+     anymore.
+   * New Random event in the forest. When you die by the hand of a monster,
+     15% of your gold on hand gets added to the "pot". Eventually, some
+     lucky soul will run across a random event that lets them find the
+     entire pot.f
+   * big change to the Inn fights .. Say a level 5 player attacks, and kills,
+     a level 7 character. That level 5 character will have the opportunity
+     to trade weapons with the level 7 character. Mean, eh?
+   * When buying a weapon/armor, not only does it tell you how many
+     strength/defense points are needed, it tells you how many there
+     are
+   * Even though the innkeeper said the room was free (since youre so
+     pretty) it wasnt. Now it really is.
+   * And its 100 charm points or better, instead of 101 or better.
+-- In Lady..
+   * (Reported by Paul Falor) If a 1 character operand was thrown into
+     an @if statement, then the @if would completely exit and not run.
+   * &S vars were not being properly translated in @display and @write
+   * Added string switches and &Pvar support to @case ..
+     The following code now works..
+     @case &S1 of
+     this: @writeln this
+     that: @writeln that
+     @endcase
+   * Added >= and <= to @if
+   * rewrote the @set code.. You can now increment and decrement
+     &Nvars and &Pvars..
+   * Added the ability to set 'not' a value with &B vars with @set
+   * Added &clean .. A readonly boolean to say clean mode or not.
+   * & variables werent being translated in choice commands.. Fixed
+   * fixed a bug where &variables followed by something other than a
+     number were incorrectly translated.. example: "&N23`2" wouldnt work,
+     but "&N23 `2" would.. This has been fixed..
+   * Added the ability to read / write to files.. Check @openfile,
+     @closefile, @write, @writeln, @read, @readln for details.
+     This also added the boolean variable &file_created
+   * Wow.. Never noticed that @if/then didnt have "not equal".
+     <> has been added for you pascal people, and != for you C people.
+   * &rnd should be more random now..
+   * until now, @write, @writeln, and @display would only replace the
+     first instance of any &var's.. Now it'll replace all of them..
+   * added @endgame .. Want to kick the player out of the game?
+     Heres how. Teamed up with "@set &Pdd to true", you could end the
+     player's game for the day.
+   * Aparently, I never added support for &Pvars to write/writeln/display
+     Its there now.
+   * Added @verreq
+   * Added &lorddir
+   * Added &Pfa .. boolean .. true=player has a fairy
+   * When returning from an event, a check is done to see if the player
+     has any hit points. If not, the player is marked as dead.
+   * How come @writeln/@write never would print out &S vars? It does now.
+   * Added @saveplayer
+   * @case now has support for "response", "responce", and any numeric
+     value. Any string that can be safely converted to a number (such as
+     "1234") could be used as well.
+   * Made @if allow for you to use "then" if you wanted. Its not documented,
+     because I'd rather you use the syntax specified in lady.doc.. But, its
+     there if you want it.
+   * Added @delay
+   * Anything after a case (while in an if/then) would be ignored.
+     Thats been fixed. (G.Lewicky)
+   * Added @changewep and @changearm
+   * added &hero - the name of the last person to beat the dragon
+   * added &rip - true if RIP is enabled
+   * moved the bard's songs to lady events
+   * added &play .. the player's number in player.dat
+   * added &playedtoday .. returns either a 1 (true) or 0 (false)
+     if the player has ran the current event that day
+   * added @openfile, @closefile, @readline .. and changed @write to
+     support files too
+   * Added &filename .. This is the file name of the current event file
+     This is useful for @runsub's in the event that the main event file
+     gets renamed to something other than the scripter predicted.
+     See lady.doc for more details.
+   * Added @isbitset
+   * Added @setbit
+   * Added the &P var &Pam .. Does the player have an Amulet of Accuracy?
+     1 = true, 0 = false .. This _can_ be set with a @set &Pam to 1
+   * Added in a way for script writers to allow sysops an easy way to
+     install and uninstall scripts. Check Lady.doc for more info (in
+     specific, the sections on @#INSTALL, @#UNINSTALL, @#MAINT, etc)
+   * Added the &P var &Ppl .. This is the player's record number in
+     player.dat
+-- in Lordcfg..
+   * Ever want to change the trainer's stats? Now you can.. Matter of
+     fact, the stuff that trainer's "say" can even have lady &Pvars
+     in it so you can customize the saying to the player!
+   * Want to edit the Dragon? Go for it :)
+   * added a "new day for player" option in the player editor
+   * fixed the hotkeys on the main menu (M was acting like an arrow key)
+   * in the player editor.. added the ability to list by real name or nick
+     (M. Everett was the first person to suggest this)
+   * Dont know where it went, but "delete player" has been added back to
+     the player editor.
+   * Speaking of deleted players, the player editor shows "Deleted"
+     now, instead of "X". (The actual data remains as 'X', its just
+     displayed more user friendly)
+   * Added numpad support for the arrow keys (should help people that use
+     VNC) .. requested by nullvalue
+   * lordcfg didnt delete last.dat when the game was reset. It does now.
+   * This is mainly cosmetic: Sometimes text edit pop up boxes would look
+     skewed, because the prompt text wasnt long enough. This has been fixed.
+   * FINALLY! A way to install and uninstall Lady scripts! You'll find
+     the Events editor under the Editors tab.
+   * For you Win32/Door32 sysops: LordCfgD.exe is a _door_ version of
+     LordCFG. Run it like you would run lord/32. Taht is:
+     c:\path\to\lordcfgd.exe -Dc:\path\to\door32.sys
+   * lordcfg now deletes several more files when you use the reset option
+     (WAR*.DAT, FIGHT*.DAT, MESS*.DAT, ALE*, PEN* .. where * = 1 .. 150)
+   * NodeCFG Changes
+      * "Write Direct" removed since Seth didnt use it anyway
+      * "Special Ansi Settings" removed since it wasnt used
+      * "Change Status Bar Colors" added, and support added to Lord
+        for this option
+   * In the player editor.. Once youve picked a player, you can use
+     the < and > keys to navigate through the players (Thanks xbit!)
+
+*** 4.06 (feb 8, 2001)
+* sorry i left this in public beta for so long.. I wanted to make sure
+  lady had no problems..
+* fixed the give the hag a gem bug..
+
+*** NEW STUFF IN 4.05 pb (March 15, 2000)***
+* fixed the jenny bug (only in 4.02)..
+* fixed a bug with the registration routines (only in 4.02)..
+*** Completely rewrote Lordcfg!
+* Lord will now work with comports 10 and higher (max 255) IF you have a
+  fossil and your bbs software supports it.
+* Added one jennie code, and took one out.. and no, im not telling! <g>
+* optimized code:
+  - main menu              - the trainer
+  - jennie codes           - dark cloak tavern
+  - abdul's armor          - the healers
+  - king arthur's weapons
+  - the bank
+  Which means if you notice anything funny in these sections, let me know.
+  Otherwise, everything else should work exactly the way it used to, since
+  Ive not touched it..
+* Up until this version, you could ALT-C (forced chat) several times, which
+  would force you to ESC out of each of them. Not anymore.. Only one chat
+  allowed now..
+* some cosmetic work.. new menu screens and whatnot..
+* new option: enable or disable the talkative NPCs in the inn (req. G. Pope)
+* mail now has the date written on it
+* added player descriptions (req by lots of people) .. look for the old
+  man in the DCT..
+* theres a use for fairy lore now - and no, im not telling. You'll
+  figure it out soon enough.
+* added resurrection limit (req from Gameport's message board)
+* if you were on the entrance menu, and hit 'Q', it wouldnt exit until
+  you hit enter.. fixed..
+* Now, if you "twit" someone, Lord will knock them out of the game, AND
+  add their name to LOCKOUT.DAT
+* In turn, I added ALT-K .. "Kill User".. This just 'hangup' on the user..
+* Divorcing someone now drops charm 50% instead of to 50.. This goes for
+  Violet and the Bard as well..
+* Which added a new mail code: `* .. `?<num> marries that player to <num>
+  `* will divorce them and take away 50% of charm
+* You can no longer divorce someone and then marry on the same day. This
+  goes for Violet and the Bard too.. (req G. Pope)
+* speaking of mail codes, the `V code has been killed. did the same thing
+  as `E..
+* Changed the "play blackjack game" key from 'A' to 'G'..
+* If you have a horse, you wont stumble onto the DCT.. (Req. M. Lacey)
+* You can no longer marry both Violet AND Seth.. (sorry George <g>)
+* lots of other little things that were potential bugs
+
+New stuff within Lady - quite a bit hasnt been logged.. soo..
+
+commands
+* added @choice
+* added @case.. itll handle "response" (from @choice) and &N vars..
+  - added ID numbers to case statements. will now safely run as many
+    nested case's as you like :)
+* added the prompts command
+* added the promptn command
+* added math functions +, -, *, / and !
+* @displayfile was already there. now itll do regular .ans files, and
+  sansi style databases..
+* added @label and @goto
+* added @set
+* took some work, but got if/then/else's for &B's, &N's and &P's..
+  - added nested if/thens.. you can haveup to 256 of them..
+* added @runsub
+
+vars/misc
+* added 38 player variables!
+* added &F and &L
+* added &time
+* added the string vars &S1 through &S40
+* added the number vars &N1 through &N40
+* added the boolean vars &B1 through &B40
+* added `l
+* added "smart" comments.. any text after a ; will be ignored
+* added &nick
+* added &ver
+* added `k
+* added &rnd<num>
+
+***Fixed during public beta testing (March 16, 2000 +)***
+* The Alt-I info screen.. since, oh, 3.55 the box around it hasnt fit the
+  words.. Fixed.
+* Alt-C ("chat with a higher being") no longer says "No.", and it wont work
+  for local.
+* lordcfg: moving from side to side on the main menu remembered what item
+  you were on. I made this default to the first item.
+* Forgot to change the copyright info in lordcfg.. oops.
+
+** May 14th
+* damnit. my little beta.bat file that creates the lordbeta.zip for me
+  choked and killed my whatsnew file.. lesse if i can remember what all
+  ive done.
+* the fairy garden doesnt exit to the main menu
+* forgot to trim spaces off of a name after editing it in lordcfg. fixed.
+* the fairy garden doesnt allow for funny ` codes anymore. just colors.
+* some of the mail codes werent working (namely `e and `v) .. fixed.
+* there were quite a few other things, but i cant rememebr them all :(

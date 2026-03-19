@@ -88,7 +88,61 @@ async def send_wrapped(user, text, drain=False):
     await user.writer.drain()
 
 
-def ansi_wrap(user, wrap=True): 
+import re as _re
+_markup_re = _re.compile(r'\{!([^}]*)\}')
+
+async def send_markup(user, text, fg=white, bg=black, fg_br=False, bg_br=False, drain=False):
+  """Send text with inline color markup tags.
+  Tags use {!color} syntax where color is a color name from definitions.py.
+  Options: {!red} {!red,br} {!white,on_blue} {!red,br,on_blue,bg_br}
+  {!} resets to the default fg/bg passed to this function.
+  Text outside tags is sent with the current color state."""
+  default_fg, default_bg = fg, bg
+  default_fg_br, default_bg_br = fg_br, bg_br
+  ansi_color(user, fg=fg, bg=bg, fg_br=fg_br, bg_br=bg_br)
+
+  pos = 0
+  for m in _markup_re.finditer(text):
+    # Send text before this tag
+    if m.start() > pos:
+      await send(user, text[pos:m.start()], drain=False)
+    pos = m.end()
+
+    # Parse the tag
+    tag = m.group(1).strip()
+    if not tag:
+      # {!} = reset to defaults
+      ansi_color(user, fg=default_fg, bg=default_bg, fg_br=default_fg_br, bg_br=default_bg_br)
+    else:
+      kwargs = {}
+      for part in tag.split(','):
+        part = part.strip().lower()
+        if part == 'br':
+          kwargs['fg_br'] = True
+        elif part == 'nobr':
+          kwargs['fg_br'] = False
+        elif part == 'bg_br':
+          kwargs['bg_br'] = True
+        elif part == 'nobg_br':
+          kwargs['bg_br'] = False
+        elif part.startswith('on_'):
+          color_name = part[3:]
+          if color_name in colors:
+            kwargs['bg'] = colors[color_name]
+        elif part in colors:
+          kwargs['fg'] = colors[part]
+      if kwargs:
+        ansi_color(user, **kwargs)
+
+  # Send remaining text after last tag
+  if pos < len(text):
+    await send(user, text[pos:], drain=False)
+
+  if drain:
+    await user.writer.drain()
+
+
+def ansi_wrap(user, wrap=True):
   if user.cur_wrap != wrap:
     if wrap:
       user.writer.write("\x1b[?7h") 

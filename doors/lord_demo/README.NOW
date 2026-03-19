@@ -1,0 +1,27 @@
+
+   For more info, after unzipping LORD.ZIP read:
+   
+   * LORD.DOC ------- Complete docs.  Long winded and sort of boring.
+   * LADY.DOC ------- Documentation on the Lady scripting language
+   * INSTALL.TXT ---- When installing from scratch, use this document.
+   * UPGRADE.TXT ---- When upgrading LORD, use this document.
+   * REGISTER.DOC --- Registration information, be registered in minutes!
+   * LORDSTRC.PAS --- Tips and source for 3rdparty developers (yeah!)
+   * WHATSNEW.TXT --- What was added in this version.
+
+
+
+   ± TO PLAY LOCALLY, TO SEE IF YOU LIKE THE GAME ENOUGH TO INSTALL ±
+   
+   Unzip LORD.ZIP somewhere.   
+
+   Run LORDCFG.EXE.  It will automatically create the LORD.DAT file.
+
+   Type LOCAL from DOS, node 0 has been pre-defined as a local node.
+   
+   Enjoy the game.  
+
+
+
+
+
