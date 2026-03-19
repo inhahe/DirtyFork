@@ -15,6 +15,7 @@ import glob
 import logging
 import os
 import re
+import sys
 import time
 from datetime import timedelta
 from logging.handlers import RotatingFileHandler
@@ -136,15 +137,15 @@ def setup_logging():
         backupCount=backup_count,
         encoding="utf-8",
     )
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.DEBUG if "--debug" in sys.argv else logging.INFO)
     file_handler.setFormatter(formatter)
     log.addHandler(file_handler)
 
-    # Console handler (stdout)
+    # Console handler (stdout) — only show DEBUG if --debug was passed
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.DEBUG)
+    console_handler.setLevel(logging.DEBUG if "--debug" in sys.argv else logging.INFO)
     console_handler.setFormatter(formatter)
     log.addHandler(console_handler)
 
-    log.info("Logging initialised (file=%s, split_at=%d, backups=%d, max_age=%s)",
+    log.debug("Logging initialised (file=%s, split_at=%d, backups=%d, max_age=%s)",
              log_path, split_at, backup_count, max_age)

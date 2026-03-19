@@ -326,8 +326,14 @@ async def run_user_list(user, dest_conf, menu_item=None):
   for row in rows:
     handle = row["handle"]
     last_login = _format_time(row["last_login"])
-    is_online = "Online" if handle.lower() in online_users else "Offline"
-    status = f"{is_online}  -  Last on: {last_login}"
+    live = global_data.users.get(handle.lower())
+    if live:
+      activity = _get_current_location(live)
+      idle = _get_idle_seconds(live)
+      idle_str = f", idle {_format_idle(idle)}" if idle is not None and idle > 60 else ""
+      status = f"Online ({activity}{idle_str})"
+    else:
+      status = f"Offline  -  Last on: {last_login}"
 
     lines.append(f"{handle}  -  {status}")
 

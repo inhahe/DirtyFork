@@ -56,12 +56,44 @@ def _ensure_jump_tree():
 
 def _resolve_path(node, parts):
   """Walk a dotted path from a given jump node.
+  Supports 'x' segments to go up to parent menu before continuing.
+  'xx' is expanded to 'x.x', 'xxx' to 'x.x.x', etc.
   Returns (dest_name, menu_item, parent_menu, error)."""
+  # Expand multi-x segments: "xx.foo" → "x.x.foo", "xxx" → "x.x.x"
+  expanded = []
+  for part in parts:
+    if len(part) > 1 and part.lower() == 'x' * len(part):
+      expanded.extend(['x'] * len(part))
+    else:
+      expanded.append(part)
+  parts = expanded
+
   for i, part in enumerate(parts):
+    # Handle 'x' (exit) — go up to parent menu
+    if part.lower() == 'x':
+      # Find the parent menu's node
+      parent_menu = None
+      for name, n in _jump_nodes.items():
+        for opt_name, child in n.children.items():
+          if child is node:
+            parent_menu = name
+            break
+        if parent_menu:
+          break
+      if not parent_menu or parent_menu not in _jump_nodes:
+        remaining = ".".join(parts[i:])
+        return (None, None, None, f"At {node.menu_name.title()}: can't exit further with \"{remaining}\"")
+      node = _jump_nodes[parent_menu]
+      # If this is the last part, return to the parent menu
+      if i == len(parts) - 1:
+        return (parent_menu, None, None, None)
+      continue
+
     matched, err = _match_option(part, node.option_names, node.prefixes)
     if not matched:
       level = " > ".join(parts[:i]) if i > 0 else node.menu_name.title()
-      return (None, None, None, f"At {level}: {err}")
+      remaining = ".".join(parts[i:])
+      return (None, None, None, f"At {level}: \"{remaining}\" doesn't match any option.")
 
     target = node.targets[matched]
     parent = node.menu_name

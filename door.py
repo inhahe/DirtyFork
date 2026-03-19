@@ -12,6 +12,7 @@ import os
 import shutil
 import socket
 import time
+import paths
 
 from definitions import *
 from input_output import send
@@ -374,7 +375,7 @@ def _write_all_dropfiles(user, node_num, node_dir, door_conf, variables, socket_
 def _build_vars(user, node_num, node_dir, door_conf, socket_port, config_path=""):
     """Build the dict used for {variable} substitution in the door command."""
     handle = getattr(user, "handle", None) or "Unknown"
-    base_path = str(conf.base_path) if conf.base_path else "c:\\doors"
+    base_path = paths.resolve_project(str(conf.base_path)) if conf.base_path else paths.resolve_project("doors")
     door_dir = _resolve_door_dir(door_conf, base_path)
 
     dropfile_type = str(door_conf.dropfile_type) if door_conf.dropfile_type else "DOOR.SYS"
@@ -537,7 +538,7 @@ async def _bridge_socket(user, reader_or_host, writer_or_port, process, emulator
             log.error("Could not connect to door socket at %s:%s after %s retries",
                       host, port, max_retries)
             return
-        log.info("Connected to door socket at %s:%s", host, port)
+        log.debug("Connected to door socket at %s:%s", host, port)
     else:
         # DOSBox door: connection already established, reader/writer passed directly
         reader, writer = reader_or_host, writer_or_port
@@ -549,6 +550,21 @@ async def _bridge_socket(user, reader_or_host, writer_or_port, process, emulator
     _escape_hits = 0
     _escape_last = 0.0
 
+    async def _show_queued_popups():
+        """Show all queued popups, then clear the popup event."""
+        from input_fields import show_message_box as _show_mb
+        user._in_popup = True
+        try:
+            while user.popup_queue:
+                kwargs = user.popup_queue.pop(0)
+                r = await _show_mb(user, queued_count=len(user.popup_queue), **kwargs)
+                if r == "abort":
+                    user.popup_queue.clear()
+                    break
+        finally:
+            user._in_popup = False
+            user.popup_event.clear()
+
     async def user_to_door():
         """Read from user's telnet reader, write to door socket.
         Pauses when a popup is active (popup_event is set).
@@ -557,8 +573,7 @@ async def _bridge_socket(user, reader_or_host, writer_or_port, process, emulator
         try:
             while True:
                 if user.popup_event and user.popup_event.is_set():
-                    while user.popup_event.is_set():
-                        await asyncio.sleep(0.05)
+                    await _show_queued_popups()
                     continue
                 try:
                     data = await asyncio.wait_for(user.reader.read(4096), timeout=0.1)
@@ -655,8 +670,7 @@ async def _bridge_stdio(user, process, emulator=None, session_log=None):
         try:
             while process.returncode is None:
                 if user.popup_event and user.popup_event.is_set():
-                    while user.popup_event.is_set():
-                        await asyncio.sleep(0.05)
+                    await _show_queued_popups()
                     continue
                 try:
                     data = await asyncio.wait_for(user.reader.read(4096), timeout=0.1)
@@ -806,16 +820,31 @@ async def run(user, destination, menu_item=None):
                        next_destination=Destinations.main, next_menu_item=null)
 
     # ---- resolve paths -------------------------------------------------------
-    base_path = str(conf.base_path) if conf.base_path else "c:\\doors"
+    base_path = paths.resolve_project(str(conf.base_path)) if conf.base_path else paths.resolve_project("doors")
     door_dir = _resolve_door_dir(door_conf, base_path)
 
     # Create node directory under the door's own directory
     node_dir = os.path.join(door_dir, f"node{node_num}")
     os.makedirs(node_dir, exist_ok=True)
 
-    # Determine communication type
-    comm_type_raw = str(door_conf.communication_type).upper() if door_conf.communication_type else "COM"
-    comm_type = comm_type_raw.strip()
+    # Determine if native (32-bit) or DOS (16-bit via DOSBox)
+    is_native = bool(door_conf.native) if door_conf.native else False
+
+    # Determine communication type — default based on native setting
+    if door_conf.communication_type:
+      comm_type = str(door_conf.communication_type).upper().strip()
+    else:
+      comm_type = "SOCKET" if is_native else "COM"
+
+    # Warn on contradictory settings
+    if is_native and comm_type in ("COM", "FOSSIL"):
+      log.warning("Door '%s' is native=true but communication_type=%s (COM/FOSSIL requires DOSBox). "
+                   "Treating as non-native.", door_name, comm_type)
+      is_native = False
+    elif not is_native and comm_type in ("SOCKET", "STDIO"):
+      log.warning("Door '%s' is native=false but communication_type=%s. "
+                   "Treating as native.", door_name, comm_type)
+      is_native = True
 
     # Find a free socket port
     socket_port = _find_free_port(5000 + node_num)
@@ -846,7 +875,7 @@ async def run(user, destination, menu_item=None):
         from input_fields import show_message_box
         await show_message_box(
             user,
-            text=f"Launching {door_name}.\n\nPress Ctrl+X three times to abort if the door hangs.",
+            text=f"Launching {door_name}.\n\nPress Ctrl+X three times to exit if the door hangs.",
             title="Door",
         )
 
@@ -875,7 +904,7 @@ async def run(user, destination, menu_item=None):
             dosbox_tcp_server = await asyncio.start_server(
                 _on_dosbox_connect, "127.0.0.1", socket_port
             )
-            log.info("Listening for DOSBox on 127.0.0.1:%s", socket_port)
+            log.debug("Listening for DOSBox on 127.0.0.1:%s", socket_port)
 
             dosbox_config = _generate_dosbox_config(
                 node_dir, door_dir, door_conf, variables, socket_port
@@ -888,7 +917,7 @@ async def run(user, destination, menu_item=None):
             dosbox_base_conf = str(door_conf.dosbox_conf) if door_conf.dosbox_conf else ""
             dosbox_log_path = os.path.join(node_dir, "dosbox.log")
             dosbox_log_file = open(dosbox_log_path, "w")
-            log.info("Launching DOSBox (%s) with config %s, log %s", dosbox_exe, config_path, dosbox_log_path)
+            log.debug("Launching DOSBox (%s) with config %s, log %s", dosbox_exe, config_path, dosbox_log_path)
             dosbox_cmd = [dosbox_exe, "-noconsole", "-noprimaryconf", "-nosecondaryconf"]
             if dosbox_base_conf and os.path.exists(dosbox_base_conf):
                 dosbox_cmd += ["-conf", dosbox_base_conf]
@@ -917,7 +946,7 @@ async def run(user, destination, menu_item=None):
             finally:
                 dosbox_tcp_server.close()  # stop accepting new connections
 
-            log.info("DOSBox connected on port %s", socket_port)
+            log.debug("DOSBox connected on port %s", socket_port)
             session_log_path = os.path.join(door_dir, "session.log")
             with open(session_log_path, "w", encoding="utf-8", errors="replace") as session_log:
                 await _bridge_socket(user, door_reader, door_writer, process, emulator, session_log=session_log)
@@ -928,7 +957,7 @@ async def run(user, destination, menu_item=None):
             cmd_parts = resolved_cmd.split()
             cwd = door_dir if os.path.isdir(door_dir) else None
 
-            log.info("Launching native socket door: %s (cwd=%s)", resolved_cmd, cwd)
+            log.debug("Launching native socket door: %s (cwd=%s)", resolved_cmd, cwd)
             process = await asyncio.create_subprocess_exec(
                 *cmd_parts,
                 cwd=cwd,
@@ -947,7 +976,7 @@ async def run(user, destination, menu_item=None):
             cmd_parts = resolved_cmd.split()
             cwd = door_dir if os.path.isdir(door_dir) else None
 
-            log.info("Launching native stdio door: %s (cwd=%s)", resolved_cmd, cwd)
+            log.debug("Launching native stdio door: %s (cwd=%s)", resolved_cmd, cwd)
             process = await asyncio.create_subprocess_exec(
                 *cmd_parts,
                 stdin=asyncio.subprocess.PIPE,
@@ -997,7 +1026,7 @@ async def run(user, destination, menu_item=None):
                 with open(dosbox_log_path, "r", errors="replace") as _f:
                     dosbox_log_contents = _f.read().strip()
                 if dosbox_log_contents:
-                    log.info("DOSBox log for %s node %s:\n%s", door_name, node_num, dosbox_log_contents)
+                    log.debug("DOSBox log for %s node %s:\n%s", door_name, node_num, dosbox_log_contents)
             except Exception as _e:
                 log.warning("Could not read dosbox.log: %s", _e)
         if rc and dosbox_log_contents:
@@ -1054,7 +1083,7 @@ async def run(user, destination, menu_item=None):
             except Exception:
                 pass
 
-        log.info("Cleaned up %s node %s", door_name, node_num)
+        log.debug("Cleaned up %s node %s", door_name, node_num)
 
     await send(user, cr + lf + "Returning to BBS..." + cr + lf, drain=True)
     from common import _find_fallback_destination

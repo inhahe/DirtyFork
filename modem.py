@@ -122,7 +122,7 @@ async def wait_for_call(port, baudrate, init_string="ATZ"):
   Sends init string, waits for RING, answers with ATA.
   Returns (SerialReader, SerialWriter) on CONNECT, or None on failure."""
 
-  log.info("Modem: opening %s at %d baud", port, baudrate)
+  log.debug("Modem: opening %s at %d baud", port, baudrate)
 
   reader, writer = await serial_asyncio.open_serial_connection(
     url=port,
@@ -137,7 +137,7 @@ async def wait_for_call(port, baudrate, init_string="ATZ"):
   protocol = transport.get_protocol() if hasattr(transport, 'get_protocol') else None
 
   # Initialize modem
-  log.info("Modem: sending init string: %s", init_string)
+  log.debug("Modem: sending init string: %s", init_string)
   await _send_at(writer, init_string)
   await asyncio.sleep(1)
 
@@ -163,7 +163,7 @@ async def wait_for_call(port, baudrate, init_string="ATZ"):
   except Exception:
     pass
 
-  log.info("Modem: waiting for RING on %s...", port)
+  log.debug("Modem: waiting for RING on %s...", port)
 
   # Wait for RING
   while True:
@@ -195,7 +195,7 @@ async def wait_for_call(port, baudrate, init_string="ATZ"):
           log.warning("Modem: connection failed: %s", line)
           break
       # Failed to connect, keep waiting for next ring
-      log.info("Modem: resuming wait for RING...")
+      log.debug("Modem: resuming wait for RING...")
 
 
 async def hangup(serial_writer):
@@ -207,6 +207,6 @@ async def hangup(serial_writer):
       await asyncio.sleep(1.1)
       serial_writer._transport.write(b"ATH\r")
       await asyncio.sleep(0.5)
-      log.info("Modem: sent ATH (hangup)")
+      log.debug("Modem: sent ATH (hangup)")
   except Exception as e:
     log.debug("Modem: hangup error: %s", e)

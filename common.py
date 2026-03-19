@@ -225,6 +225,7 @@ class User:
     self.ttype = "unknown"    # terminal type string from TTYPE negotiation
     self.in_door = False      # True while user is in a door game
     self.mouse_reporting = False  # True when mouse click reporting (ESC[?1000h) is active
+    self.popup_notify = asyncio.Event()  # set when a popup is queued, to interrupt reader.read()
     self.popup_event = None   # asyncio.Event set when a popup needs to interrupt the door bridge
     self.popup_queue = []     # queued popups waiting to show (list of kwarg dicts)
     self._in_popup = False    # True while a popup is being displayed
@@ -614,7 +615,7 @@ async def _render_screen_to_terminal(user):
 async def show_screen(user, path):
   """Display an ANSI (.ans/.ansi) or BIN (.bin) screen file.
   Clears the terminal, renders the file content, and updates user.screen."""
-  resolved = paths.resolve_data(str(path))
+  resolved = paths.resolve_project(str(path))
   ext = os.path.splitext(resolved)[1].lower()
   try:
     with open(resolved, 'rb') as f:

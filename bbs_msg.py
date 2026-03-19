@@ -11,6 +11,7 @@ Users can opt out via settings in their config:
   blocked_users: [handle1, handle2]  — blocks specific users
 """
 
+import asyncio
 from input_fields import show_message_box
 from definitions import white, black, green, cyan, null, RetVals, success, fail
 
@@ -106,32 +107,16 @@ async def send_popup(user, text, title=null, from_user=null,
                       outline_fg=outline_fg, outline_fg_br=outline_fg_br,
                       outline_bg=outline_bg, outline_bg_br=outline_bg_br)
 
-  # If already showing a popup, queue this one
-  if user._in_popup:
-    user.popup_queue.append(popup_kwargs)
-    return True, None
+  # Always queue — the popup will be shown by the target user's own input loop
+  # or the door bridge, never directly from the sender's coroutine.
+  user.popup_queue.append(popup_kwargs)
 
-  # Show this popup, then drain the queue
-  user._in_popup = True
+  # Signal the target user's read to wake up and check the queue
+  user.popup_notify.set()
 
-  was_in_door = user.in_door
-  if was_in_door and user.popup_event:
+  # If in a door, also signal the bridge
+  if user.in_door and user.popup_event:
     user.popup_event.set()
-
-  try:
-    r = await show_message_box(user, queued_count=len(user.popup_queue), **popup_kwargs)
-
-    # Drain queued popups (unless user aborted)
-    while user.popup_queue and r != "abort":
-      next_kwargs = user.popup_queue.pop(0)
-      r = await show_message_box(user, queued_count=len(user.popup_queue), **next_kwargs)
-
-    # Clear any remaining if aborted
-    user.popup_queue.clear()
-  finally:
-    user._in_popup = False
-    if was_in_door and user.popup_event:
-      user.popup_event.clear()
 
   return True, None
 

@@ -89,6 +89,26 @@ Top-level values like `bbs_name` are available as `{bbs_name}` placeholders anyw
 - **SQLite database**: credentials (handle, password_hash), keys (USER_KEYS table), messages, forum posts — anything queried across users
 - **User YAML** (`user_configs/{handle}.yaml`): profile (email, age, bio), preferences (encoding, scroll_step, allow_door_popups, blocked_users, start_destination) — loaded only for the logged-in user
 
+### Path Resolution: Project vs Data Directory
+
+When using `--data-dir`, paths are resolved relative to either the **project directory** (where the BBS source files are) or the **data directory** (the `--data-dir` path). This allows multiple BBS instances to share the same installation but have separate databases and user data.
+
+**Project-relative** (shared installation, same for all instances):
+- `doors/` — door game binaries and configs
+- `files/` — file library for download
+- `files/meta.yaml` — file metadata
+- `register.yaml` — registration form definition
+- `input_fields.yaml` — input field styles
+- ANSI/BIN screen files (`bbs_info_screen`, etc.)
+
+**Data-relative** (per-instance, varies by `--data-dir`):
+- `DirtyFork.yaml` — main config
+- `DirtyFork.db` — SQLite database
+- `DirtyFork.log` — log file
+- `user_configs/` — per-user YAML profiles
+
+If a path is absolute, it's used as-is regardless of the directory type.
+
 ---
 
 ## Access Control

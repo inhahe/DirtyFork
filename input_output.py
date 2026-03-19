@@ -340,11 +340,51 @@ async def ansi_set_region_strict(user, value=True, drain=False):
     if drain:
       await user.writer.drain()
 
+class _PopupInterrupt(Exception):
+  """Raised when a popup arrives and needs to interrupt the current read."""
+  pass
+
+async def _read_or_popup(user, timeout=None):
+  """Read one char from user, but wake up immediately if a popup is queued.
+  Returns the char, or raises _PopupInterrupt if a popup arrived."""
+  read_task = asyncio.ensure_future(user.reader.read(1))
+  notify_task = asyncio.ensure_future(user.popup_notify.wait())
+  try:
+    if timeout is not None:
+      done, pending = await asyncio.wait(
+        [read_task, notify_task], timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+    else:
+      done, pending = await asyncio.wait(
+        [read_task, notify_task], return_when=asyncio.FIRST_COMPLETED)
+    for t in pending:
+      t.cancel()
+      try:
+        await t
+      except (asyncio.CancelledError, Exception):
+        pass
+    if notify_task in done:
+      user.popup_notify.clear()
+      # Cancel the read if it didn't complete
+      if read_task not in done:
+        raise _PopupInterrupt()
+      # Both completed — return the char, popup will be handled next loop
+      return read_task.result()
+    if read_task in done:
+      return read_task.result()
+    # Timeout — neither completed
+    raise asyncio.TimeoutError()
+  except asyncio.CancelledError:
+    read_task.cancel()
+    notify_task.cancel()
+    raise
+
 async def _get_input_key(user):
   while True:
     if user.cur_input_code:
       try:
-        char = await asyncio.wait_for(user.reader.read(1), timeout=0.05)
+        char = await _read_or_popup(user, timeout=0.05)
+      except _PopupInterrupt:
+        raise
       except asyncio.TimeoutError:
         code = user.cur_input_code
         user.cur_input_code = ""
@@ -355,7 +395,7 @@ async def _get_input_key(user):
           return ctrl_pgup
         continue  # incomplete sequence, try again
     else:
-      char = await user.reader.read(1)
+      char = await _read_or_popup(user)
     if not char:
       raise Disconnected()
     if char in "\x00\x1b":
@@ -375,22 +415,45 @@ async def _get_input_key(user):
       if len(combined)==1:
         return combined
 
+async def _drain_popup_queue(user):
+  """Show any queued popups. Called from the user's own input loop to avoid reader conflicts."""
+  if not user.popup_queue or user._in_popup or user.in_door:
+    return
+  user._in_popup = True
+  try:
+    from input_fields import show_message_box
+    while user.popup_queue:
+      kwargs = user.popup_queue.pop(0)
+      r = await show_message_box(user, queued_count=len(user.popup_queue), **kwargs)
+      if r == "abort":
+        user.popup_queue.clear()
+        break
+  finally:
+    user._in_popup = False
+
 async def get_input_key(user, window_size=0.02, char_threshold=2, batch_pause=0.03):
-  if user.batch_mode:
-    # Already in batch mode - use timeout
+  while True:
+    # Check for queued popups before waiting for input
+    await _drain_popup_queue(user)
+
     try:
-      key = await asyncio.wait_for(_get_input_key(user), timeout=batch_pause)
-      user.input_timestamps.append(time.perf_counter())
-      return key
-    except asyncio.TimeoutError:
-      user.batch_mode = False
-      # Timeout - exit batch mode and wait normally for next key
-      key = await get_input_key(user)
-      user.input_timestamps.append(time.perf_counter())
-      return key
-  else:
-    # Normal mode - check if we should enter batch mode
-    key = await _get_input_key(user)
+      if user.batch_mode:
+        # Already in batch mode - use timeout
+        try:
+          key = await asyncio.wait_for(_get_input_key(user), timeout=batch_pause)
+          user.input_timestamps.append(time.perf_counter())
+          return key
+        except asyncio.TimeoutError:
+          user.batch_mode = False
+          # Timeout - exit batch mode and wait normally for next key
+          continue
+      else:
+        # Normal mode - check if we should enter batch mode
+        key = await _get_input_key(user)
+    except _PopupInterrupt:
+      # Read was interrupted by a popup — drain and retry
+      user.cur_input_code = ""  # reset any partial escape sequence
+      continue
     now = time.perf_counter()
     user.input_timestamps.append(now)
     if len(user.input_timestamps) == char_threshold:

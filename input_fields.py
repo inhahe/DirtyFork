@@ -176,7 +176,8 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     for c in range(save_left, save_right + 1):
       if 1 <= r <= user.screen_height and 1 <= c <= user.screen_width:
         if user.screen and r-1 < len(user.screen) and c-1 < len(user.screen[r-1]):
-          row_data.append(user.screen[r-1][c-1])
+          ch = user.screen[r-1][c-1]
+          row_data.append(Char(ch.char, ch.fg, ch.fg_br, ch.bg, ch.bg_br))
         else:
           row_data.append(Char())
       else:
