@@ -7,7 +7,9 @@ Valid tags are defined in `config.file_tags`.
 """
 
 import os
-import yaml
+from ruamel.yaml import YAML
+_yaml = YAML()
+_yaml.default_flow_style = False
 
 from definitions import (RetVals, Disconnected, success, fail,
                          cr, lf, null,
@@ -74,7 +76,7 @@ def _load_meta():
   if os.path.isfile(path):
     try:
       with open(path, 'r', encoding='utf-8') as f:
-        data = yaml.safe_load(f)
+        data = _yaml.load(f)
       if isinstance(data, dict):
         return data
     except Exception as exc:
@@ -88,7 +90,7 @@ def _save_meta(meta):
   os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
   try:
     with open(path, 'w', encoding='utf-8') as f:
-      yaml.dump(meta, f, default_flow_style=False, allow_unicode=True)
+      _yaml.dump(meta, f)
   except Exception as exc:
     log.error("Failed to save file metadata to %s: %s", path, exc)
 

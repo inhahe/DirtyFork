@@ -5,7 +5,9 @@ import re
 import bcrypt
 import sqlite3
 
-import yaml
+from ruamel.yaml import YAML
+_yaml = YAML()
+_yaml.default_flow_style = False
 
 from input_fields import InputFields, InputField, SelectField, show_message_box
 from input_output import send, send_wrapped, send_markup, _markup_re, ansi_color, ansi_move_deferred, ansi_cls
@@ -318,7 +320,7 @@ async def run(user, destination, menu_item=None):
     "public_email": public_values.get("email", False),
   }
   with open(user_conf_path, "w") as f:
-    yaml.dump(user_settings, f, default_flow_style=False)
+    _yaml.dump(user_settings, f)
 
   # Auto-login: set up the user session so they don't have to log in again
   from common import Destinations, setup_user_session, con as db_con

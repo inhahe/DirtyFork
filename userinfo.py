@@ -68,11 +68,12 @@ def _load_user_config(config_filename):
     return {}
   try:
     user_conf_dir = paths.resolve_data(str(config.user_configs or "user_configs"))
-    import os, yaml
+    import os
+    from ruamel.yaml import YAML
     conf_path = os.path.join(str(user_conf_dir), config_filename + ".yaml")
     if os.path.exists(conf_path):
       with open(conf_path, "r") as f:
-        return yaml.safe_load(f) or {}
+        return YAML().load(f) or {}
   except Exception:
     pass
   return {}

@@ -5,7 +5,9 @@ Settings are stored in the user's YAML config file (user_configs/{handle}.yaml).
 
 import json
 import os
-import yaml
+from ruamel.yaml import YAML
+_yaml = YAML()
+_yaml.default_flow_style = False
 
 from input_fields import InputFields, InputField, show_message_box
 from input_output import send, ansi_color, ansi_move_deferred, ansi_cls
@@ -72,7 +74,7 @@ async def _edit_bio(user, target_handle, user_conf_path):
   if os.path.exists(user_conf_path):
     try:
       with open(user_conf_path, "r") as f:
-        data = yaml.safe_load(f) or {}
+        data = _yaml.load(f) or {}
         current_bio = data.get("bio", "")
     except Exception:
       pass
@@ -307,13 +309,13 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
       if os.path.exists(user_conf_path):
         try:
           with open(user_conf_path, "r") as f:
-            existing = yaml.safe_load(f) or {}
+            existing = _yaml.load(f) or {}
         except Exception:
           pass
       existing["bio"] = new_bio
       os.makedirs(os.path.dirname(user_conf_path), exist_ok=True)
       with open(user_conf_path, "w") as f:
-        yaml.dump(existing, f, default_flow_style=False)
+        _yaml.dump(existing, f)
       # Update live session
       live_user = global_data.users.get(target_handle.lower())
       if live_user:
@@ -447,14 +449,14 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
   if os.path.exists(user_conf_path):
     try:
       with open(user_conf_path, "r") as f:
-        existing = yaml.safe_load(f) or {}
+        existing = _yaml.load(f) or {}
     except Exception:
       pass
 
   existing.update(values)
 
   with open(user_conf_path, "w") as f:
-    yaml.dump(existing, f, default_flow_style=False)
+    _yaml.dump(existing, f)
 
   # Apply changes to the live session if the target user is online
   live_user = global_data.users.get(target_handle.lower())

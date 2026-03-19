@@ -244,6 +244,8 @@ menu_system:
       sfdoors_dat: !include doors/dropfiles/sfdoors_dat.yaml
     options:
       # Example door entries — edit paths and commands to match your installation.
+      # DOSBox drive mapping: C:\ = node dir (dropfiles), D:\ = game dir (EXE).
+      # Game commands run from D:\. Dropfile path for game config: C:\DOOR.SYS
       # --- DOS 16-bit doors (via DOSBox-X) ---
       # communication_type: COM (default) — uses DOSBox FOSSIL/serial emulation
       # Trade Wars 2002:

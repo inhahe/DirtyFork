@@ -206,9 +206,19 @@ menu_system:
 
 **Supported dropfile formats:** DOOR.SYS, DORINFO1.DEF, CHAIN.TXT, CALLINFO.BBS, DOOR32.SYS, SFDOORS.DAT. Field defaults are in `doors/dropfiles/*.yaml` and can be overridden per door.
 
+**DOSBox drive mapping:**
+- `C:\` — the node directory (`doors/<game>/node<N>`), where dropfiles are written
+- `D:\` — the door's game directory (`doors/<game>`), where the game EXE lives
+
+The door command runs from `D:\`. To access the dropfile from within the game, use `C:\DOOR.SYS` (or whichever format the game expects). Dropfiles are copied from C: to D: automatically for formats the game needs.
+
+**Cross-platform**: DOSBox/DOSBox-X runs on Linux and macOS too. The BBS generates DOSBox configs with OS-native paths, so doors work identically on all platforms. Just set `dosbox_path` to the correct binary (e.g., `/usr/bin/dosbox-x` on Linux).
+
+**Native 32-bit doors**: Set `native: true` to run a door directly without DOSBox. Native doors default to TCP socket communication (`communication_type: SOCKET`) and find their dropfiles in the node directory (used as the working directory). STDIO pipes are also supported (`communication_type: STDIO`).
+
 **Batch files**: Door commands that invoke `.BAT` files use `CALL` in the DOSBox autoexec so that control returns and DOSBox can exit cleanly.
 
-**Escape**: Press **Ctrl+X three times** within 2 seconds to abort a door session.
+**Escape**: Press **Ctrl+X three times** within 2 seconds to exit a door session.
 
 **Popups during doors**: The ANSI emulator tracks the door's screen state in `user.screen`. Popups save/restore this screen. Users can disable door popups via the `allow_door_popups` setting.
 
