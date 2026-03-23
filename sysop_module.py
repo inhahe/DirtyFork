@@ -279,16 +279,15 @@ async def run(user, dest_conf, menu_item=None):
     style_conf = config.input_fields.input_field
     action = None
     if menu_item and menu_item is not null:
-        if isinstance(menu_item, str):
-            menu_conf = config.menu_system.sysop
-            if menu_conf and menu_conf.options:
-                opt = menu_conf.options[menu_item]
-                if opt and hasattr(opt, 'action') and opt.action:
-                    action = str(opt.action).lower()
-            if not action:
-                action = menu_item.lower()
-        elif hasattr(menu_item, 'action') and menu_item.action:
-            action = str(menu_item.action).lower()
+        item_name = menu_item[0] if isinstance(menu_item, tuple) else str(menu_item)
+        item_name = str(item_name)
+        menu_conf = config.menu_system.sysop
+        if menu_conf and menu_conf.options:
+            opt = menu_conf.options[item_name]
+            if opt and hasattr(opt, 'action') and opt.action:
+                action = str(opt.action).lower()
+        if not action:
+            action = item_name.lower()
 
     if action == "user_keys":
         await _edit_user_keys(user, style_conf, global_data)
@@ -297,4 +296,4 @@ async def run(user, dest_conf, menu_item=None):
     elif action == "user_settings":
         await _edit_user_settings(user, style_conf)
 
-    return RetVals(status=success, next_destination=Destinations.sysop, next_menu_item=null)
+    return RetVals(status=success, next_destination=null, next_menu_item=null)

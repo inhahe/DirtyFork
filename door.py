@@ -765,18 +765,20 @@ async def run(user, destination, menu_item=None):
     door_conf = null
 
     if menu_item is not None and menu_item is not null:
-        if isinstance(menu_item, str):
+        # menu_item is a tuple: (door_name,)
+        if isinstance(menu_item, tuple):
+            door_name = str(menu_item[0])
+        elif isinstance(menu_item, str):
             door_name = menu_item
-            menu_doors = config.menu_system.doors if config.menu_system else null
-            if menu_doors and menu_doors.options:
-                door_conf = menu_doors.options[menu_item]
-                # Apply option_defaults if present
-                if door_conf is null or not door_conf:
-                    door_conf = null
         else:
-            # Assume it's already a config-like object
             door_conf = menu_item
             door_name = getattr(menu_item, "name", None) or "unknown_door"
+        if door_conf is null and door_name:
+            menu_doors = config.menu_system.doors if config.menu_system else null
+            if menu_doors and menu_doors.options:
+                door_conf = menu_doors.options[door_name]
+                if door_conf is null or not door_conf:
+                    door_conf = null
 
     if door_conf is null or not door_conf:
         log.warning("No door configuration found for menu_item=%s", menu_item)

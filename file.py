@@ -844,17 +844,17 @@ async def run(user, destination, menu_item=None):
   # Determine which action to run from the menu_item
   action = None
   if menu_item and menu_item is not None:
-    if isinstance(menu_item, str):
-      # Look up the option config to get the action
-      menu_conf = config.menu_system.files
-      if menu_conf and menu_conf.options:
-        opt = menu_conf.options[menu_item]
-        if opt and hasattr(opt, 'action') and opt.action:
-          action = str(opt.action).lower()
-      if not action:
-        action = menu_item.lower()
-    elif hasattr(menu_item, 'action') and menu_item.action:
-      action = str(menu_item.action).lower()
+    # menu_item is a tuple: (option_name,)
+    item_name = menu_item[0] if isinstance(menu_item, tuple) else str(menu_item)
+    item_name = str(item_name)
+    # Look up the option config to get the action
+    menu_conf = config.menu_system.files
+    if menu_conf and menu_conf.options:
+      opt = menu_conf.options[item_name]
+      if opt and hasattr(opt, 'action') and opt.action:
+        action = str(opt.action).lower()
+    if not action:
+      action = item_name.lower()
 
   try:
     if action == "search":
@@ -870,4 +870,4 @@ async def run(user, destination, menu_item=None):
   except Disconnected:
     log.info("User disconnected from File Library")
 
-  return RetVals(status=success, next_destination=Destinations.files, next_menu_item=null)
+  return RetVals(status=success, next_destination=null, next_menu_item=null)

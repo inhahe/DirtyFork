@@ -6,52 +6,132 @@ from keyboard_codes import click, left
 
 
 # ---------------------------------------------------------------------------
-# Jump tree — built once from config.menu_system, used by /jump
+# Menu tree — built once from config.menu_system at startup
 # ---------------------------------------------------------------------------
 
-class _JumpNode:
-  __slots__ = ('menu_name', 'option_names', 'prefixes', 'targets', 'children')
-  def __init__(self, menu_name):
-    self.menu_name = menu_name
-    self.option_names = []
-    self.prefixes = {}
-    self.targets = {}    # option_name → dest_name string
-    self.children = {}   # option_name → _JumpNode (for menu-type targets)
+class OptionInfo:
+  """Info for a leaf menu option (no sub-menu)."""
+  __slots__ = ('target', 'template', 'conf')
+  def __init__(self, target, template=None, conf=None):
+    self.target = target        # destination name string (e.g., "forum")
+    self.template = template    # menu_item template list (e.g., ["..", "."]) or None
+    self.conf = conf            # raw option config from YAML
 
-_jump_nodes = None  # {menu_name: _JumpNode}
+class MenuNode:
+  """A node in the menu tree. Each menu (and sub-menu) is a MenuNode."""
+  __slots__ = ('name', 'menu_name', 'config', 'parent', 'option_names',
+               'prefixes', 'targets', 'children', 'options_info')
+  def __init__(self, name, config=None, parent=None):
+    self.name = name            # display name (e.g., "Spirituality & Mysticism")
+    self.menu_name = name       # compat with old _JumpNode.menu_name
+    self.config = config        # menu config (has .options, .screen_path, etc.)
+    self.parent = parent        # parent MenuNode, or None for root
+    self.option_names = []      # ordered list of option display names
+    self.prefixes = {}          # {name: min_prefix_len}
+    self.targets = {}           # option_name → dest_name string (for jump tree compat)
+    self.children = {}          # option_name → MenuNode (sub-menus)
+    self.options_info = {}      # option_name → OptionInfo (for leaf options)
 
-def _ensure_jump_tree():
-  global _jump_nodes
-  if _jump_nodes is not None:
+_menu_nodes = None  # {menu_name: MenuNode}
+# Keep _jump_nodes as alias for backward compat in resolve functions
+_jump_nodes = None
+
+def _ensure_menu_tree():
+  global _menu_nodes, _jump_nodes
+  if _menu_nodes is not None:
     return
   from config import get_config
   cfg = get_config()
   if not cfg.menu_system:
-    _jump_nodes = {}
+    _menu_nodes = _jump_nodes = {}
     return
 
+  from config import Config
+
   nodes = {}
+
+  # Pass 1: create a MenuNode per menu_system entry
   for mn in cfg.menu_system.keys():
     mc = cfg.menu_system[mn]
     if not mc or not mc.options:
       continue
-    node = _JumpNode(mn)
+    node = MenuNode(mn, config=mc)
     opt_keys = list(mc.options.keys()) if hasattr(mc.options, 'keys') else []
     for opt_name in opt_keys:
       oc = mc.options[opt_name]
       target = (str(oc.target) if oc and oc.target else opt_name.lower()) if oc else opt_name.lower()
       node.option_names.append(opt_name)
       node.targets[opt_name] = target
+      node.options_info[opt_name] = OptionInfo(target=target, conf=oc)
     node.prefixes = _compute_min_prefixes(node.option_names)
     nodes[mn] = node
 
-  # Link children: options whose target is itself a menu
+  # Pass 2: link options that target another menu as children (sub-menus)
   for node in nodes.values():
     for opt_name, target in node.targets.items():
       if target in nodes:
         node.children[opt_name] = nodes[target]
+        nodes[target].parent = node
 
-  _jump_nodes = nodes
+  # Pass 3: expand option_defaults.options into child nodes
+  # This creates sub-menu nodes under each parent option (e.g., forums → each forum → actions)
+  for mn in cfg.menu_system.keys():
+    mc = cfg.menu_system[mn]
+    if not mc or not mc.option_defaults or not mc.option_defaults.options:
+      continue
+    node = nodes.get(mn)
+    if not node:
+      continue
+    default_sub = mc.option_defaults.options
+    sub_keys = [k for k in (list(default_sub.keys()) if hasattr(default_sub, 'keys') else []) if k != 'option_defaults']
+    if not sub_keys:
+      continue
+
+    # Resolve default target and template from inner option_defaults
+    sub_defaults = default_sub.option_defaults if hasattr(default_sub, 'option_defaults') and default_sub.option_defaults else null
+    default_target = None
+    if sub_defaults and sub_defaults is not null and hasattr(sub_defaults, 'target') and sub_defaults.target:
+      default_target = str(sub_defaults.target)
+    elif mc.option_defaults and mc.option_defaults.target:
+      default_target = str(mc.option_defaults.target)
+    template = None
+    if sub_defaults and sub_defaults is not null and sub_defaults.menu_item:
+      mi = sub_defaults.menu_item
+      template = list(mi) if hasattr(mi, '__iter__') and not isinstance(mi, str) else [str(mi)]
+    if not template:
+      template = ['..', '.']
+
+    # Create a child MenuNode per parent option
+    for opt_name in node.option_names:
+      if opt_name in node.children:
+        continue  # already links to another menu
+
+      sub_opts = {k: default_sub[k] for k in sub_keys}
+      child_config = Config({'options': Config(sub_opts)})
+      child = MenuNode(opt_name, config=child_config, parent=node)
+
+      for sk in sub_keys:
+        sk_conf = default_sub[sk]
+        sk_target = default_target or sk.lower()
+        if sk_conf and sk_conf is not null and hasattr(sk_conf, 'target') and sk_conf.target:
+          sk_target = str(sk_conf.target)
+        child.option_names.append(sk)
+        child.targets[sk] = sk_target
+        child.options_info[sk] = OptionInfo(target=sk_target, template=template, conf=sk_conf)
+      child.prefixes = _compute_min_prefixes(child.option_names)
+      node.children[opt_name] = child
+
+  _menu_nodes = _jump_nodes = nodes
+
+
+def get_menu_node(name):
+  """Get a MenuNode by name. Builds the tree if needed."""
+  _ensure_menu_tree()
+  return _menu_nodes.get(name)
+
+
+# Keep old name as alias
+_ensure_jump_tree = _ensure_menu_tree
 
 
 def _resolve_path(node, parts):
@@ -71,19 +151,10 @@ def _resolve_path(node, parts):
   for i, part in enumerate(parts):
     # Handle 'x' (exit) — go up to parent menu
     if part.lower() == 'x':
-      # Find the parent menu's node
-      parent_menu = None
-      for name, n in _jump_nodes.items():
-        for opt_name, child in n.children.items():
-          if child is node:
-            parent_menu = name
-            break
-        if parent_menu:
-          break
-      if not parent_menu or parent_menu not in _jump_nodes:
+      if not node.parent:
         remaining = ".".join(parts[i:])
         return (None, None, None, f"At {node.menu_name.title()}: can't exit further with \"{remaining}\"")
-      node = _jump_nodes[parent_menu]
+      node = node.parent
       # If this is the last part, return to the parent menu
       if i == len(parts) - 1:
         return (parent_menu, None, None, None)
@@ -110,43 +181,115 @@ def _resolve_path(node, parts):
   return (None, None, None, "Empty path.")
 
 
+def _resolve_greedy(node, path_str, path_so_far=()):
+  """Resolve a dotted path greedily: try longest literal match first at each level.
+  For 'a.b.c.d', try matching 'a.b.c.d' as one option, then 'a.b.c' + recurse on 'd',
+  then 'a.b' + recurse on 'c.d', then 'a' + recurse on 'b.c.d'.
+  path_so_far accumulates matched names into a tuple for multi-level menu_item.
+  Returns (dest_name, menu_item_tuple, parent_menu, error)."""
+  if not path_str:
+    return (None, None, None, "Empty path.")
+
+  # Find all dot positions
+  dots = [i for i, ch in enumerate(path_str) if ch == '.']
+
+  # Try longest match first: whole string, then split at last dot, second-to-last, etc.
+  split_points = [len(path_str)] + list(reversed(dots))
+
+  for sp in split_points:
+    segment = path_str[:sp].strip()
+    remainder = path_str[sp + 1:].strip() if sp < len(path_str) else ""
+
+    if not segment:
+      continue
+
+    # Handle 'x' (exit) segments
+    if segment.lower() == 'x' or (len(segment) > 1 and segment.lower() == 'x' * len(segment)):
+      x_count = len(segment)
+      current = node
+      ok = True
+      for _ in range(x_count):
+        if not current.parent:
+          ok = False
+          break
+        current = current.parent
+      if ok:
+        if not remainder:
+          return (current.menu_name, None, None, None)
+        result = _resolve_greedy(current, remainder, path_so_far)
+        if result[3] is None:
+          return result
+      continue
+
+    # Try matching this segment as an option
+    matched, err = _match_option(segment, node.option_names, node.prefixes)
+    if not matched:
+      continue  # try a shorter segment
+
+    target = node.targets[matched]
+    parent = node.menu_name
+    new_path = path_so_far + (matched,)
+
+    if not remainder:
+      # This is the last segment — return the match with accumulated path
+      return (target, new_path, parent, None)
+
+    # More segments to resolve — this must be a submenu
+    if matched in node.children:
+      child = node.children[matched]
+      # If the child is a top-level menu destination, reset the path
+      # (the menu transition is handled by user_director, path restarts)
+      child_path = () if child.name in (_menu_nodes or {}) else new_path
+      result = _resolve_greedy(child, remainder, child_path)
+      if result[3] is None:
+        return result
+      # This split didn't work — try shorter segment
+
+  # Nothing worked
+  return (None, None, None, f"At {node.menu_name.title()}: \"{path_str}\" doesn't match any option.")
+
+
 def resolve_jump(path_str):
   """Resolve a dotted path from the main menu (for /jump).
+  Uses greedy longest-match to support option names containing dots.
   Returns (dest_name, menu_item, parent_menu, error)."""
   _ensure_jump_tree()
   _no_match = f'"{path_str}" doesn\'t match any destination. Usage: /j option or menu.option'
   if not _jump_nodes:
     return (None, None, None, _no_match)
-  parts = [p.strip() for p in path_str.strip().split(".") if p.strip()]
-  if not parts:
+  path_str = path_str.strip()
+  if not path_str:
     return (None, None, None, "Usage: /j option or menu.option")
-  # Try resolving through the menu option tree first
   root = _jump_nodes.get("main")
   if root is not None:
-    result = _resolve_path(root, parts)
-    if result[3] is None:  # no error
+    result = _resolve_greedy(root, path_str)
+    if result[3] is None:
       return result
   # Single component: try matching a menu name directly (e.g. /j main)
-  if len(parts) == 1:
-    p = parts[0].lower()
+  if "." not in path_str:
+    p = path_str.lower()
     matches = [mn for mn in _jump_nodes if mn.lower().startswith(p)]
     if len(matches) == 1:
       return (matches[0], null, None, None)
   # No match
+  if root is not None:
+    result = _resolve_greedy(root, path_str)
+    return (None, None, None, result[3] or _no_match)
   return (None, None, None, _no_match)
 
 
 def resolve_dotted(menu_name, path_str):
   """Resolve a dotted path relative to the given menu (for inline dotted input).
+  Uses greedy longest-match to support option names containing dots.
   Returns (dest_name, menu_item, parent_menu, error)."""
   _ensure_jump_tree()
   node = _jump_nodes.get(menu_name) if _jump_nodes else None
   if node is None:
     return (None, None, None, None)  # no tree for this menu, let normal matching handle it
-  parts = [p.strip() for p in path_str.strip().split(".") if p.strip()]
-  if not parts:
+  path_str = path_str.strip()
+  if not path_str:
     return (None, None, None, None)
-  return _resolve_path(node, parts)
+  return _resolve_greedy(node, path_str)
 
 
 # ---------------------------------------------------------------------------
@@ -199,14 +342,26 @@ async def _show_text_error(user, err, can_inline, prompt_row, prompt_col, typed_
   return prompt_row, prompt_col, error_row
 
 
-def _exit_menu(user, menu_name, Destinations):
-  """Handle eXit: go back to parent menu, or logout from main."""
-  if menu_name == "main":
-    return RetVals(status=success, next_destination=Destinations.logout, next_menu_item=null)
-  handler = getattr(Destinations, menu_name, None)
-  parent = getattr(handler, 'parent_menu', None) if handler else None
-  if parent:
-    return RetVals(status=success, next_destination=getattr(Destinations, parent), next_menu_item=null)
+_EXIT_SUB = object()  # sentinel: exit from a sub-menu back to parent do_menu
+
+def _exit_menu(user, node, Destinations, levels=1):
+  """Handle eXit: go back to parent menu, or logout from main.
+  For sub-menus (node has a parent that's also a menu), returns _EXIT_SUB sentinel."""
+  current = node
+  for _ in range(levels):
+    if current.name == "main" or current.parent is None:
+      return RetVals(status=success, next_destination=Destinations.logout, next_menu_item=null)
+    parent = current.parent
+    # If the parent is a real menu destination, navigate to it
+    if parent.name in (_menu_nodes or {}):
+      current = parent
+    else:
+      # Parent is a sub-menu node — signal to return up the recursive call stack
+      return RetVals(status=success, next_destination=_EXIT_SUB, next_menu_item=null,
+                     _exit_levels=levels)
+  if current.name in (_menu_nodes or {}):
+    return RetVals(status=success, next_destination=getattr(Destinations, current.name, Destinations.main),
+                   next_menu_item=null)
   return RetVals(status=success, next_destination=Destinations.main, next_menu_item=null)
 
 
@@ -333,36 +488,198 @@ def _compute_column_layout(names, screen_width, max_rows, margin=3,
   return best[1], best[2]
 
 
-def _build_breadcrumb(Destinations, menu_name):
-  """Build a breadcrumb path like 'Main > Forums' by walking parent_menu chain."""
-  if menu_name == "main":
+def _build_breadcrumb(node_or_name, _Destinations=None):
+  """Build a breadcrumb path like 'Main > Forums' by walking parent pointers.
+  Accepts a MenuNode or a menu name string."""
+  _ensure_menu_tree()
+  if isinstance(node_or_name, str):
+    node = _menu_nodes.get(node_or_name)
+    if not node:
+      return node_or_name.title()
+  else:
+    node = node_or_name
+  if node.name == "main":
     return "Main"
-  # Walk the parent_menu chain to build the path
-  path = [menu_name.title()]
-  current = menu_name
-  while True:
-    handler = getattr(Destinations, current, None)
-    parent = getattr(handler, 'parent_menu', None) if handler else None
-    if not parent:
-      break
-    if parent == "main":
-      path.append("Main")
-      break
-    path.append(parent.title())
-    current = parent
+  path = [node.name.title()]
+  current = node.parent
+  while current:
+    path.append("Main" if current.name == "main" else current.name.title())
+    current = current.parent
   if path[-1] != "Main":
     path.append("Main")
   path.reverse()
   return " > ".join(path)
 
 
-async def do_menu(user, menu_name):
+def _resolve_menu_item_template(template, context):
+  """Resolve a menu_item template list into a tuple.
+  Template elements:
+    '..'        — parent option name
+    '.'         — current option name
+    '..action'  — parent option's 'action' field
+    '.action'   — current option's 'action' field
+    '..field'   — parent option's 'field' attribute
+    '.field'    — current option's 'field' attribute
+    '...'       — grandparent option name
+    literal str — passed as-is
+  context is a dict with keys: 'parent_name', 'parent_conf', 'self_name', 'self_conf',
+                                'grandparent_name', 'grandparent_conf'
+  """
+  result = []
+  for item in template:
+    item = str(item)
+    if item == '..':
+      result.append(context.get('parent_name', ''))
+    elif item == '.':
+      result.append(context.get('self_name', ''))
+    elif item == '...':
+      result.append(context.get('grandparent_name', ''))
+    elif item.startswith('..') and len(item) > 2 and item[2] != '.':
+      # ..field — attribute of parent option config
+      field = item[2:]
+      parent_conf = context.get('parent_conf')
+      if parent_conf and parent_conf is not null and hasattr(parent_conf, field):
+        val = getattr(parent_conf, field)
+        result.append(str(val) if val and val is not null else '')
+      else:
+        result.append('')
+    elif item.startswith('.') and len(item) > 1:
+      # .field — attribute of current option config
+      field = item[1:]
+      self_conf = context.get('self_conf')
+      if self_conf and self_conf is not null and hasattr(self_conf, field):
+        val = getattr(self_conf, field)
+        result.append(str(val) if val and val is not null else '')
+      else:
+        result.append('')
+    else:
+      result.append(item)
+  return tuple(result)
+
+
+async def _handle_sub_menu(user, chosen, option_conf, default_sub, menu_name, Destinations):
+  """Show a sub-menu from option_defaults.options, then build the result.
+  Returns RetVals on success, or None if user exited the sub-menu."""
+
+  sub_chosen = await _show_sub_menu(user, chosen, default_sub, menu_name)
+  if sub_chosen is None:
+    return None
+
+  # Find target from sub-option config, sub option_defaults, or parent option
+  sub_conf = default_sub[sub_chosen] if sub_chosen in default_sub else null
+  sub_defaults = default_sub.option_defaults if hasattr(default_sub, 'option_defaults') and default_sub.option_defaults else null
+  target = None
+  if sub_conf and sub_conf is not null and hasattr(sub_conf, 'target') and sub_conf.target:
+    target = str(sub_conf.target)
+  elif sub_defaults and sub_defaults is not null and hasattr(sub_defaults, 'target') and sub_defaults.target:
+    target = str(sub_defaults.target)
+  elif option_conf and option_conf.target:
+    target = str(option_conf.target)
+  else:
+    target = chosen.lower()
+
+  # Build menu_item from template or default
+  template = None
+  if sub_defaults and sub_defaults is not null and sub_defaults.menu_item:
+    template = list(sub_defaults.menu_item) if hasattr(sub_defaults.menu_item, '__iter__') and not isinstance(sub_defaults.menu_item, str) else [str(sub_defaults.menu_item)]
+  if not template:
+    template = ['..', '.']
+  mi = _resolve_menu_item_template(template, {
+    'parent_name': chosen, 'parent_conf': option_conf,
+    'self_name': sub_chosen, 'self_conf': sub_conf,
+  })
+  return RetVals(status=success, next_destination=_resolve_destination(target, menu_name),
+                 next_menu_item=mi)
+
+
+async def _show_sub_menu(user, parent_chosen, sub_options, parent_menu_name):
+  """Show a sub-menu from option_defaults.options. Returns (chosen_sub, action) or None if exited."""
+  from input_output import get_input_key
+  from common import Destinations
+
+  sub_keys = [k for k in (list(sub_options.keys()) if hasattr(sub_options, 'keys') else []) if k != 'option_defaults']
+  sub_keys.append("eXit")
+  sub_prefixes = _compute_min_prefixes(sub_keys)
+
+  while True:
+    await ansi_cls(user)
+    ansi_color(user, fg=cyan, fg_br=False, bg=black)
+    breadcrumb = _build_breadcrumb(parent_menu_name)
+    await send(user, f" {breadcrumb} > {parent_chosen}" + cr + lf + cr + lf, drain=False)
+
+    # Render sub-menu options (same style as text menus: 1 space indent)
+    for sk in sub_keys:
+      prefix_len = sub_prefixes.get(sk, 1)
+      ansi_color(user, fg=white, fg_br=True, bg=black)
+      await send(user, " " + sk[:prefix_len], drain=False)
+      ansi_color(user, fg=white, fg_br=False, bg=black)
+      await send(user, sk[prefix_len:] + cr + lf, drain=False)
+
+    await send(user, cr + lf, drain=False)
+    ansi_color(user, fg=white, fg_br=False, bg=black)
+    await send(user, "Option: ", drain=True)
+
+    # Read input
+    buf = []
+    while True:
+      key = await get_input_key(user)
+      if key == cr:
+        break
+      if key == back:
+        if buf:
+          buf.pop()
+          user.writer.write(back + " " + back)
+          await user.writer.drain()
+        continue
+      if isinstance(key, str) and len(key) == 1 and ord(key) >= 32:
+        buf.append(key)
+        await send(user, key, drain=True)
+        # Auto-submit on unambiguous single-char match
+        text = "".join(buf)
+        matched, _ = _match_option(text, sub_keys, sub_prefixes)
+        if matched:
+          await send(user, cr + lf, drain=False)
+          break
+        continue
+
+    text = "".join(buf).strip()
+    if not text:
+      continue
+
+    if text.lower() == "x":
+      return None
+
+    matched, err = _match_option(text, sub_keys, sub_prefixes)
+    if matched:
+      if matched == "eXit":
+        return None
+      return matched
+    # Show error and loop
+    ansi_color(user, fg=red, fg_br=True, bg=black)
+    await send(user, cr + lf + "  " + (err or "No match.") + cr + lf, drain=True)
+    await get_input_key(user)
+
+
+async def do_menu(user, menu_name_or_node):
   from input_fields import InputField
   from common import check_keys, Destinations
   from config import get_config
   config = get_config()
 
-  menu_conf = config.menu_system[menu_name]
+  _ensure_menu_tree()
+
+  # Accept either a string menu name or a MenuNode
+  if isinstance(menu_name_or_node, MenuNode):
+    node = menu_name_or_node
+    menu_name = node.name
+    menu_conf = node.config
+  else:
+    menu_name = menu_name_or_node
+    node = _menu_nodes.get(menu_name)
+    menu_conf = config.menu_system[menu_name]
+    if node is None:
+      # Fallback: create a temporary node
+      node = MenuNode(menu_name, config=menu_conf)
 
   if not menu_conf or not menu_conf.options:
     return RetVals(status=fail, err_msg=f"Menu '{menu_name}' not found or has no options.",
@@ -396,7 +713,7 @@ async def do_menu(user, menu_name):
     effective_prefixes = _compute_min_prefixes(effective_keys)
 
   # Enable mouse click reporting
-  user.writer.write("\x1b[?1000h")
+  user.writer.write("\x1b[?1000h\x1b[?1002h")
   user.mouse_reporting = True
   await user.writer.drain()
 
@@ -469,7 +786,7 @@ async def do_menu(user, menu_name):
           await ansi_cls(user)
 
           # Breadcrumb path
-          breadcrumb = _build_breadcrumb(Destinations, menu_name)
+          breadcrumb = _build_breadcrumb(node)
           ansi_color(user, fg=cyan, fg_br=False, bg=black)
           await send(user, " " + breadcrumb + cr + lf + cr + lf, drain=False)
 
@@ -610,17 +927,7 @@ async def do_menu(user, menu_name):
             if not partial:
               buf.pop()
               if current.lower() == "x" * len(current):
-                levels = len(current)
-                dest_name = menu_name
-                for _ in range(levels):
-                  handler = getattr(Destinations, dest_name, None)
-                  parent = getattr(handler, 'parent_menu', None) if handler else None
-                  if not parent:
-                    screen_retval = RetVals(status=success, next_destination=Destinations.logout, next_menu_item=null)
-                    break
-                  dest_name = parent
-                else:
-                  screen_retval = RetVals(status=success, next_destination=getattr(Destinations, dest_name), next_menu_item=null)
+                screen_retval = _exit_menu(user, node, Destinations, levels=len(current))
                 break
               from input_fields import show_message_box
               await show_message_box(user, f'"{current}" doesn\'t match any option.',
@@ -666,7 +973,7 @@ async def do_menu(user, menu_name):
               await send(user, " " * typed_len, drain=False)
               await ansi_move(user, prompt_row, prompt_col, drain=True)
           else:
-            return _exit_menu(user, menu_name, Destinations)
+            return _exit_menu(user, node, Destinations)
         # Ignore other keys
 
       if screen_retval:
@@ -674,11 +981,24 @@ async def do_menu(user, menu_name):
 
       if chosen:
         if chosen == "eXit":
-          return _exit_menu(user, menu_name, Destinations)
-        option_conf = menu_conf.options[chosen]
-        target = option_conf.target if option_conf and option_conf.target else chosen.lower()
+          return _exit_menu(user, node, Destinations)
+        # Sub-menu? Return the child node as destination for user_director
+        child_node = node.children.get(chosen)
+        if child_node and child_node.option_names:
+          return RetVals(status=success, next_destination=child_node, next_menu_item=null)
+        # Leaf option — remember source menu and return target + menu_item tuple
+        user._source_menu = node
+        info = node.options_info.get(chosen)
+        if info and info.template:
+          mi = _resolve_menu_item_template(info.template, {
+            'parent_name': node.name, 'parent_conf': None,
+            'self_name': chosen, 'self_conf': info.conf,
+          })
+        else:
+          mi = (chosen,)
+        target = info.target if info else chosen.lower()
         return RetVals(status=success, next_destination=_resolve_destination(target, menu_name),
-                       next_menu_item=chosen)
+                       next_menu_item=mi)
 
       option_text = "".join(buf).strip()
 
@@ -728,6 +1048,18 @@ async def do_menu(user, menu_name):
         else: error_msg = msg
         continue
 
+      # /chat <user> — start one-on-one chat (routes to oneonone destination)
+      if lower.startswith("/chat "):
+        rest = option_text.split(" ", 1)
+        if len(rest) < 2 or not rest[1].strip():
+          if await _err("Usage: /chat <user>"): continue
+          else: error_msg = "Usage: /chat <user>"
+          continue
+        from common import Destinations as _Dests
+        return RetVals(status=success,
+                       next_destination=_Dests.oneonone,
+                       next_menu_item=(rest[1].strip(),))
+
       # /jump (or /j) command
       if lower.startswith("/jump ") or lower.startswith("/j "):
         jump_path = option_text.split(" ", 1)[1].strip()
@@ -740,6 +1072,7 @@ async def do_menu(user, menu_name):
           if await _err(err): continue
           else: error_msg = err
           continue
+        user._source_menu = node  # return to the menu they were viewing
         return RetVals(status=success,
                        next_destination=_resolve_destination(dest_name, parent_name),
                        next_menu_item=menu_item_name)
@@ -760,19 +1093,29 @@ async def do_menu(user, menu_name):
         needs_render = True
         continue
 
+      # /shutdown — sysop-only: graceful BBS shutdown
+      if lower == "/shutdown":
+        if "sysop" not in user.keys:
+          if await _err("Unknown command. Try /jump, /page, /chat, /info, /quit"): continue
+          else: error_msg = "Unknown command. Try /jump, /page, /chat, /info, /quit"
+          continue
+        from common import shutdown_bbs
+        await shutdown_bbs(f"Shutdown by sysop {user.handle}")
+        return RetVals(status=success, next_destination=Destinations.logout, next_menu_item=null)
+
       # /crash — sysop-only test command to trigger a traceback popup
       if lower == "/crash":
         if "sysop" not in user.keys:
-          if await _err("Unknown command: /crash. Try /jump, /page, /info, /quit"): continue
-          else: error_msg = "Unknown command: /crash. Try /jump, /page, /info, /quit"
+          if await _err("Unknown command: /crash. Try /jump, /page, /chat, /info, /quit"): continue
+          else: error_msg = "Unknown command: /crash. Try /jump, /page, /chat, /info, /quit"
           continue
         raise RuntimeError("Test crash triggered by /crash command.")
 
       # /testpopups — sysop-only: queue several popups to test queueing
       if lower == "/testpopups":
         if "sysop" not in user.keys:
-          if await _err("Unknown command. Try /jump, /page, /info, /quit"): continue
-          else: error_msg = "Unknown command. Try /jump, /page, /info, /quit"
+          if await _err("Unknown command. Try /jump, /page, /chat, /info, /quit"): continue
+          else: error_msg = "Unknown command. Try /jump, /page, /chat, /info, /quit"
           continue
         # Queue popups 2 and 3 first, then show popup 1 (which drains the queue)
         user.popup_queue.append(dict(text="Popup 2 of 3: This is the second queued popup.", title="Test 2/3", fg=white, fg_br=True, bg=black, bg_br=False, outline_fg=yellow, outline_fg_br=True, outline_bg=black, outline_bg_br=False))
@@ -784,7 +1127,7 @@ async def do_menu(user, menu_name):
 
       # Unknown slash command
       if lower.startswith("/"):
-        msg = f"Unknown command: {option_text.split()[0]}. Try /jump, /page, /info, /quit"
+        msg = f"Unknown command: {option_text.split()[0]}. Try /jump, /page, /chat, /info, /quit"
         if await _err(msg): continue
         else: error_msg = msg
         continue
@@ -793,6 +1136,16 @@ async def do_menu(user, menu_name):
       if "." in option_text:
         dest_name, menu_item_name, parent_name, err = resolve_dotted(menu_name, option_text)
         if dest_name:
+          # Set source menu: walk from the parent menu node through the path
+          parent_node = _menu_nodes.get(parent_name, node) if parent_name else node
+          if isinstance(menu_item_name, tuple) and len(menu_item_name) > 1:
+            walk = parent_node
+            for part in menu_item_name[:-1]:
+              if part in walk.children:
+                walk = walk.children[part]
+            user._source_menu = walk
+          else:
+            user._source_menu = parent_node
           return RetVals(status=success,
                          next_destination=_resolve_destination(dest_name, parent_name),
                          next_menu_item=menu_item_name)
@@ -806,30 +1159,34 @@ async def do_menu(user, menu_name):
       chosen = option_for_input.get(matched_input) if matched_input else None
       if chosen:
         if chosen == "eXit":
-          return _exit_menu(user, menu_name, Destinations)
-        option_conf = menu_conf.options[chosen]
-        target = option_conf.target if option_conf and option_conf.target else chosen.lower()
+          return _exit_menu(user, node, Destinations)
+        # Sub-menu? Return the child node as destination for user_director
+        child_node = node.children.get(chosen)
+        if child_node and child_node.option_names:
+          return RetVals(status=success, next_destination=child_node, next_menu_item=null)
+        # Leaf option — remember source menu and return target + menu_item tuple
+        user._source_menu = node
+        info = node.options_info.get(chosen)
+        if info and info.template:
+          mi = _resolve_menu_item_template(info.template, {
+            'parent_name': node.name, 'parent_conf': None,
+            'self_name': chosen, 'self_conf': info.conf,
+          })
+        else:
+          mi = (chosen,)
+        target = info.target if info else chosen.lower()
         return RetVals(status=success, next_destination=_resolve_destination(target, menu_name),
-                       next_menu_item=chosen)
+                       next_menu_item=mi)
 
       # x, xx, xxx, etc. — go up N levels (1 x = eXit, 2 = two levels, etc.)
       if len(option_text) >= 1 and option_text.lower() == "x" * len(option_text):
-        levels = len(option_text)
-        dest_name = menu_name
-        for _ in range(levels):
-          handler = getattr(Destinations, dest_name, None)
-          parent = getattr(handler, 'parent_menu', None) if handler else None
-          if not parent:
-            # Reached main (or beyond) — logout
-            return RetVals(status=success, next_destination=Destinations.logout, next_menu_item=null)
-          dest_name = parent
-        return RetVals(status=success, next_destination=getattr(Destinations, dest_name), next_menu_item=null)
+        return _exit_menu(user, node, Destinations, levels=len(option_text))
 
       if await _err(err_msg): continue
       else: error_msg = err_msg
 
   finally:
     # Disable mouse click reporting
-    user.writer.write("\x1b[?1000l")
+    user.writer.write("\x1b[?1002l\x1b[?1000l")
     user.mouse_reporting = False
     await user.writer.drain()

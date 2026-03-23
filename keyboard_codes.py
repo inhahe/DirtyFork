@@ -52,6 +52,11 @@ keyboard_codes = {
   "\x1b[5~": pgup,
   "\x1b[6~": pgdn,
 
+  # PageUp/PageDown — SCO/ANSI-BBS style (SyncTERM, etc.)
+  "\x1b[V": pgup,
+  "\x1b[U": pgdn,
+  "\x1b[@": insert,  # SCO insert
+
   # Shift+Tab (back tab)
   "\x1b[Z": shift_tab,
 
@@ -247,6 +252,7 @@ def check(k):
     return Eint(click, button=[left, middle, right, release][Cb & 3],
                 shift=bool(Cb & 4), alt=bool(Cb & 8), ctrl=bool(Cb & 16),
                 wheel=[None, up, down, None][(Cb >> 6) & 3],
+                motion=bool(Cb & 32),
                 col=ord(r.group(0)[4])-32, row=ord(r.group(0)[5])-32)
   # If this is ESC[M, treat it as partial — could be start of a mouse sequence
   if k == "\x1b[M":

@@ -269,8 +269,12 @@ async def run_whos_online(user, dest_conf, menu_item=None):
     details = _build_details_line(profile, sysop)
     if details:
       lines.append(details)
-    lines.append("")  # blank line between users
+      lines.append("")  # blank line between users with details
 
+  # Remove trailing blank if present (last user's separator)
+  if lines and lines[-1] == "":
+    lines.pop()
+  lines.append("")
   lines.append(f"{len(users)} user(s) online")
 
   text = "\n".join(lines)
@@ -290,7 +294,8 @@ async def run_user_list(user, dest_conf, menu_item=None):
 
   # Prompt for search (optional)
   search = None
-  if menu_item and str(menu_item).lower() == "search":
+  item_name = menu_item[0] if isinstance(menu_item, tuple) else menu_item
+  if item_name and str(item_name).lower() == "search":
     await ansi_cls(user)
     ansi_color(user, fg=white, bg=black, fg_br=True)
     await send(user, "Search users" + cr + lf + cr + lf, drain=False)
@@ -343,8 +348,11 @@ async def run_user_list(user, dest_conf, menu_item=None):
     details = _build_details_line(profile, sysop)
     if details:
       lines.append(details)
-    lines.append("")  # blank line between users
+      lines.append("")  # blank line between users with details
 
+  # Remove trailing blank if present (last user's separator)
+  if lines and lines[-1] == "":
+    lines.pop()
   lines.append("")
   lines.append(f"{len(rows)} user(s)" + (f" matching '{search}'" if search else ""))
 

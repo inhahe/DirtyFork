@@ -83,9 +83,12 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
   queued_count: if > 0, shows 'A: Abort All (n)' and returns 'abort' if pressed.
   Returns 'abort' or None."""
 
-  # Determine max_width for word wrapping
+  # Determine max_width
   if max_width is null:
-    max_width = min(60, user.screen_width - 4)
+    if word_wrap:
+      max_width = min(60, user.screen_width - 4)
+    else:
+      max_width = user.screen_width - 4  # no wrapping — allow full width
 
   def _split_lines(text, w):
     """Split text into lines. Word-wraps if word_wrap is True, otherwise just splits on newlines."""
@@ -127,10 +130,12 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
 
   scrollable = len(wrapped) > height
   total_lines = len(wrapped)
+  max_offset = max(0, total_lines - height) if scrollable else 0
   scroll_offset = 0
   h_scroll = 0
   max_line_width = max((len(line) for line in wrapped), default=0)
   h_scrollable = (not word_wrap) and max_line_width > inner_width
+  max_h_offset = max(0, max_line_width - inner_width) if h_scrollable else 0
   # Horizontal scroll step from user config (default 8)
   user_conf = getattr(user, 'conf', null)
   h_step = 8
@@ -186,18 +191,43 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
 
   need_nowrap = (save_right >= user.screen_width)
 
+  # Build the horizontal prompt text (shown on top border when h_scrollable)
+  if h_scrollable:
+    _h_parts = []
+    if scrollable:
+      _h_parts.append("Up/Down")
+    _h_parts.append("Left/Right")
+    _h_parts.append("any key to close")
+    _h_prompt = ", ".join(_h_parts)
+  else:
+    _h_prompt = ""
+
   async def _draw_box():
+    nonlocal _h_prompt
     if need_nowrap:
       ansi_wrap(user, False)
 
     ansi_color(user, fg=outline_fg, fg_br=outline_fg_br, bg=outline_bg, bg_br=outline_bg_br)
 
-    # Top border with close button [■] in top-right
+    # Top border with close button [■] in top-right, and prompt if h_scrollable
     close_str = "[" + close_char + "]"
     close_btn_col = save_left + inner_width - 2  # 1-based screen col of '['
     await ansi_move_deferred(user, row=save_top, col=save_left, drain=False)
-    if title and title is not null:
-      title_str = str(title)[:inner_width - 5]  # leave room for close btn
+    title_str = str(title)[:inner_width - 5] if title and title is not null else ""
+
+    if h_scrollable and _h_prompt:
+      # tl + ─ + space + title + space + ─*fill + space + prompt + space + [■] + tr
+      used = len(title_str) + len(_h_prompt) + 7 + len(close_str)
+      fill_len = inner_width + 2 - used
+      if fill_len < 0:
+        # Not enough room — truncate prompt
+        _h_prompt = _h_prompt[:len(_h_prompt) + fill_len]
+        fill_len = 0
+      if title_str:
+        top_line = tl + horiz + " " + title_str + " " + horiz * max(0, fill_len) + " " + _h_prompt + " " + close_str + tr
+      else:
+        top_line = tl + horiz * max(0, fill_len + len(title_str) + 3) + " " + _h_prompt + " " + close_str + tr
+    elif title_str:
       fill_len = inner_width - len(title_str) - 3 - len(close_str)
       top_line = tl + horiz + " " + title_str + " " + horiz * max(0, fill_len) + close_str + tr
     else:
@@ -266,10 +296,9 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     if h_scrollable:
       max_h_offset = max_line_width - inner_width
       h_track_width = inner_width - 2  # excluding arrow chars at left and right
-      # Thumb sized so it never skips columns when scrolling by 1 step
-      scroll_positions = max_h_offset // h_step + 1
-      h_thumb_width = max(1, h_track_width - scroll_positions)
-      h_thumb_width = max(1, min(h_thumb_width, h_track_width))
+      # Thumb proportional to visible/total width, minimum 1
+      h_thumb_width = max(1, round(inner_width / max_line_width * h_track_width))
+      h_thumb_width = min(h_thumb_width, h_track_width)
       h_avail = h_track_width - h_thumb_width
       h_thumb_start = round(h_scroll / max_h_offset * h_avail) if max_h_offset > 0 and h_avail > 0 else 0
 
@@ -308,25 +337,21 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
       abort_prefix = prompt_text.rstrip() + "  "
       abort_suffix = "bort All ({}) ".format(queued_count)
       prompt_text = abort_prefix + abort_text + " "
+    prompt_row = save_bottom
     if h_scrollable:
-      # Put prompt on top border (right-aligned) so it doesn't cover the h-scrollbar
-      prompt_col = save_left + inner_width + 1 - len(prompt_text)
-      if prompt_col < save_left + 2:
-        prompt_col = save_left + 2
+      # Prompt is embedded in top border by _draw_box — no separate draw
       prompt_row = save_top
-      await ansi_move_deferred(user, row=prompt_row, col=prompt_col, drain=False)
     else:
-      prompt_row = save_bottom
       await ansi_move_deferred(user, row=prompt_row, col=save_left + 2, drain=False)
       prompt_col = save_left + 2
-    if abort_text:
-      await send(user, abort_prefix, drain=False)
-      ansi_color(user, fg=fg, fg_br=fg_br, bg=outline_bg, bg_br=outline_bg_br)
-      await send(user, "A", drain=False)
-      ansi_color(user, fg=outline_fg, fg_br=True, bg=outline_bg, bg_br=outline_bg_br)
-      await send(user, abort_suffix, drain=False)
-    else:
-      await send(user, prompt_text, drain=False)
+      if abort_text:
+        await send(user, abort_prefix, drain=False)
+        ansi_color(user, fg=fg, fg_br=fg_br, bg=outline_bg, bg_br=outline_bg_br)
+        await send(user, "A", drain=False)
+        ansi_color(user, fg=outline_fg, fg_br=True, bg=outline_bg, bg_br=outline_bg_br)
+        await send(user, abort_suffix, drain=False)
+      else:
+        await send(user, prompt_text, drain=False)
     # Track abort click region
     if abort_text:
       abort_offset = prompt_text.rfind(abort_text)
@@ -346,7 +371,7 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
   # Enable mouse reporting for clickable elements, hide cursor
   saved_mouse = user.mouse_reporting
   if not saved_mouse:
-    user.writer.write("\x1b[?1000h")
+    user.writer.write("\x1b[?1000h\x1b[?1002h")
     user.mouse_reporting = True
   await ansi_hide_cursor(user, drain=True)
 
@@ -405,19 +430,60 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
           scroll_offset = max(0, total_lines - height)
         await _draw_box()
         handled = True
-    # Mouse click
+    # Mouse click / drag
     if not handled and key == click:
       btn = getattr(key, 'button', None)
+      is_motion = getattr(key, 'motion', False)
       if btn == left:
         cr_click, cc_click = key.row, key.col
         # Close button [■] on top border
-        if cr_click == save_top and close_btn_col <= cc_click <= close_btn_col + 2:
+        if not is_motion and cr_click == save_top and close_btn_col <= cc_click <= close_btn_col + 2:
           result = None
           break
         # Abort All text on prompt row
-        if queued_count > 0 and abort_text and cr_click == abort_row and abort_col_start <= cc_click <= abort_col_end:
+        if not is_motion and queued_count > 0 and abort_text and cr_click == abort_row and abort_col_start <= cc_click <= abort_col_end:
           result = "abort"
           break
+        # Vertical scrollbar — click or drag
+        if scrollable and cc_click == save_right:
+          scroll_top_row = save_top + 1  # first content row (arrow up)
+          scroll_bot_row = save_top + height  # last content row (arrow down)
+          if not is_motion and cr_click == scroll_top_row and scroll_offset > 0:
+            # Click on up arrow
+            scroll_offset = max(0, scroll_offset - 1)
+            await _draw_box()
+          elif not is_motion and cr_click == scroll_bot_row and scroll_offset < max_offset:
+            # Click on down arrow
+            scroll_offset = min(max_offset, scroll_offset + 1)
+            await _draw_box()
+          elif cr_click > scroll_top_row and cr_click < scroll_bot_row:
+            # Click or drag on track — map position to scroll offset
+            track_click = cr_click - scroll_top_row - 1  # 0-based track position
+            track_height_val = height - 2
+            if track_height_val > 0 and max_offset > 0:
+              scroll_offset = round(track_click / max(1, track_height_val - 1) * max_offset)
+              scroll_offset = max(0, min(scroll_offset, max_offset))
+              await _draw_box()
+        # Horizontal scrollbar — click or drag
+        if h_scrollable and cr_click == save_bottom:
+          h_arrow_left_col = save_left + 1
+          h_arrow_right_col = save_left + 2 + (inner_width - 2)
+          h_track_left = h_arrow_left_col + 1
+          h_track_right = h_arrow_right_col - 1
+          if not is_motion and cc_click == h_arrow_left_col and h_scroll > 0:
+            h_scroll = max(0, h_scroll - h_step)
+            await _draw_box()
+          elif not is_motion and cc_click == h_arrow_right_col and h_scroll < max_h_offset:
+            h_scroll = min(max_h_offset, h_scroll + h_step)
+            await _draw_box()
+          elif h_track_left <= cc_click <= h_track_right:
+            track_click = cc_click - h_track_left
+            h_track_width_val = inner_width - 2
+            if h_track_width_val > 0 and max_h_offset > 0:
+              raw = round(track_click / max(1, h_track_width_val - 1) * max_h_offset)
+              h_scroll = round(raw / h_step) * h_step  # snap to scroll step
+              h_scroll = max(0, min(h_scroll, max_h_offset))
+              await _draw_box()
       handled = True  # consume all mouse events
 
     if not handled:
@@ -433,7 +499,7 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
 
   # Restore mouse reporting state, show cursor again
   if not saved_mouse:
-    user.writer.write("\x1b[?1000l")
+    user.writer.write("\x1b[?1002l\x1b[?1000l")
     user.mouse_reporting = False
   await ansi_show_cursor(user)
 
@@ -1077,7 +1143,7 @@ class InputFields:
     """Run the input fields form.
     start_index: which field to activate first (0-based index into self.fields)."""
     # Enable mouse click reporting (normal tracking mode: ESC[?1000h)
-    self.user.writer.write("\x1b[?1000h")
+    self.user.writer.write("\x1b[?1000h\x1b[?1002h")
     self.user.mouse_reporting = True
     await self.user.writer.drain()
 
@@ -1139,7 +1205,7 @@ class InputFields:
           current_index = self._next_index(current_index)
     finally:
       # Disable mouse click reporting
-      self.user.writer.write("\x1b[?1000l")
+      self.user.writer.write("\x1b[?1002l\x1b[?1000l")
       self.user.mouse_reporting = False
       await self.user.writer.drain()
 

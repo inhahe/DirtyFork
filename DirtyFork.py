@@ -270,7 +270,7 @@ async def user_loop(reader, writer, connection_type="telnet"):
   except Disconnected:
     pass
   except Exception as e:
-    log.error("Unhandled error for user %s: %s: %s", getattr(user, 'handle', '?'), type(e).__name__, e)
+    log.error("Unhandled error for user %s: %s: %s\n%s", getattr(user, 'handle', '?'), type(e).__name__, e, traceback.format_exc())
   finally:
     handle = getattr(user, 'handle', None)
     if handle:
@@ -345,6 +345,13 @@ def _get_modem_ports():
 
 
 # ---------------------------------------------------------------------------
+# Shutdown
+# ---------------------------------------------------------------------------
+
+from common import shutdown_bbs, shutdown_event
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -360,7 +367,28 @@ async def main():
   if modem_ports:
     log.info("Modem listeners started on %d port(s)", len(modem_ports))
 
+  # Handle Ctrl+C gracefully
+  import signal
+  loop = asyncio.get_event_loop()
+  def _signal_handler():
+    asyncio.ensure_future(shutdown_bbs("Sysop shutdown (Ctrl+C)"))
+  try:
+    loop.add_signal_handler(signal.SIGINT, _signal_handler)
+  except NotImplementedError:
+    # Windows: add_signal_handler not supported, use signal.signal instead
+    def _win_handler(signum, frame):
+      loop.call_soon_threadsafe(lambda: asyncio.ensure_future(shutdown_bbs("Sysop shutdown (Ctrl+C)")))
+    signal.signal(signal.SIGINT, _win_handler)
+
+  # Wait for shutdown signal or server close
+  await shutdown_event.wait()
+  server.close()
   await server.wait_closed()
+  log.info("BBS stopped.")
 
 if __name__=="__main__":
-  asyncio.run(main())
+  try:
+    asyncio.run(main())
+  except KeyboardInterrupt:
+    # Fallback for Windows where signal handlers don't work
+    print("\nShutting down...")

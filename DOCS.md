@@ -105,6 +105,7 @@ When using `--data-dir`, paths are resolved relative to either the **project dir
 - `DirtyFork.yaml` — main config
 - `DirtyFork.db` — SQLite database
 - `DirtyFork.log` — log file
+- `teleconference.log` — teleconference chat log (if enabled)
 - `user_configs/` — per-user YAML profiles
 
 If a path is absolute, it's used as-is regardless of the directory type.

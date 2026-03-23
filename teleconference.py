@@ -37,6 +37,32 @@ user_typing = {}    # user -> time.time() of last input edit
 
 TYPING_TIMEOUT = 6  # seconds before a user is no longer considered "typing"
 
+# Teleconference log file handle (opened lazily if configured)
+_chat_log_file = None
+_chat_log_checked = False
+
+def _chat_log(channel, msg_type, sender, text):
+  """Log a teleconference message to file if logging is enabled."""
+  global _chat_log_file, _chat_log_checked
+  if not _chat_log_checked:
+    _chat_log_checked = True
+    from config import get_config
+    import paths
+    cfg = get_config()
+    log_path = None
+    if cfg.teleconference and cfg.teleconference.log:
+      log_path = str(cfg.teleconference.log)
+    if log_path:
+      try:
+        resolved = paths.resolve_data(log_path)
+        _chat_log_file = open(resolved, "a", encoding="utf-8")
+      except Exception:
+        pass
+  if _chat_log_file:
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    _chat_log_file.write(f"[{ts}] #{channel} {msg_type}: <{sender}> {text}\n")
+    _chat_log_file.flush()
+
 
 # ---------------------------------------------------------------------------
 # CP437 box-drawing helpers
@@ -102,6 +128,7 @@ async def _broadcast(channel_key, parts, msg_type="chat", sender="", text=""):
     if not ch:
         return
     ch.history.append((_timestamp(), msg_type, sender, text))
+    _chat_log(channel_key, msg_type, sender, text)
     for u in list(ch.users):
         try:
             await _display_message(u, parts, _chat_bottom(u))
@@ -371,6 +398,7 @@ async def _process_command(user, line):
             "  /me <action>       - Emote/action",
             "  /topic <text>      - Set channel topic",
             "  /page <user>       - Page user elsewhere on BBS",
+            "  /chat <user>       - One-on-one split-screen chat",
             "  /clear             - Clear chat area",
             "  /quit, /q          - Leave teleconference",
         ]
@@ -479,6 +507,13 @@ async def _process_command(user, line):
             await _send_to_user(user, [(green, True, f"Page sent to {target.handle}.")])
         else:
             await _send_error(user, reason or f"Could not page {target_handle}.")
+
+    elif cmd == "/chat":
+        if not args or not args.strip():
+            await _send_error(user, "Usage: /chat <user>")
+            return False
+        # Return special value to exit teleconference and route to oneonone
+        return ('chat', args.strip())
 
     elif cmd == "/clear":
         # Clear the chat area by overwriting each line
@@ -627,9 +662,15 @@ async def run(user, destination, menu_item=None):
 
                 if line:
                     if line.startswith("/"):
-                        should_quit = await _process_command(user, line)
-                        if should_quit:
-                            break
+                        cmd_result = await _process_command(user, line)
+                        if cmd_result is True:
+                            break  # /quit
+                        if isinstance(cmd_result, tuple) and cmd_result[0] == 'chat':
+                            # Exit teleconference and route to oneonone
+                            from common import Destinations
+                            return RetVals(status=success,
+                                           next_destination=Destinations.oneonone,
+                                           next_menu_item=(cmd_result[1],))
                     else:
                         current_key = user_channels.get(user, channel_key)
                         await _send_chat(user, current_key, line)

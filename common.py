@@ -174,6 +174,35 @@ class GlobalData:
 
 global_data = GlobalData()
 
+shutdown_event = asyncio.Event()
+
+async def shutdown_bbs(reason="BBS shutting down."):
+  """Initiate graceful shutdown. Notifies all users and stops the server."""
+  from logger import log as _log
+  _log.info("Shutdown initiated: %s", reason)
+  users = dict(global_data.users)
+  for handle, u in users.items():
+    try:
+      u.writer.write(f"\r\n\r\n*** {reason} ***\r\n")
+      await u.writer.drain()
+    except Exception:
+      pass
+    try:
+      u.writer.close()
+    except Exception:
+      pass
+  for u in list(global_data.users_logging_in):
+    try:
+      u.writer.write(f"\r\n\r\n*** {reason} ***\r\n")
+      await u.writer.drain()
+    except Exception:
+      pass
+    try:
+      u.writer.close()
+    except Exception:
+      pass
+  shutdown_event.set()
+
 class User:
   def __init__(self, reader, writer):
     if config.user_defaults and hasattr(config.user_defaults, 'keys'):
@@ -224,11 +253,15 @@ class User:
     self.encoding = "cp437"   # default encoding, updated by detect_terminal
     self.ttype = "unknown"    # terminal type string from TTYPE negotiation
     self.in_door = False      # True while user is in a door game
-    self.mouse_reporting = False  # True when mouse click reporting (ESC[?1000h) is active
+    self.mouse_reporting = False  # True when mouse button-event tracking (ESC[?1002h) is active
+    self._wrap_ambiguous = False  # True after writing to last column (deferred vs immediate wrap unknown)
     self.popup_notify = asyncio.Event()  # set when a popup is queued, to interrupt reader.read()
     self.popup_event = None   # asyncio.Event set when a popup needs to interrupt the door bridge
     self.popup_queue = []     # queued popups waiting to show (list of kwarg dicts)
     self._in_popup = False    # True while a popup is being displayed
+    self._chat_invitation = None  # (from_user, asyncio.Future) when a chat invite is pending
+    self._chat_redirect = None    # set True when user should be routed to oneonone
+    self._source_menu = None      # MenuNode the user was in when entering a module
 
 line_pos_re = re.compile('\x1b\\[(\\d+);(\\d+)R')
 email_re = re.compile(r'''(?:[a-z0-9!#$%&'*+\x2f=?^_`\x7b-\x7d~\x2d]+(?:\.[a-z0-9!#$%&'*+\x2f=?^_`\x7b-\x7d~\x2d]+)*|"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])*")@(?:(?:[a-z0-9](?:[a-z0-9\x2d]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9\x2d]*[a-z0-9])?|\[(?:(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9]))\.){3}(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9])|[a-z0-9\x2d]*[a-z0-9]:(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21-\x5a\x53-\x7f]|\\\\[\x01-\x09\x0b\x0c\x0e-\x7f])+)\])''')
@@ -539,8 +572,8 @@ def setup_user_session(user, handle, user_id, time_created):
   user.location = str(user.conf.location) if user.conf.location else None
   user.bio = str(user.conf.bio) if user.conf.bio else None
 
-  # Apply saved encoding preference
-  if user.conf.encoding:
+  # Apply saved encoding preference ("detect" means keep the auto-detected value)
+  if user.conf.encoding and str(user.conf.encoding).lower() != "detect":
     user.encoding = str(user.conf.encoding)
     _set_connection_encoding(user)
 
@@ -572,7 +605,7 @@ def check_keys(user, destination, menu_item=None):
   dest_name = getattr(item, 'dest_name', None)
   if dest_name:
     item = config.destinations[dest_name] if config.destinations else null
-  if not item or item is null or isinstance(item, str):
+  if not item or item is null or isinstance(item, (str, tuple)):
     return RetVals(status=success, lacking_keys=set(), bad_keys=set())
   wk = getattr(item, 'white_keys', None)
   bk = getattr(item, 'black_keys', None)
@@ -799,6 +832,10 @@ class _DestinationRegistry:
       password = password_r.content if hasattr(password_r, 'content') else str(password_r)
       r = await check_password(user_in_db, password)
       if r.status == success:
+        # Check for duplicate login
+        if user_in_db["handle"].lower() in global_data.users:
+          await send(user, cr+lf+cr+lf + "You are already logged in from another session." + cr+lf, drain=True)
+          continue
         uid = user_in_db["id"] if "id" in user_in_db.keys() else null
         setup_user_session(user, user_in_db["handle"], uid, user_in_db["time_created"])
         if 'banned' in user.keys:
@@ -865,15 +902,16 @@ class _DestinationRegistry:
     elif dest_type == "module":
       async def handler(user, menu_item=null):
         mod_name = name  # capture for closure
-        if menu_item and menu_item is not null and isinstance(menu_item, str):
+        if menu_item and menu_item is not null:
           # Validate menu_item against the parent menu's options
+          check_name = menu_item[0] if isinstance(menu_item, tuple) else str(menu_item)
           parent = getattr(handler, 'parent_menu', None)
-          if parent and config.menu_system:
+          if parent and config.menu_system and isinstance(check_name, str):
             mc = config.menu_system[parent]
-            if mc and mc.options and menu_item not in mc.options:
+            if mc and mc.options and check_name not in mc.options:
               from logger import log as _log
               _log.warning("Module '%s' received unknown menu_item '%s' (parent menu '%s')",
-                           mod_name, menu_item, parent)
+                           mod_name, check_name, parent)
         if mod_name in _modules:
           r = await _modules[mod_name].run(user, dest_conf, menu_item)
           if not hasattr(r, 'next_destination'):
@@ -946,6 +984,18 @@ async def do_destination(user, destination, menu_item=null):
     r.next_destination = Destinations.main
   if not hasattr(r, 'next_menu_item'):
     r.next_menu_item = null
+  # If module returned null destination, go back to the source menu (or main if none)
+  if r.next_destination is null or r.next_destination is None:
+    from menu import MenuNode
+    source = getattr(user, '_source_menu', None)
+    if source and isinstance(source, MenuNode):
+      r.next_destination = source
+    else:
+      r.next_destination = Destinations.main
+    r.next_menu_item = null
+  else:
+    # Module chose a specific destination — clear source menu
+    user._source_menu = None
   return r
 
 
@@ -956,6 +1006,17 @@ async def user_director(user, next_destination, menu_item=null):
   3. If allowed, calls do_destination to run it
   4. If the destination errors, finds a safe fallback
   Returns RetVals with next_destination set for the next iteration."""
+
+  # If destination is a MenuNode (sub-menu), render it directly
+  from menu import MenuNode
+  if isinstance(next_destination, MenuNode):
+    user._source_menu = next_destination  # remember where we are
+    r = await _menu.do_menu(user, next_destination)
+    if not hasattr(r, 'next_destination'):
+      r.next_destination = Destinations.main
+    if not hasattr(r, 'next_menu_item'):
+      r.next_menu_item = null
+    return r
 
   dest_name = getattr(next_destination, 'dest_name', None)
 
@@ -989,16 +1050,23 @@ async def user_director(user, next_destination, menu_item=null):
                      next_destination=fallback, next_menu_item=null)
 
   # Reset mouse reporting and colors before each destination (in case previous one didn't clean up)
-  user.writer.write("\x1b[?1000l")
+  user.writer.write("\x1b[?1002l\x1b[?1000l")
   user.mouse_reporting = False
   ansi_color(user, drain=True)
 
   # Access granted — run the destination
+  from logger import log as _log
+  _log.debug("User '%s' -> %s%s", getattr(user, 'handle', '?'), dest_name or '?',
+             f" (item={menu_item})" if menu_item and menu_item is not null else "")
   try:
     r = await do_destination(user, next_destination, menu_item)
   except Disconnected:
     raise
-  except Exception:
+  except Exception as _exc:
+    # Check for chat redirect (user accepted a chat invitation)
+    from input_output import ChatRedirect
+    if isinstance(_exc, ChatRedirect):
+      return RetVals(status=success, next_destination=Destinations.oneonone, next_menu_item=null)
     import traceback
     from logger import log as _log
     err_msg = traceback.format_exc()

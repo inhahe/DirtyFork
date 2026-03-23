@@ -305,7 +305,7 @@ async def run(user, destination, menu_item=None):
   tz_letters, tz_hours, tz_mins = _parse_timezone(values["time_zone"] or "")
 
   user_settings = {
-    "encoding": getattr(user, 'encoding', 'cp437'),
+    "encoding": "detect",
     "email": values["email"] or "",
     "sex": values["sex"] or "",
     "age": values["age"] or "",

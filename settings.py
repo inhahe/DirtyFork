@@ -31,7 +31,7 @@ BOOL = "bool"  # boolean select — defaults to ["yes", "no"], stored as True/Fa
 # List fields:    (key, label, width, height, LIST)
 SETTINGS_LAYOUT = [
   [("handle",            "Handle: ",        0, 0,                    TEXT)],  # width/max_length 0 = auto from register.yaml
-  [("encoding",          "Encoding: ",      ["cp437", "utf-8"],      SELECT),
+  [("encoding",          "Encoding: ",      ["detect", "cp437", "utf-8"], SELECT),
    ("time_zone",         "Time zone: ",     11, 10,                  TEXT)],
   [("start_destination", "Start at: ",      30, 50,                  TEXT)],
   [("email",             "Email: ",         40, 100,                 TEXT),
@@ -44,9 +44,9 @@ SETTINGS_LAYOUT = [
    ("public_location",   "Public? ",                                 BOOL)],
   # Bio is edited via a separate full-screen editor (Edit Bio button)
   [("allow_door_popups", "Door popups: ",                            BOOL)],
-  [("allow_pages",       "Allow pages: ",                            BOOL)],
+  # allow_pages and allow_chat are added manually after door_popups (same row, compact)
   [("scroll_step",       "H. scroll step: ",5, 3,                   TEXT)],
-  [("blocked_users",     "Blocked: ",       0, 3,                    LIST)],  # width 0 = auto from handle max_length
+  [("blocked_users",     "Blocked: ",       0, 0,                    LIST)],  # width 0 = auto from handle max_length, height 0 = auto
 ]
 
 # Flat list of all keys in layout order (for mapping field indices to keys)
@@ -57,6 +57,9 @@ for row in SETTINGS_LAYOUT:
     SETTINGS_KEYS.append(item[0])
     if item[-1] == BOOL:
       BOOL_KEYS.add(item[0])
+# These are added manually to the form (same row as door_popups), not in the layout
+BOOL_KEYS.add("allow_pages")
+BOOL_KEYS.add("allow_chat")
 
 
 async def _validate_handle(handle):
@@ -153,6 +156,15 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
   # Handle is stored in DB, not YAML — override with the actual handle
   current["handle"] = target_handle
 
+  # Load manually-placed boolean fields (not in SETTINGS_LAYOUT)
+  for extra_key in ("allow_pages", "allow_chat"):
+    val = target_conf[extra_key] if target_conf else null
+    if val is null or val is None:
+      val = "yes"
+    elif isinstance(val, bool):
+      val = "yes" if val else "no"
+    current[extra_key] = str(val)
+
   inputFields = InputFields(user)
   style_conf = config.input_fields.input_field
 
@@ -226,13 +238,19 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
         # Cap so it doesn't run off screen
         max_width = user.screen_width - user.cur_col - 3  # room for outline + margin
         width = min(width, max_width)
+      # Auto-size height if 0: fill available space minus rows needed below
+      # top outline (1, at cur_row) + bottom outline (1) + past-row gap (1) +
+      # password row (1) + move to buttons (1) + buttons with outline (3) = 8
+      # content starts at cur_row+1, so: height = screen_height - cur_row - 8 + 1
+      if not height:
+        height = max(2, user.screen_height - user.cur_row - 6)
       items = current.get(key, [])
       if isinstance(items, str):
         items = [h.strip() for h in items.split(",") if h.strip()]
       list_field = await inputFields.add_list(items=items, width=width, height=height,
                                   validate=_validate_handle, title=" Blocked Users ")
-      # Move cursor past the list field (outline + content + outline + add row)
-      past_row = list_field.row_offset + list_field.height + (1 if list_field.outline else 0) + 1
+      # Move cursor past the list field (content + outline bottom)
+      past_row = list_field.row_offset + list_field.height + (1 if list_field.outline else 0)
       await ansi_move_deferred(user, row=past_row, col=1, drain=True)
     field_types.append(ftype)
 
@@ -263,7 +281,28 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
                                     validate=_validate_handle)
       field_types.append(ftype2)
 
-    await send(user, cr + lf, drain=False)
+    # Manually add allow_pages and allow_chat on the same row as door_popups
+    if key == "allow_door_popups":
+      last_field = inputFields.fields[-1]
+      gap_col = last_field.col_offset + last_field.width + 2
+      await ansi_move_deferred(user, row=label_row, col=gap_col, drain=True)
+      ansi_color(user, fg=white, bg=black, fg_br=False, bg_br=False)
+      await send(user, "Pages: ", drain=True)
+      pages_idx = len(inputFields.fields)
+      await inputFields.add_select(options=["yes", "no"], value=current.get("allow_pages", "yes"), conf=style_conf)
+      field_types.append(BOOL)
+
+      last_field = inputFields.fields[-1]
+      gap_col = last_field.col_offset + last_field.width + 2
+      await ansi_move_deferred(user, row=label_row, col=gap_col, drain=True)
+      ansi_color(user, fg=white, bg=black, fg_br=False, bg_br=False)
+      await send(user, "Chat: ", drain=True)
+      chat_idx = len(inputFields.fields)
+      await inputFields.add_select(options=["yes", "no"], value=current.get("allow_chat", "yes"), conf=style_conf)
+      field_types.append(BOOL)
+
+    if ftype != LIST:
+      await send(user, cr + lf, drain=False)
 
   # Password fields (not part of layout — stored in DB, not YAML)
   pw_label = "New password: ".rjust(max_left_label)
@@ -329,14 +368,22 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
     return await edit_settings(user, target_handle, return_destination, return_menu_item)
 
   # Read values back from fields
+  # Layout fields are tracked by field_indices (set during creation); manual fields by their indices
   values = {}
+  fi = 0  # field index
   for i, key in enumerate(SETTINGS_KEYS):
-    field = inputFields.fields[i]
-    if field_types[i] == LIST:
-      # ListField: read .items directly as a list
+    field = inputFields.fields[fi]
+    if field_types[fi] == LIST:
       values[key] = list(field.items)
     else:
-      values[key] = r.fields[i].content.strip()
+      values[key] = r.fields[fi].content.strip()
+    fi += 1
+    # Skip the manually-inserted pages/chat fields that follow door_popups
+    if key == "allow_door_popups":
+      values["allow_pages"] = r.fields[fi].content.strip()
+      fi += 1
+      values["allow_chat"] = r.fields[fi].content.strip()
+      fi += 1
 
   # Validate encoding (select field, so value is always valid, just normalize)
   enc = values.get("encoding", "cp437").lower()
@@ -461,9 +508,10 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
   # Apply changes to the live session if the target user is online
   live_user = global_data.users.get(target_handle.lower())
   if live_user:
-    live_user.encoding = enc
-    if is_self:
-      _set_connection_encoding(live_user)
+    if enc != "detect":
+      live_user.encoding = enc
+      if is_self:
+        _set_connection_encoding(live_user)
 
     # Reload config
     try:

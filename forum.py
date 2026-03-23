@@ -700,17 +700,32 @@ async def run(user, destination, menu_item=None):
 
   if not menu_item or menu_item is null:
     await show_message_box(user, "No forum selected.")
-    return RetVals(status=success, next_destination=Destinations.forums, next_menu_item=null)
+    return RetVals(status=success, next_destination=null, next_menu_item=null)
 
-  forum_name = menu_item if isinstance(menu_item, str) else str(menu_item)
+  # menu_item is a tuple: (forum_name,) or (forum_name, action)
+  if isinstance(menu_item, tuple):
+    forum_name = str(menu_item[0])
+    action = str(menu_item[1]).lower() if len(menu_item) > 1 else None
+  else:
+    forum_name = str(menu_item)
+    action = None
 
   con = _get_db()
   try:
     forum_id = _get_or_create_forum(con, forum_name)
-    await _forum_action_menu(user, forum_name, forum_id, con)
+    if action:
+      # Jump directly to the action (from /j or sub-menu)
+      if action in ("new", "new posts"):
+        await _new_posts(user, con, forum_id, forum_name)
+      elif action in ("compose",):
+        await _compose_post(user, con, forum_id)
+      elif action in ("search",):
+        await _search_posts(user, con, forum_id, forum_name)
+    else:
+      await _forum_action_menu(user, forum_name, forum_id, con)
   except Disconnected:
     log.info("User disconnected from forum %s", forum_name)
   finally:
     con.close()
 
-  return RetVals(status=success, next_destination=Destinations.forums, next_menu_item=null)
+  return RetVals(status=success, next_destination=null, next_menu_item=null)

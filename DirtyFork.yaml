@@ -122,6 +122,7 @@ destinations:
     max_nodes: 20
   teleconference:
     type: module
+    # log: teleconference.log  # uncomment to log all teleconference messages
   messages:
     type: menu
   message:
@@ -142,6 +143,10 @@ destinations:
   sysop_module:
     type: module
     white_keys: [sysop]
+  help:
+    type: module
+  oneonone:
+    type: module
   bbsinfo:
     type: module
   user_info:
@@ -157,7 +162,6 @@ destinations:
   doors:
     type: menu
     white_keys: [doors]
-    black_keys: [banned]
 
 forum_list: &forum_list
   General: null
@@ -175,6 +179,9 @@ menu_system:
     white_keys: []
     black_keys: []
     options:
+      Help:
+        target: help
+        type: module
       Messages:
         target: messages
         type: menu
@@ -188,16 +195,9 @@ menu_system:
       Forums:
         target: forums
         type: menu
-      Edit Forums:
-        target: edit_forums
-        type: menu
-        white_keys: [sysop]
       File Library:
         target: files
         type: menu
-      About:
-        target: bbsinfo
-        type: module
       Lookup:
         target: user_info
         type: module
@@ -210,19 +210,25 @@ menu_system:
       Settings:
         target: settings
         type: module
+      About:
+        target: bbsinfo
+        type: module
       Sysop:
         target: sysop
         type: menu
         white_keys: [sysop]
   forums:
     option_defaults:
-      target: forum
-    options:
-      <<: *forum_list
-  edit_forums:
-    option_defaults:
-      target: forum
-      action: edit
+      options:
+        option_defaults:
+          target: forum
+          menu_item: [.., .]   # (forum_name, action_name) — .. = parent, . = self
+        New Posts:
+          action: new
+        Compose:
+          action: compose
+        Search:
+          action: search
     options:
       <<: *forum_list
   doors:

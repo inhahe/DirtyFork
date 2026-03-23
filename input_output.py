@@ -48,13 +48,16 @@ async def send(user, message, word_wrap=False, drain=False):
         user.cur_col = min(user.cur_col+1, user.screen_width)
       else:
         if user.cur_col==user.screen_width:
-          if user.cur_wrap:
-            if user.cur_row==user.screen_height:
-              user.writer.write(cr+lf)
-              emu_scroll(user)
-            else:
-              user.cur_row += 1
-            user.cur_col = 1
+          # After writing to the last column, the cursor position is ambiguous:
+          # deferred-wrap terminals keep cursor at col 80, immediate-wrap terminals
+          # move to col 1 of the next row. We track as wrapped (col 1, next row)
+          # and set a flag so ansi_move_2 uses absolute positioning next time.
+          if user.cur_row==user.screen_height:
+            emu_scroll(user)
+          else:
+            user.cur_row += 1
+          user.cur_col = 1
+          user._wrap_ambiguous = True
         else:
           user.cur_col += 1
   # Keep new_row/new_col in sync so the next send() doesn't reposition backwards
@@ -158,6 +161,7 @@ async def ansi_move(user, row, col, drain=False):
   user.writer.write(f"\x1b[{row};{col}H")
   user.cur_row = user.new_row = row
   user.cur_col = user.new_col = col
+  user._wrap_ambiguous = False
   if drain:
     await user.writer.drain()
 
@@ -208,6 +212,23 @@ async def ansi_move_deferred(user, row=None, col=None, drain=False): # we have t
     await ansi_move_2(user, drain)
 
 async def ansi_move_2(user, drain=False):
+  # After writing to the last column, cursor position is ambiguous between terminal
+  # types (deferred vs immediate wrap). Force absolute positioning to be safe.
+  if user._wrap_ambiguous:
+    user._wrap_ambiguous = False
+    if user.cur_row != user.new_row or user.cur_col != user.new_col:
+      user.cur_row = min(user.new_row, user.screen_height)
+      user.cur_col = min(user.new_col, user.screen_width)
+      user.writer.write(f"\x1b[{user.cur_row};{user.cur_col}H")
+      if drain:
+        await user.writer.drain()
+      return
+    # Position matches — but still ambiguous, so send absolute anyway
+    user.writer.write(f"\x1b[{user.cur_row};{user.cur_col}H")
+    if drain:
+      await user.writer.drain()
+    return
+
   if user.cur_row != user.new_row and user.cur_col != user.new_col:
     user.cur_row = min(user.new_row, user.screen_height)
     user.cur_col = min(user.new_col, user.screen_width)
@@ -308,6 +329,7 @@ async def ansi_cls(user, fg=None, bg=None, fg_br=None, bg_br=None):
   emu_clear(user)
   user.cur_row = user.new_row = 1
   user.cur_col = user.new_col = 1
+  user._wrap_ambiguous = False
   await user.writer.drain()
 
 async def ansi_del_to_end(user, drain=False):
@@ -415,8 +437,27 @@ async def _get_input_key(user):
       if len(combined)==1:
         return combined
 
+class ChatRedirect(Exception):
+  """Raised when a user accepts a chat invitation and needs to be redirected."""
+  pass
+
 async def _drain_popup_queue(user):
-  """Show any queued popups. Called from the user's own input loop to avoid reader conflicts."""
+  """Show any queued popups and handle chat invitations.
+  Called from the user's own input loop to avoid reader conflicts."""
+  # Check for chat redirect (user accepted invitation, needs to go to oneonone)
+  if getattr(user, '_chat_redirect', None):
+    user._chat_redirect = None
+    raise ChatRedirect()
+
+  # Handle chat invitation if pending
+  inv = getattr(user, '_chat_invitation', None)
+  if inv and not user._in_popup:
+    from oneonone import _handle_invitation
+    accepted = await _handle_invitation(user)
+    if accepted:
+      # The invitation handler said yes — now redirect
+      raise ChatRedirect()
+
   if not user.popup_queue or user._in_popup or user.in_door:
     return
   user._in_popup = True
