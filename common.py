@@ -1079,6 +1079,9 @@ async def user_director(user, next_destination, menu_item=null):
     r = await do_destination(user, next_destination, menu_item)
   except Disconnected:
     raise
+  except (OSError, ConnectionError, EOFError):
+    # Connection dropped — treat as a clean disconnect, no error popup.
+    raise Disconnected()
   except Exception as _exc:
     import traceback
     from logger import log as _log

@@ -476,6 +476,13 @@ async def pop_screen(user):
     return
   snap = stack.pop()
 
+  # Clear the live stars active list BEFORE ansi_cls fires the post-cls
+  # hook. Otherwise the hook would repaint chat-session stars onto the
+  # freshly-cleared screen, and the snapshot redraw below skips default
+  # cells, leaving those chat-state stars orphaned and stuck.
+  if hasattr(user, '_stars_active') and user._stars_active is not None:
+    user._stars_active.clear()
+
   await ansi_cls(user)
   prev_wrap = getattr(user, 'cur_wrap', True)
   ansi_wrap(user, False)
@@ -606,6 +613,12 @@ async def _get_input_key(user):
     r = check(combined)
     if r:
       user.cur_input_code = ""
+      # Per-terminal remap of byte 0x7f. Default key map has \x7f → back
+      # (Unix convention: Backspace key sends DEL byte, Delete key sends
+      # ESC[3~). CP437 terminals like SyncTERM follow the IBM PC convention
+      # where \x7f IS the Delete key (Backspace sends \x08).
+      if combined == "\x7f" and getattr(user, 'encoding', 'cp437') == 'cp437':
+        return delete
       return r
     if check_partial(combined):
       user.cur_input_code = combined

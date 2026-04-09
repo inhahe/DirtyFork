@@ -41,6 +41,59 @@ class Block:
     self.level = level  # nesting level (0 = user's text, 1 = "> ", 2 = ">> ", etc.)
 
 
+# ---------------------------------------------------------------------------
+# Word/Space token model used by Line and the word-wrap engine.
+# A line's text is conceptually a sequence of Word and Space tokens. Editing
+# code still mutates line.text (the canonical source of truth); tokens are
+# computed from text on demand and cached on text identity.
+# ---------------------------------------------------------------------------
+
+class Word:
+  __slots__ = ('text',)
+  def __init__(self, text):
+    self.text = text  # never empty, never contains spaces
+
+  def __len__(self):
+    return len(self.text)
+
+  def __repr__(self):
+    return f"Word({self.text!r})"
+
+
+class Space:
+  __slots__ = ('count',)
+  def __init__(self, count):
+    self.count = count  # number of consecutive space chars (>=1)
+
+  def __len__(self):
+    return self.count
+
+  def __repr__(self):
+    return f"Space({self.count})"
+
+
+def _tokenize(text):
+  """Split a plain text string into a list of Word and Space tokens.
+  Preserves all characters and order; ''.join(tok-text for tok in result) == text."""
+  tokens = []
+  i = 0
+  n = len(text)
+  while i < n:
+    if text[i] == ' ':
+      j = i + 1
+      while j < n and text[j] == ' ':
+        j += 1
+      tokens.append(Space(j - i))
+      i = j
+    else:
+      j = i + 1
+      while j < n and text[j] != ' ':
+        j += 1
+      tokens.append(Word(text[i:j]))
+      i = j
+  return tokens
+
+
 def _word_wrap_lines(text, width):
   """Simple word wrap for display-only text. Returns a list of lines.
   Shared logic with InputField's word wrap but without the token/index machinery."""
@@ -1214,21 +1267,300 @@ class InputFields:
 
 
 class Line:
-  """One logical line of content."""
-  __slots__ = ('text', 'level')
+  """One logical line of content. Stores a list of Word/Space tokens as the
+  canonical model. Text representation is derived lazily and cached.
+
+  All edit operations (insert_char, delete_char, etc.) manipulate the token
+  list directly, merging adjacent same-type tokens and splitting on type
+  boundaries as needed. The cached text is invalidated on every mutation."""
+  __slots__ = ('_tokens', 'level', '_cached_text')
+
   def __init__(self, text="", level=0):
-    self.text = text
+    self._tokens = _tokenize(text)
     self.level = level
+    self._cached_text = text
+
+  # ---- Text representation (derived) ----
+
+  @property
+  def text(self):
+    """Derived plain-text representation, cached. Reading this is cheap;
+    writing it retokenizes the entire line."""
+    if self._cached_text is None:
+      parts = []
+      for tok in self._tokens:
+        if isinstance(tok, Word):
+          parts.append(tok.text)
+        else:
+          parts.append(' ' * tok.count)
+      self._cached_text = ''.join(parts)
+    return self._cached_text
+
+  @text.setter
+  def text(self, new_text):
+    self._tokens = _tokenize(new_text)
+    self._cached_text = new_text
+
+  def get_tokens(self):
+    return self._tokens
+
+  def __len__(self):
+    return sum(len(t) for t in self._tokens)
+
+  # ---- Token-based edit operations ----
+
+  def _invalidate_text(self):
+    self._cached_text = None
+
+  def _merge_adjacent(self, idx):
+    """If tokens at idx and idx+1 are the same type, merge them. Then check
+    idx-1 and idx for the same. Used after a deletion to keep the invariant
+    that adjacent tokens are different types."""
+    # Forward merge (idx and idx+1)
+    if 0 <= idx < len(self._tokens) - 1:
+      a, b = self._tokens[idx], self._tokens[idx + 1]
+      if isinstance(a, Word) and isinstance(b, Word):
+        a.text += b.text
+        del self._tokens[idx + 1]
+      elif isinstance(a, Space) and isinstance(b, Space):
+        a.count += b.count
+        del self._tokens[idx + 1]
+    # Backward merge (idx-1 and idx)
+    if 0 < idx < len(self._tokens):
+      a, b = self._tokens[idx - 1], self._tokens[idx]
+      if isinstance(a, Word) and isinstance(b, Word):
+        a.text += b.text
+        del self._tokens[idx]
+      elif isinstance(a, Space) and isinstance(b, Space):
+        a.count += b.count
+        del self._tokens[idx]
+
+  def _find_token(self, col):
+    """Find (index, offset, token) for the given character column. If col is
+    past the end, returns (len(tokens), 0, None)."""
+    pos = 0
+    for i, tok in enumerate(self._tokens):
+      tlen = len(tok)
+      if col < pos + tlen:
+        return i, col - pos, tok
+      pos += tlen
+    return len(self._tokens), 0, None
+
+  def insert_char(self, col, ch):
+    """Insert a single character at the given column. Splits and merges
+    tokens as needed to maintain the invariant that no two adjacent tokens
+    are the same type."""
+    self._invalidate_text()
+    is_space = (ch == ' ')
+    pos = 0
+    for i, tok in enumerate(self._tokens):
+      tlen = len(tok)
+      if col <= pos + tlen:
+        offset = col - pos
+        if is_space and isinstance(tok, Space):
+          tok.count += 1
+          return
+        if not is_space and isinstance(tok, Word):
+          tok.text = tok.text[:offset] + ch + tok.text[offset:]
+          return
+        # Different type from the token we landed in.
+        if offset == 0:
+          # At the START of this token — try extending the previous one
+          if i > 0:
+            prev = self._tokens[i - 1]
+            if is_space and isinstance(prev, Space):
+              prev.count += 1
+              return
+            if not is_space and isinstance(prev, Word):
+              prev.text += ch
+              return
+          # Insert a new token before this one
+          self._tokens.insert(i, Space(1) if is_space else Word(ch))
+          return
+        if offset == tlen:
+          # At the END of this token — try extending the next one
+          if i + 1 < len(self._tokens):
+            nxt = self._tokens[i + 1]
+            if is_space and isinstance(nxt, Space):
+              nxt.count += 1
+              return
+            if not is_space and isinstance(nxt, Word):
+              nxt.text = ch + nxt.text
+              return
+          self._tokens.insert(i + 1, Space(1) if is_space else Word(ch))
+          return
+        # Inside a token of the opposite type — split it
+        if isinstance(tok, Word):
+          left = Word(tok.text[:offset])
+          right = Word(tok.text[offset:])
+          self._tokens[i] = left
+          self._tokens.insert(i + 1, Space(1))
+          self._tokens.insert(i + 2, right)
+        else:
+          self._tokens[i] = Space(offset)
+          self._tokens.insert(i + 1, Word(ch))
+          self._tokens.insert(i + 2, Space(tlen - offset))
+        return
+      pos += tlen
+    # col is at or past the end — append
+    if self._tokens:
+      last = self._tokens[-1]
+      if is_space and isinstance(last, Space):
+        last.count += 1
+        return
+      if not is_space and isinstance(last, Word):
+        last.text += ch
+        return
+    self._tokens.append(Space(1) if is_space else Word(ch))
+
+  def delete_char(self, col):
+    """Delete a single character at the given column. Removes empty tokens
+    and merges any newly-adjacent same-type tokens."""
+    self._invalidate_text()
+    pos = 0
+    for i, tok in enumerate(self._tokens):
+      tlen = len(tok)
+      if col < pos + tlen:
+        offset = col - pos
+        if isinstance(tok, Word):
+          tok.text = tok.text[:offset] + tok.text[offset + 1:]
+          if not tok.text:
+            del self._tokens[i]
+            self._merge_adjacent(i - 1 if i > 0 else 0)
+        else:
+          tok.count -= 1
+          if tok.count == 0:
+            del self._tokens[i]
+            self._merge_adjacent(i - 1 if i > 0 else 0)
+        return
+      pos += tlen
+
+  def insert_text(self, col, text):
+    """Insert a multi-character string at the given column. Cheaply
+    implemented as: derive text, splice, retokenize."""
+    if not text:
+      return
+    cur = self.text
+    new = cur[:col] + text + cur[col:]
+    self.text = new  # uses setter, retokenizes
+
+  def split_at(self, col):
+    """Split this line at the given column. After this call, this line
+    contains everything up to col; returns the text after col as a string
+    (caller is responsible for creating the new Line)."""
+    cur = self.text
+    after = cur[col:]
+    self.text = cur[:col]
+    return after
+
+  def append_text(self, text):
+    """Append text to the end of this line."""
+    if not text:
+      return
+    self.text = self.text + text
 
 
 class DisplayRow:
-  """One row on screen. A logical line may span multiple display rows."""
-  __slots__ = ('line_index', 'start_col', 'end_col', 'margin_prefix')
-  def __init__(self, line_index, start_col, end_col, margin_prefix=""):
+  """One row on screen. A logical line may span multiple display rows.
+  start_col/end_col are positions within the logical line's text. The
+  trim_trailing field marks how many characters at the end of the visible
+  slice are trailing spaces consumed by a wrap (rendered as fill, not text)."""
+  __slots__ = ('line_index', 'start_col', 'end_col', 'margin_prefix', 'trim_trailing')
+  def __init__(self, line_index, start_col, end_col, margin_prefix="", trim_trailing=0):
     self.line_index = line_index
     self.start_col = start_col
     self.end_col = end_col
     self.margin_prefix = margin_prefix
+    self.trim_trailing = trim_trailing
+
+
+def _wrap_line_to_rows(line, li, usable, prefix):
+  """Token-based word-wrap. Walks the Word/Space tokens of `line` and emits
+  DisplayRow objects, each spanning at most `usable` visible chars.
+
+  Space-at-wrap rule: when a Space token straddles the wrap boundary, exactly
+  one space is consumed by the wrap. The remaining spaces in the run stay on
+  whichever side of the wrap they fell on. So 'hello world' wrapping at 5
+  becomes 'hello' / 'world' (1 space consumed); 'hello  world' becomes
+  'hello ' / 'world' (1 of 2 spaces consumed, 1 remains as trailing on row 1)."""
+  tokens = line.get_tokens()
+  rows = []
+
+  if not tokens:
+    rows.append(DisplayRow(li, 0, 0, prefix))
+    return rows
+
+  cur_start = 0       # text col where current row begins
+  cur_pos = 0         # text col where current row's content currently ends
+  cur_width = 0       # visible chars in current row so far
+  ti = 0              # token index
+
+  while ti < len(tokens):
+    tok = tokens[ti]
+    tok_len = len(tok)
+
+    if isinstance(tok, Word):
+      if cur_width + tok_len <= usable:
+        # Word fits entirely on the current row
+        cur_pos += tok_len
+        cur_width += tok_len
+        ti += 1
+      elif cur_width == 0:
+        # Word is wider than the entire usable area — hard-break it.
+        # Emit a row containing the first `usable` chars of this word.
+        rows.append(DisplayRow(li, cur_start, cur_start + usable, prefix))
+        cur_start += usable
+        cur_pos = cur_start
+        cur_width = 0
+        # Replace this token with a smaller Word containing the remainder.
+        # We don't mutate tokens (cached), so we synthesize and continue.
+        remaining = tok.text[usable:]
+        tokens = tokens[:ti] + [Word(remaining)] + tokens[ti+1:]
+        # Stay on same ti — process the remainder next iteration
+      else:
+        # Word doesn't fit — wrap before it. If the current row ends with
+        # a space, that space is "consumed" by the wrap (single space at
+        # a wrap is invisible; multi-space runs lose one to the wrap).
+        end_col = cur_pos
+        if end_col > cur_start and line.text[end_col - 1] == ' ':
+          end_col -= 1
+        rows.append(DisplayRow(li, cur_start, end_col, prefix))
+        cur_start = cur_pos  # next row starts after the unconsumed text
+        cur_width = 0
+        # Don't advance ti — re-process the word on the new row
+
+    else:
+      # Space token. Try to fit it on the current row.
+      if cur_width + tok_len <= usable:
+        # Fits entirely
+        cur_pos += tok_len
+        cur_width += tok_len
+        ti += 1
+      else:
+        # Space straddles the wrap boundary. Consume what fits on the
+        # current row PLUS one extra space (the wrap-consumed one), then
+        # the rest goes to the next row.
+        fit_on_row = usable - cur_width  # spaces that fit visibly on this row
+        spaces_consumed_by_wrap = 1
+        spaces_remaining = tok_len - fit_on_row - spaces_consumed_by_wrap
+
+        # Extend current row to cover the spaces that fit
+        cur_pos += fit_on_row
+        # Emit the current row
+        rows.append(DisplayRow(li, cur_start, cur_pos, prefix))
+        # The wrap-consumed space advances cur_pos but isn't drawn
+        cur_pos += spaces_consumed_by_wrap
+        cur_start = cur_pos
+        cur_width = 0
+        if spaces_remaining > 0:
+          # Leftover spaces become leading spaces on the new row.
+          cur_pos += spaces_remaining
+          cur_width = spaces_remaining
+        ti += 1
+
+  # Emit final row (always emit even if empty, so the cursor has a row)
+  rows.append(DisplayRow(li, cur_start, cur_pos, prefix))
+  return rows
 
 
 class InputField:
@@ -1431,7 +1763,7 @@ class InputField:
   # ---- Display row computation ----
 
   def _compute_display_rows(self):
-    """Recompute self.display_rows from self.lines."""
+    """Recompute self.display_rows from self.lines using token-based wrap."""
     rows = []
     for li, line in enumerate(self.lines):
       prefix = self._margin_prefix(line.level)
@@ -1440,28 +1772,7 @@ class InputField:
         usable = (self.width if self.no_cursor_margin else self.width - 1) - mw
         if usable <= 0:
           usable = 1
-        text = line.text
-        if not text:
-          rows.append(DisplayRow(li, 0, 0, prefix))
-        else:
-          pos = 0
-          while pos < len(text):
-            # Find how much fits in usable_width
-            if pos + usable >= len(text):
-              # Rest fits on one row
-              rows.append(DisplayRow(li, pos, len(text), prefix))
-              break
-            # Find last space within the usable width for word boundary
-            chunk_end = pos + usable
-            space_pos = text.rfind(" ", pos, chunk_end)
-            if space_pos > pos:
-              # Split at the space; the space itself is consumed (not printed)
-              rows.append(DisplayRow(li, pos, space_pos, prefix))
-              pos = space_pos + 1  # skip the space
-            else:
-              # No space found — hard break at usable width
-              rows.append(DisplayRow(li, pos, chunk_end, prefix))
-              pos = chunk_end
+        rows.extend(_wrap_line_to_rows(line, li, usable, prefix))
       else:
         # No word wrap: one display row per line
         rows.append(DisplayRow(li, 0, len(line.text), prefix))
@@ -1621,6 +1932,96 @@ class InputField:
 
     if need_nowrap:
       ansi_wrap(self.user, True)
+
+  async def _draw_line_tail(self, dri, from_col):
+    """Draw the visible portion of one display row's text starting from
+    `from_col` (a column within line.text), then fill the rest of the row
+    with fill chars. Used by single-char edits to avoid a full field
+    redraw. Non-word-wrap mode only — caller must verify."""
+    screen_row = self.row_offset + dri - self.scroll_offset
+    if screen_row < self.row_offset or screen_row >= self.row_offset + self.height:
+      return  # off screen
+    dr = self.display_rows[dri]
+    line = self.lines[dr.line_index]
+    mw = len(dr.margin_prefix)
+    usable = self.width if self.no_cursor_margin else self.width - 1
+
+    need_nowrap = (self.col_offset + self.width - 1 >= self.user.screen_width)
+    if need_nowrap:
+      ansi_wrap(self.user, False)
+
+    h = self.h_scroll
+    text_start = max(from_col, h)
+    # Position within the field where the text starts
+    field_offset = mw + (text_start - h)
+    if field_offset >= usable:
+      # Nothing visible to draw — just fill the row's tail
+      visible_text = ""
+      remaining_in_field = max(0, usable - field_offset)
+    else:
+      remaining_in_field = usable - field_offset
+      visible_text = line.text[text_start:text_start + remaining_in_field]
+      if self.mask_char:
+        visible_text = self.mask_char * len(visible_text)
+
+    screen_col = self.col_offset + field_offset
+    await ansi_move(self.user, screen_row, screen_col)
+
+    if visible_text:
+      ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
+      await send(self.user, visible_text, drain=False)
+
+    # Fill the remaining width up to the right edge of the usable area.
+    fill_count = remaining_in_field - len(visible_text)
+    if fill_count > 0:
+      ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br,
+                 bg=self.fill_bg, bg_br=self.fill_bg_br)
+      await send(self.user, self.fill * fill_count, drain=False)
+
+    if need_nowrap:
+      ansi_wrap(self.user, True)
+
+  def _snapshot_display_rows(self):
+    """Capture a lightweight snapshot of the current display_rows for
+    later comparison by the wrap fast path."""
+    return [(dr.line_index, dr.start_col, dr.end_col, dr.margin_prefix)
+            for dr in self.display_rows]
+
+  async def _redraw_changed_rows(self, old_snapshot):
+    """Redraw display rows that differ from `old_snapshot`. Walks both lists
+    in lock-step, redraws the first changed row and everything below it
+    (within the visible area). If the new rows are longer/shorter, the
+    extra rows are drawn or blanked. Used by the wrap fast path after an
+    edit so unchanged rows aren't touched (so ambient stars aren't disturbed)."""
+    # Find first changed display row index
+    new_len = len(self.display_rows)
+    old_len = len(old_snapshot)
+    first_changed = min(new_len, old_len)
+    for i in range(min(new_len, old_len)):
+      dr = self.display_rows[i]
+      old = old_snapshot[i]
+      if (dr.line_index, dr.start_col, dr.end_col, dr.margin_prefix) != old:
+        first_changed = i
+        break
+    if new_len != old_len and first_changed >= min(new_len, old_len):
+      first_changed = min(new_len, old_len)
+    # If nothing changed, no draws.
+    if first_changed >= max(new_len, old_len):
+      return
+    # Redraw from first_changed to end of visible
+    visible_end = min(self.scroll_offset + self.height, new_len)
+    for i in range(max(first_changed, self.scroll_offset), visible_end):
+      await self._draw_line(i)
+    # Blank any rows that were visible before but no longer exist
+    if old_len > new_len:
+      blank_start = max(new_len - self.scroll_offset, 0)
+      blank_end = min(old_len - self.scroll_offset, self.height)
+      for vr in range(blank_start, blank_end):
+        screen_row = self.row_offset + vr
+        await ansi_move(self.user, screen_row, self.col_offset)
+        ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br,
+                   bg=self.fill_bg, bg_br=self.fill_bg_br)
+        await send(self.user, self.fill * self.width, drain=False)
 
   async def _draw_visible(self):
     """Redraw all visible display rows and position cursor."""
@@ -1889,6 +2290,22 @@ class InputField:
         await self._handle_end()
         continue
 
+      # -- Ctrl+Home / Ctrl+End: jump to top / bottom of all text --
+      if key == ctrl_home:
+        await self._handle_ctrl_home()
+        continue
+      if key == ctrl_end:
+        await self._handle_ctrl_end()
+        continue
+
+      # -- PageUp / PageDown --
+      if key == pgup:
+        await self._handle_pgup()
+        continue
+      if key == pgdn:
+        await self._handle_pgdn()
+        continue
+
       # -- Delete / Backspace --
       if key == delete:
         if self.allow_edit:
@@ -1972,12 +2389,10 @@ class InputField:
       if self.max_lines and len(self.lines) >= self.max_lines:
         return None
 
-      # Split line at cursor
-      before = line.text[:self.cursor_col]
-      after_text = line.text[self.cursor_col:]
+      # Split line at cursor: this line keeps the prefix; the suffix becomes a new line
+      split_col = self.cursor_col  # save for potential undo
       new_level = line.level
-
-      line.text = before
+      after_text = line.split_at(self.cursor_col)
       self.lines.insert(self.cursor_line + 1, Line(after_text, new_level))
 
       # Move cursor to start of new line
@@ -1989,11 +2404,11 @@ class InputField:
 
       # Check max_lines with word wrap (reflow might exceed limit)
       if self.max_lines and len(self.lines) > self.max_lines:
-        # Undo
+        # Undo: rejoin the two lines
         self.cursor_line -= 1
-        self.lines[self.cursor_line].text = before + after_text
+        self.lines[self.cursor_line].append_text(after_text)
         del self.lines[self.cursor_line + 1]
-        self.cursor_col = len(before)
+        self.cursor_col = split_col
         self._compute_display_rows()
         self._ensure_cursor_visible()
         return None
@@ -2075,10 +2490,9 @@ class InputField:
       self.cursor_line = prev_dr.line_index
       # Try to maintain the column
       target_col = prev_dr.start_col + self._updown_col
-      max_col = min(prev_dr.end_col, len(self.lines[self.cursor_line].text))
+      max_col = min(prev_dr.end_col, len(self.lines[self.cursor_line]))
       self.cursor_col = min(target_col, max_col)
       self.cursor_col = max(prev_dr.start_col, self.cursor_col)
-      self._ensure_cursor_visible()
       await self._redraw_or_reposition()
     else:
       if self.height == 1 and self.parent:
@@ -2096,10 +2510,9 @@ class InputField:
       next_dr = self.display_rows[dri + 1]
       self.cursor_line = next_dr.line_index
       target_col = next_dr.start_col + self._updown_col
-      max_col = min(next_dr.end_col, len(self.lines[self.cursor_line].text))
+      max_col = min(next_dr.end_col, len(self.lines[self.cursor_line]))
       self.cursor_col = min(target_col, max_col)
       self.cursor_col = max(next_dr.start_col, self.cursor_col)
-      self._ensure_cursor_visible()
       await self._redraw_or_reposition()
     else:
       if self.height == 1 and self.parent:
@@ -2142,18 +2555,102 @@ class InputField:
     else:
       await self._position_cursor(drain=True)
 
+  async def _handle_ctrl_home(self):
+    """Jump to the very top of the field (line 0, col 0)."""
+    if self.insert_mode:
+      await self._hide_insert_cursor()
+    old_offset = self.scroll_offset
+    self.cursor_line = 0
+    self.cursor_col = 0
+    self._updown_col = 0
+    self.h_scroll = 0
+    self._ensure_cursor_visible()
+    if self.scroll_offset != old_offset:
+      await self._draw_visible()
+    else:
+      await self._position_cursor(drain=True)
+
+  async def _handle_ctrl_end(self):
+    """Jump to the very bottom of the field (last line, end of last line)."""
+    if self.insert_mode:
+      await self._hide_insert_cursor()
+    old_offset = self.scroll_offset
+    self.cursor_line = len(self.lines) - 1
+    self.cursor_col = len(self.lines[self.cursor_line])
+    self._set_updown_col()
+    self._ensure_h_scroll()
+    self._ensure_cursor_visible()
+    if self.scroll_offset != old_offset:
+      await self._draw_visible()
+    else:
+      await self._position_cursor(drain=True)
+
+  async def _handle_pgup(self):
+    """Move cursor up by one screen height; scroll the field by the same amount."""
+    if self.insert_mode:
+      await self._hide_insert_cursor()
+    old_offset = self.scroll_offset
+    dri = self._display_row_for_cursor()
+    new_dri = max(0, dri - self.height)
+    new_dr = self.display_rows[new_dri]
+    self.cursor_line = new_dr.line_index
+    target_col = new_dr.start_col + self._updown_col
+    max_col = min(new_dr.end_col, len(self.lines[self.cursor_line]))
+    self.cursor_col = max(new_dr.start_col, min(target_col, max_col))
+    self._ensure_cursor_visible()
+    if self.scroll_offset != old_offset:
+      await self._draw_visible()
+    else:
+      await self._position_cursor(drain=True)
+
+  async def _handle_pgdn(self):
+    """Move cursor down by one screen height; scroll the field by the same amount."""
+    if self.insert_mode:
+      await self._hide_insert_cursor()
+    old_offset = self.scroll_offset
+    dri = self._display_row_for_cursor()
+    new_dri = min(len(self.display_rows) - 1, dri + self.height)
+    new_dr = self.display_rows[new_dri]
+    self.cursor_line = new_dr.line_index
+    target_col = new_dr.start_col + self._updown_col
+    max_col = min(new_dr.end_col, len(self.lines[self.cursor_line]))
+    self.cursor_col = max(new_dr.start_col, min(target_col, max_col))
+    self._ensure_cursor_visible()
+    if self.scroll_offset != old_offset:
+      await self._draw_visible()
+    else:
+      await self._position_cursor(drain=True)
+
   async def _handle_delete(self):
     line = self.lines[self.cursor_line]
     if self.cursor_col < len(line.text):
       # Delete char at cursor
-      line.text = line.text[:self.cursor_col] + line.text[self.cursor_col + 1:]
+      saved_h_scroll = self.h_scroll
+      saved_scroll_offset = self.scroll_offset
+      saved_display_rows_len = len(self.display_rows)
+      old_snapshot = self._snapshot_display_rows() if self.word_wrap else None
+      line.delete_char(self.cursor_col)
       self._compute_display_rows()
       self._ensure_cursor_visible()
+      # Fast path (non-wrap): write only the changed tail of this row
+      if (not self.word_wrap
+          and self.h_scroll == saved_h_scroll
+          and self.scroll_offset == saved_scroll_offset
+          and len(self.display_rows) == saved_display_rows_len):
+        dri = self._display_row_for_cursor()
+        await self._draw_line_tail(dri, self.cursor_col)
+        await self._position_cursor(drain=True)
+        return
+      # Fast path (word-wrap): redraw only display rows whose content changed
+      if self.word_wrap and self.scroll_offset == saved_scroll_offset:
+        await self._redraw_changed_rows(old_snapshot)
+        await self._position_cursor(drain=True)
+        return
       await self._draw_visible()
     elif self.cursor_line + 1 < len(self.lines):
       # Join with next line
       next_line = self.lines[self.cursor_line + 1]
-      line.text += next_line.text
+      line.append_text(next_line.text)
       del self.lines[self.cursor_line + 1]
       self._compute_display_rows()
       self._ensure_cursor_visible()
@@ -2172,18 +2669,36 @@ class InputField:
 
     if self.cursor_col > 0:
       # Delete char before cursor
-      line.text = line.text[:self.cursor_col - 1] + line.text[self.cursor_col:]
+      saved_h_scroll = self.h_scroll
+      saved_scroll_offset = self.scroll_offset
+      saved_display_rows_len = len(self.display_rows)
+      old_snapshot = self._snapshot_display_rows() if self.word_wrap else None
       self.cursor_col -= 1
+      line.delete_char(self.cursor_col)
       self._compute_display_rows()
       self._set_updown_col()
       self._ensure_cursor_visible()
       self._ensure_h_scroll()
+      # Fast path (non-wrap): same as delete-in-middle
+      if (not self.word_wrap
+          and self.h_scroll == saved_h_scroll
+          and self.scroll_offset == saved_scroll_offset
+          and len(self.display_rows) == saved_display_rows_len):
+        dri = self._display_row_for_cursor()
+        await self._draw_line_tail(dri, self.cursor_col)
+        await self._position_cursor(drain=True)
+        return
+      # Fast path (word-wrap): redraw only display rows whose content changed
+      if self.word_wrap and self.scroll_offset == saved_scroll_offset:
+        await self._redraw_changed_rows(old_snapshot)
+        await self._position_cursor(drain=True)
+        return
       await self._draw_visible()
     elif self.cursor_line > 0:
       # Join with previous line
       prev_line = self.lines[self.cursor_line - 1]
-      join_col = len(prev_line.text)
-      prev_line.text += line.text
+      join_col = len(prev_line)
+      prev_line.append_text(line.text)
       del self.lines[self.cursor_line]
       self.cursor_line -= 1
       self.cursor_col = join_col
@@ -2200,12 +2715,21 @@ class InputField:
 
     line = self.lines[self.cursor_line]
 
-    if self.insert_mode and self.cursor_col < len(line.text):
-      # Overwrite mode
-      line.text = line.text[:self.cursor_col] + ch + line.text[self.cursor_col + 1:]
+    # Capture state needed to decide if we can use the fast (minimal-write) path
+    was_at_end = (self.cursor_col == len(line.text))
+    was_overwrite = self.insert_mode and self.cursor_col < len(line.text)
+    saved_h_scroll = self.h_scroll
+    saved_scroll_offset = self.scroll_offset
+    saved_display_rows_len = len(self.display_rows) if hasattr(self, 'display_rows') else 0
+    old_snapshot = self._snapshot_display_rows() if (self.word_wrap and hasattr(self, 'display_rows')) else None
+
+    if self.insert_mode and self.cursor_col < len(line):
+      # Overwrite mode: delete the char at cursor, then insert the new one
+      line.delete_char(self.cursor_col)
+      line.insert_char(self.cursor_col, ch)
     else:
       # Insert
-      line.text = line.text[:self.cursor_col] + ch + line.text[self.cursor_col:]
+      line.insert_char(self.cursor_col, ch)
 
     self.cursor_col += 1
 
@@ -2224,6 +2748,43 @@ class InputField:
 
     self._ensure_cursor_visible()
     self._ensure_h_scroll()
+
+    # Fast path: minimal-write update instead of full field redraw.
+    # Eligible if no word wrap, no scroll change, and the display row
+    # count didn't change.
+    fast_eligible = (
+      not self.word_wrap
+      and self.h_scroll == saved_h_scroll
+      and self.scroll_offset == saved_scroll_offset
+      and len(self.display_rows) == saved_display_rows_len
+    )
+    if fast_eligible:
+      dri = self._display_row_for_cursor()
+      if was_at_end or was_overwrite:
+        # Single cell write: just put the new char at its position.
+        sr, sc = self._cursor_to_screen()
+        need_nowrap = (self.col_offset + self.width - 1 >= self.user.screen_width)
+        if need_nowrap:
+          ansi_wrap(self.user, False)
+        await ansi_move(self.user, sr, sc - 1)
+        ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
+        await send(self.user, self.mask_char if self.mask_char else ch, drain=False)
+        if need_nowrap:
+          ansi_wrap(self.user, True)
+      else:
+        # Insert in middle: rewrite this line from the new char's column
+        # onward, shifting the rest of the line right by one.
+        await self._draw_line_tail(dri, self.cursor_col - 1)
+      await self._position_cursor(drain=drain)
+      return
+
+    # Word-wrap fast path: redraw only display rows whose content actually
+    # changed after the rewrap.
+    if self.word_wrap and self.scroll_offset == saved_scroll_offset and old_snapshot is not None:
+      await self._redraw_changed_rows(old_snapshot)
+      await self._position_cursor(drain=drain)
+      return
+
     await self._draw_visible()
 
   async def _handle_batch(self, chars):
@@ -2241,12 +2802,11 @@ class InputField:
       batch_str = batch_str[:available]
 
     if self.insert_mode:
-      # Overwrite
-      before = line.text[:self.cursor_col]
-      after = line.text[self.cursor_col + len(batch_str):]
-      line.text = before + batch_str + after
+      # Overwrite — replace len(batch_str) chars starting at cursor
+      cur = line.text
+      line.text = cur[:self.cursor_col] + batch_str + cur[self.cursor_col + len(batch_str):]
     else:
-      line.text = line.text[:self.cursor_col] + batch_str + line.text[self.cursor_col:]
+      line.insert_text(self.cursor_col, batch_str)
 
     self.cursor_col += len(batch_str)
 
