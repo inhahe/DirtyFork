@@ -512,8 +512,19 @@ async def _process_command(user, line):
         if not args or not args.strip():
             await _send_error(user, "Usage: /chat <user>")
             return False
-        # Return special value to exit teleconference and route to oneonone
-        return ('chat', args.strip())
+        # Run chat as an overlay so teleconference is restored on exit.
+        from oneonone import chat_with
+        from input_output import push_screen, pop_screen
+        await push_screen(user)
+        try:
+            err = await chat_with(user, args.strip())
+        finally:
+            try:
+                await pop_screen(user)
+            except Exception:
+                pass
+        if err:
+            await _send_error(user, err)
 
     elif cmd == "/clear":
         # Clear the chat area by overwriting each line
@@ -665,12 +676,6 @@ async def run(user, destination, menu_item=None):
                         cmd_result = await _process_command(user, line)
                         if cmd_result is True:
                             break  # /quit
-                        if isinstance(cmd_result, tuple) and cmd_result[0] == 'chat':
-                            # Exit teleconference and route to oneonone
-                            from common import Destinations
-                            return RetVals(status=success,
-                                           next_destination=Destinations.oneonone,
-                                           next_menu_item=(cmd_result[1],))
                     else:
                         current_key = user_channels.get(user, channel_key)
                         await _send_chat(user, current_key, line)

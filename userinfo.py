@@ -171,7 +171,7 @@ async def show_user_info(user, target_handle):
     lines.append(bio)
 
   text = "\n".join(lines)
-  await show_message_box(user, text, title=f" {handle} ",
+  await show_message_box(user, text, title=handle,
                          fg=white, fg_br=True, bg=black,
                          outline_fg=cyan, outline_fg_br=True)
   return None
@@ -228,7 +228,7 @@ async def run_user_info(user, dest_conf, menu_item=None):
 
   err = await show_user_info(user, handle)
   if err:
-    await show_message_box(user, err, title=" Not Found ",
+    await show_message_box(user, err, title="Not Found",
                            fg=white, fg_br=True, bg=black,
                            outline_fg=yellow, outline_fg_br=True)
   return RetVals(status=success, next_destination=Destinations.main)
@@ -243,7 +243,7 @@ async def run_whos_online(user, dest_conf, menu_item=None):
 
   if not users:
     await show_message_box(user, "No users currently online.",
-                           title=" Who's Online ",
+                           title="Who's Online",
                            fg=white, fg_br=True, bg=black,
                            outline_fg=green, outline_fg_br=True)
     return RetVals(status=success, next_destination=Destinations.main)
@@ -278,7 +278,7 @@ async def run_whos_online(user, dest_conf, menu_item=None):
   lines.append(f"{len(users)} user(s) online")
 
   text = "\n".join(lines)
-  await show_message_box(user, text, title=" Who's Online ",
+  await show_message_box(user, text, title="Who's Online",
                          fg=white, fg_br=True, bg=black,
                          outline_fg=green, outline_fg_br=True,
                          word_wrap=False)
@@ -320,7 +320,7 @@ async def run_user_list(user, dest_conf, menu_item=None):
 
   if not rows:
     msg = f"No users matching '{search}'." if search else "No registered users."
-    await show_message_box(user, msg, title=" User List ",
+    await show_message_box(user, msg, title="User List",
                            fg=white, fg_br=True, bg=black,
                            outline_fg=green, outline_fg_br=True)
     return RetVals(status=success, next_destination=Destinations.main)
@@ -357,7 +357,7 @@ async def run_user_list(user, dest_conf, menu_item=None):
   lines.append(f"{len(rows)} user(s)" + (f" matching '{search}'" if search else ""))
 
   text = "\n".join(lines)
-  title = f" Users: {search} " if search else " User List "
+  title = f"Users: {search}" if search else "User List"
   await show_message_box(user, text, title=title,
                          fg=white, fg_br=True, bg=black,
                          outline_fg=green, outline_fg_br=True,

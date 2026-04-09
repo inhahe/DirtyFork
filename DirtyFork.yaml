@@ -159,6 +159,8 @@ destinations:
     type: func
   forums:
     type: menu
+  all_forums:
+    type: menu
   doors:
     type: menu
     white_keys: [doors]
@@ -230,7 +232,17 @@ menu_system:
         Search:
           action: search
     options:
+      All Forums:
+        target: all_forums
       <<: *forum_list
+  all_forums:
+    options:
+      New Posts:
+        target: forum
+        menu_item: ["*", new]
+      Search:
+        target: forum
+        menu_item: ["*", search]
   doors:
     option_defaults:
       target: door

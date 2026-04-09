@@ -238,16 +238,23 @@ async def user_loop(reader, writer, connection_type="telnet"):
       r = await Destinations.login(user)
     except Disconnected:
       raise
+    except (OSError, ConnectionError, EOFError):
+      # Connection dropped mid-login — treat as disconnect, no popup
+      log.info("Connection lost during login (%s)", connection_type)
+      raise Disconnected()
     except Exception:
       log.error("Error during login: %s", traceback.format_exc())
-      from input_fields import show_message_box
-      if user.screen and user.screen_width:
-        await show_message_box(user, traceback.format_exc(), title="Login Error",
-                               fg=white, fg_br=True, bg=black,
-                               outline_fg=red, outline_fg_br=True,
-                               word_wrap=False, max_width=user.screen_width - 4)
-      else:
-        await send(user, "\r\nAn error occurred during login.\r\n")
+      try:
+        from input_fields import show_message_box
+        if user.screen and user.screen_width:
+          await show_message_box(user, traceback.format_exc(), title="Login Error",
+                                 fg=white, fg_br=True, bg=black,
+                                 outline_fg=red, outline_fg_br=True,
+                                 word_wrap=False, max_width=user.screen_width - 4)
+        else:
+          await send(user, "\r\nAn error occurred during login.\r\n")
+      except (OSError, ConnectionError, EOFError, Disconnected):
+        pass  # connection already broken
       return
     if r.status != success:
       if user.screen and user.screen_width:
@@ -262,6 +269,10 @@ async def user_loop(reader, writer, connection_type="telnet"):
     next_destination = r.next_destination if r.next_destination else Destinations.main
     next_menu_item = getattr(r, 'next_menu_item', null)
 
+    # Start ambient star animation as a background task
+    from stars import stars_loop
+    user._stars_task = asyncio.create_task(stars_loop(user))
+
     # Main destination loop — user_director handles key checks, errors, fallbacks, and history
     while True:
       r = await user_director(user, next_destination, next_menu_item)
@@ -269,9 +280,20 @@ async def user_loop(reader, writer, connection_type="telnet"):
       next_menu_item = getattr(r, 'next_menu_item', null)
   except Disconnected:
     pass
+  except (OSError, ConnectionError, EOFError) as e:
+    log.info("Connection lost for user %s: %s", getattr(user, 'handle', '?'), e)
   except Exception as e:
     log.error("Unhandled error for user %s: %s: %s\n%s", getattr(user, 'handle', '?'), type(e).__name__, e, traceback.format_exc())
   finally:
+    # Stop ambient stars background task
+    stars_task = getattr(user, '_stars_task', None)
+    if stars_task:
+      stars_task.cancel()
+      try:
+        await stars_task
+      except (asyncio.CancelledError, Exception):
+        pass
+
     handle = getattr(user, 'handle', None)
     if handle:
       log.info("User '%s' logged off (%s)", handle, connection_type)
@@ -356,8 +378,22 @@ from common import shutdown_bbs, shutdown_event
 # ---------------------------------------------------------------------------
 
 async def main():
+  # Suppress noisy ConnectionResetError tracebacks from the Windows
+  # ProactorEventLoop's connection-lost cleanup (Python doesn't catch the
+  # shutdown() call when the remote side has already closed). This is an
+  # asyncio internal bug; the connection is already dead by the time it fires.
+  loop = asyncio.get_event_loop()
+  def _quiet_exception_handler(loop, context):
+    exc = context.get('exception')
+    if isinstance(exc, ConnectionResetError):
+      return  # silently drop
+    if isinstance(exc, OSError) and getattr(exc, 'winerror', None) in (10053, 10054, 64, 121):
+      return  # silently drop other "connection went away" variants
+    loop.default_exception_handler(context)
+  loop.set_exception_handler(_quiet_exception_handler)
+
   # Telnet server
-  server = await telnetlib3.create_server(host=config.hostname, port=config.port, shell=user_loop, encoding='cp437', timeout=0)
+  server = await telnetlib3.create_server(host=config.hostname, port=config.port, shell=user_loop, encoding='cp437', encoding_errors='surrogateescape', timeout=0)
   log.info("BBS listening on %s:%s", config.hostname, config.port)
 
   # Modem listeners (one task per port)
@@ -383,7 +419,10 @@ async def main():
   # Wait for shutdown signal or server close
   await shutdown_event.wait()
   server.close()
-  await server.wait_closed()
+  try:
+    await asyncio.wait_for(server.wait_closed(), timeout=3.0)
+  except asyncio.TimeoutError:
+    log.info("Server close timed out — forcing exit.")
   log.info("BBS stopped.")
 
 if __name__=="__main__":

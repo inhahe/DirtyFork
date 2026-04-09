@@ -72,7 +72,7 @@ async def run(user, dest_conf, menu_item=None):
 
   bbs_name = str(config.bbs_name) if config.bbs_name else "DirtyFork BBS"
 
-  await show_message_box(user, HELP_TEXT, title=f" {bbs_name} Help ",
+  await show_message_box(user, HELP_TEXT, title=f"{bbs_name} Help",
                          fg=white, fg_br=True, bg=black,
                          outline_fg=cyan, outline_fg_br=True,
                          word_wrap=False)

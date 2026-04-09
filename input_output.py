@@ -1,25 +1,75 @@
 # todo: change fg, bg, fg_br, bg_br to fg, fg_br, bg, bg_br
 
+import asyncio as _asyncio_for_lock
 import time
 
 from definitions import *
 from keyboard_codes import *
 
+
+class ReentrantAsyncLock:
+  """A reentrant async lock — same task can re-acquire without deadlock.
+  Used as the per-user write lock so background tasks (e.g. ambient stars)
+  can safely call locking I/O helpers from inside their own held lock."""
+  def __init__(self):
+    self._lock = _asyncio_for_lock.Lock()
+    self._owner = None
+    self._depth = 0
+
+  async def acquire(self):
+    task = _asyncio_for_lock.current_task()
+    if self._owner is task:
+      self._depth += 1
+      return
+    await self._lock.acquire()
+    self._owner = task
+    self._depth = 1
+
+  def release(self):
+    self._depth -= 1
+    if self._depth == 0:
+      self._owner = None
+      self._lock.release()
+
+  async def __aenter__(self):
+    await self.acquire()
+    return self
+
+  async def __aexit__(self, exc_type, exc, tb):
+    self.release()
+
+def _blank_cell(user):
+  """A space cell using the user's current color attrs — matches what the
+  terminal actually shows when CLS or scroll fills with the current bg."""
+  return Char(' ', user.cur_fg, user.cur_fg_br, user.cur_bg, user.cur_bg_br)
+
 def emu_scroll(user): # todo: add scroll region paramaters?
   del user.screen[0]
-  user.screen.append([Char() for _ in range(user.screen_width)])
+  user.screen.append([_blank_cell(user) for _ in range(user.screen_width)])
 
 def emu_clear(user):
   for x in range(len(user.screen)):
-    user.screen[x] = [Char() for col in range(user.screen_width)]
+    user.screen[x] = [_blank_cell(user) for col in range(user.screen_width)]
   user.cur_col = user.cur_row = 1
 
 async def send(user, message, word_wrap=False, drain=False):
+  async with user.write_lock:
+    await _send_locked(user, message, drain)
+
+async def _send_locked(user, message, drain):
   if message or drain:
     await ansi_move_2(user)
     await ansi_color_2(user)
   if message:
-    user.writer.write(message)
+    # On UTF-8 terminals, remap CP437 low-byte glyph code points (e.g.
+    # '\x0f' → '☼') so callers can keep using the byte form and have the
+    # visible glyph appear regardless of encoding. Only the bytes going
+    # to the wire are translated; the screen model below still stores the
+    # original characters so callers can match against the byte form.
+    if getattr(user, 'encoding', 'cp437') == 'utf-8':
+      user.writer.write(message.translate(CP437_LOW_TO_UTF8_TRANSLATION))
+    else:
+      user.writer.write(message)
   if drain:
     await user.writer.drain()
   for char in message:
@@ -158,26 +208,29 @@ def ansi_wrap(user, wrap=True):
 async def ansi_move(user, row, col, drain=False):
   """Move cursor using absolute positioning. Always sends ESC[row;colH
   regardless of current tracked state, and syncs all tracking."""
-  user.writer.write(f"\x1b[{row};{col}H")
-  user.cur_row = user.new_row = row
-  user.cur_col = user.new_col = col
-  user._wrap_ambiguous = False
-  if drain:
-    await user.writer.drain()
+  async with user.write_lock:
+    user.writer.write(f"\x1b[{row};{col}H")
+    user.cur_row = user.new_row = row
+    user.cur_col = user.new_col = col
+    user._wrap_ambiguous = False
+    if drain:
+      await user.writer.drain()
 
 async def ansi_hide_cursor(user, drain=False):
-  if getattr(user, 'cur_show_cursor', True):
-    user.cur_show_cursor = False
-    user.writer.write("\x1b[?25l")
-    if drain:
-      await user.writer.drain()
+  async with user.write_lock:
+    if getattr(user, 'cur_show_cursor', True):
+      user.cur_show_cursor = False
+      user.writer.write("\x1b[?25l")
+      if drain:
+        await user.writer.drain()
 
 async def ansi_show_cursor(user, drain=False):
-  if not getattr(user, 'cur_show_cursor', True):
-    user.cur_show_cursor = True
-    user.writer.write("\x1b[?25h")
-    if drain:
-      await user.writer.drain()
+  async with user.write_lock:
+    if not getattr(user, 'cur_show_cursor', True):
+      user.cur_show_cursor = True
+      user.writer.write("\x1b[?25h")
+      if drain:
+        await user.writer.drain()
 
 async def ansi_left(user, val=1, drain=False):
   assert val >= 0
@@ -212,6 +265,10 @@ async def ansi_move_deferred(user, row=None, col=None, drain=False): # we have t
     await ansi_move_2(user, drain)
 
 async def ansi_move_2(user, drain=False):
+  async with user.write_lock:
+    await _ansi_move_2_locked(user, drain)
+
+async def _ansi_move_2_locked(user, drain=False):
   # After writing to the last column, cursor position is ambiguous between terminal
   # types (deferred vs immediate wrap). Force absolute positioning to be safe.
   if user._wrap_ambiguous:
@@ -319,48 +376,168 @@ def _ansi_color_write(user):
       user.writer.write(f"\x1b[{';'.join(codes)}m")
 
 async def ansi_color_2(user, drain=False):
-  _ansi_color_write(user)
-  if drain:
-    await user.writer.drain()
+  async with user.write_lock:
+    _ansi_color_write(user)
+    if drain:
+      await user.writer.drain()
 
 async def ansi_cls(user, fg=None, bg=None, fg_br=None, bg_br=None):
-  ansi_color(user, fg=fg, fg_br=fg_br, bg=bg, bg_br=bg_br, drain=True)
-  user.writer.write("\x1b[2J\x1b[H")
-  emu_clear(user)
-  user.cur_row = user.new_row = 1
-  user.cur_col = user.new_col = 1
-  user._wrap_ambiguous = False
-  await user.writer.drain()
+  async with user.write_lock:
+    ansi_color(user, fg=fg, fg_br=fg_br, bg=bg, bg_br=bg_br, drain=True)
+    user.writer.write("\x1b[2J\x1b[H")
+    emu_clear(user)
+    user.cur_row = user.new_row = 1
+    user.cur_col = user.new_col = 1
+    user._wrap_ambiguous = False
+    await user.writer.drain()
+    # Let any registered post-cls hook (e.g. ambient stars) repaint itself
+    hook = getattr(user, '_post_cls_hook', None)
+    if hook is not None:
+      try:
+        await hook(user)
+      except Exception:
+        pass
 
 async def ansi_del_to_end(user, drain=False):
-  user.writer.write("\x1b[J")
-  user.screen[user.cur_row] = user.screen[user.cur_row][:user.cur_col]
-  if drain:
-    await user.writer.drain()
+  async with user.write_lock:
+    user.writer.write("\x1b[J")
+    user.screen[user.cur_row] = user.screen[user.cur_row][:user.cur_col]
+    if drain:
+      await user.writer.drain()
 
 async def ansi_set_region(user, top_row=None, bottom_row=None, drain=False):
-  if user.scroll_region_top != top_row or user.scroll_region_bottom != bottom_row:
-    if bottom_row is None:
-      if top_row is None:
-        user.writer.write("\x1b[r")
+  async with user.write_lock:
+    if user.scroll_region_top != top_row or user.scroll_region_bottom != bottom_row:
+      if bottom_row is None:
+        if top_row is None:
+          user.writer.write("\x1b[r")
+        else:
+          user.writer.write(f"\x1b{top_row}r")
       else:
-        user.writer.write(f"\x1b{top_row}r")
-    else:
-      user.writer.write(f"\x1b[{top_row};{bottom_row}r")
-    user.scroll_region_top = top_row
-    user.scroll_region_bottom = bottom_row
-    if drain:
-      await user.writer.drain()
+        user.writer.write(f"\x1b[{top_row};{bottom_row}r")
+      user.scroll_region_top = top_row
+      user.scroll_region_bottom = bottom_row
+      if drain:
+        await user.writer.drain()
 
 async def ansi_set_region_strict(user, value=True, drain=False):
-  if value != user.scroll_region_strict:
-    user.scroll_region_strict = value
-    if value:
-      user.writer.write(f"\x1b[?6h")
-    else:
-      user.writer.write(f"\x1b[?7h")
-    if drain:
-      await user.writer.drain()
+  async with user.write_lock:
+    if value != user.scroll_region_strict:
+      user.scroll_region_strict = value
+      if value:
+        user.writer.write(f"\x1b[?6h")
+      else:
+        user.writer.write(f"\x1b[?7h")
+      if drain:
+        await user.writer.drain()
+
+# ---------------------------------------------------------------------------
+# Screen save/restore stack — used for overlay activities (e.g. /chat) that
+# take over the screen and need to restore the underlying activity afterward.
+# ---------------------------------------------------------------------------
+
+def _snapshot_screen(user):
+  """Capture full screen state for later restore."""
+  screen_copy = None
+  if user.screen:
+    screen_copy = [
+      [Char(c.char, c.fg, c.fg_br, c.bg, c.bg_br) for c in row]
+      for row in user.screen
+    ]
+  return {
+    'screen': screen_copy,
+    'width': user.screen_width,
+    'height': user.screen_height,
+    'cur_row': user.cur_row,
+    'cur_col': user.cur_col,
+    'new_row': user.new_row,
+    'new_col': user.new_col,
+    'cur_fg': user.cur_fg, 'cur_fg_br': user.cur_fg_br,
+    'cur_bg': user.cur_bg, 'cur_bg_br': user.cur_bg_br,
+    'cur_wrap': getattr(user, 'cur_wrap', True),
+    'mouse_reporting': getattr(user, 'mouse_reporting', False),
+    'stars_active': list(getattr(user, '_stars_active', None) or []),
+  }
+
+async def push_screen(user):
+  """Save the current screen onto user.screen_stack so it can be restored
+  later by pop_screen. Use this before an overlay activity (e.g. /chat) takes
+  over the terminal."""
+  if not hasattr(user, 'screen_stack') or user.screen_stack is None:
+    user.screen_stack = []
+  user.screen_stack.append(_snapshot_screen(user))
+
+async def pop_screen(user):
+  """Restore the most recently push_screen'd screen state. Repaints every
+  cell from the snapshot, then restores cursor position, color, wrap, and
+  mouse reporting state. No-op if the stack is empty."""
+  stack = getattr(user, 'screen_stack', None)
+  if not stack:
+    return
+  snap = stack.pop()
+
+  await ansi_cls(user)
+  prev_wrap = getattr(user, 'cur_wrap', True)
+  ansi_wrap(user, False)
+
+  if snap['screen']:
+    height = len(snap['screen'])
+    width = len(snap['screen'][0]) if height else 0
+    for r_idx in range(height):
+      row = snap['screen'][r_idx]
+      c_idx = 0
+      while c_idx < width:
+        ch = row[c_idx]
+        # Skip default cells (already cleared)
+        if ch.char == ' ' and ch.fg == 7 and not ch.fg_br and ch.bg == 0 and not ch.bg_br:
+          c_idx += 1
+          continue
+        # Find a run of cells with identical color attrs
+        run_start = c_idx
+        run_chars = [ch.char]
+        c_idx += 1
+        while c_idx < width:
+          n = row[c_idx]
+          if (n.fg == ch.fg and n.fg_br == ch.fg_br
+              and n.bg == ch.bg and n.bg_br == ch.bg_br):
+            # Stop the run if the next cell is a default-blank — let the
+            # outer loop's skip handle it (saves a redundant write).
+            if (n.char == ' ' and n.fg == 7 and not n.fg_br
+                and n.bg == 0 and not n.bg_br):
+              break
+            run_chars.append(n.char)
+            c_idx += 1
+          else:
+            break
+        # Skip writing the very last cell of the very last row to avoid
+        # the terminal scrolling on auto-wrap.
+        if r_idx == height - 1 and run_start + len(run_chars) >= width:
+          run_chars = run_chars[:-1]
+          if not run_chars:
+            continue
+        ansi_color(user, fg=ch.fg, fg_br=ch.fg_br, bg=ch.bg, bg_br=ch.bg_br)
+        await ansi_move_deferred(user, row=r_idx + 1, col=run_start + 1, drain=False)
+        await send(user, "".join(run_chars), drain=False)
+
+  # Restore wrap, color, mouse, cursor
+  ansi_wrap(user, snap['cur_wrap'])
+  ansi_color(user, fg=snap['cur_fg'], fg_br=snap['cur_fg_br'],
+             bg=snap['cur_bg'], bg_br=snap['cur_bg_br'])
+
+  if snap['mouse_reporting'] and not user.mouse_reporting:
+    user.writer.write("\x1b[?1000h\x1b[?1002h")
+    user.mouse_reporting = True
+  elif not snap['mouse_reporting'] and user.mouse_reporting:
+    user.writer.write("\x1b[?1000l\x1b[?1002l")
+    user.mouse_reporting = False
+
+  await ansi_move(user, snap['cur_row'] or 1, snap['cur_col'] or 1, drain=True)
+
+  # Restore the stars active list so the background animation keeps tracking
+  # the stars that were visible before the overlay.
+  if hasattr(user, '_stars_active') and user._stars_active is not None:
+    user._stars_active[:] = snap.get('stars_active', [])
+
 
 class _PopupInterrupt(Exception):
   """Raised when a popup arrives and needs to interrupt the current read."""
@@ -437,40 +614,59 @@ async def _get_input_key(user):
       if len(combined)==1:
         return combined
 
-class ChatRedirect(Exception):
-  """Raised when a user accepts a chat invitation and needs to be redirected."""
-  pass
+# Popup display mode:
+#   True  — popups stack on top of each other and on top of chat invitations
+#           (newer ones interrupt older ones, dismissed in reverse order)
+#   False — popups queue and only one shows at a time; chat invitations wait
+#           for the current popup to be dismissed
+# Set to False to revert to the original queue-only behavior.
+POPUP_STACK = True
 
 async def _drain_popup_queue(user):
   """Show any queued popups and handle chat invitations.
   Called from the user's own input loop to avoid reader conflicts."""
-  # Check for chat redirect (user accepted invitation, needs to go to oneonone)
-  if getattr(user, '_chat_redirect', None):
-    user._chat_redirect = None
-    raise ChatRedirect()
-
-  # Handle chat invitation if pending
-  inv = getattr(user, '_chat_invitation', None)
-  if inv and not user._in_popup:
-    from oneonone import _handle_invitation
-    accepted = await _handle_invitation(user)
-    if accepted:
-      # The invitation handler said yes — now redirect
-      raise ChatRedirect()
-
-  if not user.popup_queue or user._in_popup or user.in_door:
+  if user.in_door:
     return
-  user._in_popup = True
+
+  # Handle chat invitation if pending. In queue mode, suppress while another
+  # popup is showing; in stack mode, always show (it stacks on top).
+  inv = getattr(user, '_chat_invitation', None)
+  if inv and (POPUP_STACK or not user._in_popup):
+    from oneonone import _handle_invitation, run_invitee_overlay
+    # Snapshot the underlying activity's screen and cursor BEFORE the
+    # invitation prompt overwrites the bottom row, so a later pop_screen
+    # restores the cursor to where the activity actually had it.
+    await push_screen(user)
+    try:
+      accepted = await _handle_invitation(user)
+      if accepted:
+        # Run the invitee's chat session inline as an overlay.
+        await run_invitee_overlay(user)
+    finally:
+      await pop_screen(user)
+    return
+
+  if not user.popup_queue:
+    return
+  if not POPUP_STACK and user._in_popup:
+    return
+
+  if not POPUP_STACK:
+    user._in_popup = True
   try:
     from input_fields import show_message_box
     while user.popup_queue:
       kwargs = user.popup_queue.pop(0)
-      r = await show_message_box(user, queued_count=len(user.popup_queue), **kwargs)
+      # In stack mode, queued popups become stacked popups, so the
+      # "Abort All (n)" hint is meaningless — suppress it.
+      qc = 0 if POPUP_STACK else len(user.popup_queue)
+      r = await show_message_box(user, queued_count=qc, **kwargs)
       if r == "abort":
         user.popup_queue.clear()
         break
   finally:
-    user._in_popup = False
+    if not POPUP_STACK:
+      user._in_popup = False
 
 async def get_input_key(user, window_size=0.02, char_threshold=2, batch_pause=0.03):
   while True:

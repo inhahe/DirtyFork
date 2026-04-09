@@ -74,7 +74,8 @@ def _word_wrap_lines(text, width):
 async def show_message_box(user, text, row=null, col=null, width=null, max_width=null, height=null,
                            fg=white, fg_br=False, bg=black, bg_br=False,
                            outline_fg=green, outline_fg_br=False, outline_bg=black, outline_bg_br=False,
-                           outline_double=False, title=null, word_wrap=True, queued_count=0):
+                           outline_double=False, title=null, word_wrap=True, queued_count=0,
+                           return_key=False):
   """Show a modal, scrollable message box that restores the screen behind it when dismissed.
   Up/Down/PgUp/PgDn to scroll, any other key to dismiss.
   Uses user.screen to restore the background afterward.
@@ -493,6 +494,8 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
       # Abort All
       if queued_count > 0 and isinstance(key, str) and key.lower() == "a":
         result = "abort"
+      elif return_key:
+        result = key
       else:
         result = None
       break

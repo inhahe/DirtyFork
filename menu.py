@@ -62,7 +62,12 @@ def _ensure_menu_tree():
       target = (str(oc.target) if oc and oc.target else opt_name.lower()) if oc else opt_name.lower()
       node.option_names.append(opt_name)
       node.targets[opt_name] = target
-      node.options_info[opt_name] = OptionInfo(target=target, conf=oc)
+      # Read an explicit menu_item template if present on the option config
+      tmpl = None
+      if oc and oc is not null and hasattr(oc, 'menu_item') and oc.menu_item:
+        mi = oc.menu_item
+        tmpl = list(mi) if hasattr(mi, '__iter__') and not isinstance(mi, str) else [str(mi)]
+      node.options_info[opt_name] = OptionInfo(target=target, template=tmpl, conf=oc)
     node.prefixes = _compute_min_prefixes(node.option_names)
     nodes[mn] = node
 
@@ -105,6 +110,21 @@ def _ensure_menu_tree():
     for opt_name in node.option_names:
       if opt_name in node.children:
         continue  # already links to another menu
+
+      # If the option has its own explicit target (i.e. it's a leaf that
+      # routes directly to a module), don't generate a sub-menu for it.
+      own_conf = mc.options[opt_name] if mc.options else null
+      if own_conf and own_conf is not null and hasattr(own_conf, 'target') and own_conf.target:
+        # Override the inherited per-option target so it routes directly.
+        node.targets[opt_name] = str(own_conf.target)
+        # Replace the OptionInfo so user_director sees the leaf's own target/template.
+        own_template = None
+        if hasattr(own_conf, 'menu_item') and own_conf.menu_item:
+          mi = own_conf.menu_item
+          own_template = list(mi) if hasattr(mi, '__iter__') and not isinstance(mi, str) else [str(mi)]
+        node.options_info[opt_name] = OptionInfo(
+          target=str(own_conf.target), template=own_template, conf=own_conf)
+        continue
 
       sub_opts = {k: default_sub[k] for k in sub_keys}
       child_config = Config({'options': Config(sub_opts)})
@@ -1048,17 +1068,29 @@ async def do_menu(user, menu_name_or_node):
         else: error_msg = msg
         continue
 
-      # /chat <user> — start one-on-one chat (routes to oneonone destination)
+      # /chat <user> — run one-on-one chat as an overlay so the menu is
+      # restored when the chat ends.
       if lower.startswith("/chat "):
         rest = option_text.split(" ", 1)
         if len(rest) < 2 or not rest[1].strip():
           if await _err("Usage: /chat <user>"): continue
           else: error_msg = "Usage: /chat <user>"
           continue
-        from common import Destinations as _Dests
-        return RetVals(status=success,
-                       next_destination=_Dests.oneonone,
-                       next_menu_item=(rest[1].strip(),))
+        target_handle = rest[1].strip()
+        from oneonone import chat_with
+        from input_output import push_screen, pop_screen
+        await push_screen(user)
+        try:
+          chat_err = await chat_with(user, target_handle)
+        finally:
+          try:
+            await pop_screen(user)
+          except Exception:
+            pass
+        if chat_err:
+          if await _err(chat_err): continue
+          else: error_msg = chat_err
+        continue
 
       # /jump (or /j) command
       if lower.startswith("/jump ") or lower.startswith("/j "):

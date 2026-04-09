@@ -260,8 +260,10 @@ class User:
     self.popup_queue = []     # queued popups waiting to show (list of kwarg dicts)
     self._in_popup = False    # True while a popup is being displayed
     self._chat_invitation = None  # (from_user, asyncio.Future) when a chat invite is pending
-    self._chat_redirect = None    # set True when user should be routed to oneonone
+    self._chat_session_ready = None  # asyncio.Event set when the inviter has constructed a ChatSession for this user
     self._source_menu = None      # MenuNode the user was in when entering a module
+    from input_output import ReentrantAsyncLock
+    self.write_lock = ReentrantAsyncLock()  # serializes writes to user.writer so background tasks (e.g. ambient stars) can't interleave
 
 line_pos_re = re.compile('\x1b\\[(\\d+);(\\d+)R')
 email_re = re.compile(r'''(?:[a-z0-9!#$%&'*+\x2f=?^_`\x7b-\x7d~\x2d]+(?:\.[a-z0-9!#$%&'*+\x2f=?^_`\x7b-\x7d~\x2d]+)*|"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])*")@(?:(?:[a-z0-9](?:[a-z0-9\x2d]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9\x2d]*[a-z0-9])?|\[(?:(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9]))\.){3}(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9])|[a-z0-9\x2d]*[a-z0-9]:(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21-\x5a\x53-\x7f]|\\\\[\x01-\x09\x0b\x0c\x0e-\x7f])+)\])''')
@@ -708,7 +710,8 @@ def _set_connection_encoding(user):
 # SyncTERM is NOT here because it supports both CP437 and UTF-8.
 _UTF8_TERMINALS = {"xterm", "xterm-256color", "vt100", "vt220", "linux",
                    "rxvt", "screen", "tmux", "iterm2", "alacritty",
-                   "kitty", "wezterm", "foot", "contour", "ghostty"}
+                   "kitty", "wezterm", "foot", "contour", "ghostty",
+                   "putty"}
 _CP437_TERMINALS = {"ansi", "ansi-bbs", "avatar", "pcansi"}
 
 async def detect_terminal(user):
@@ -832,10 +835,23 @@ class _DestinationRegistry:
       password = password_r.content if hasattr(password_r, 'content') else str(password_r)
       r = await check_password(user_in_db, password)
       if r.status == success:
-        # Check for duplicate login
-        if user_in_db["handle"].lower() in global_data.users:
-          await send(user, cr+lf+cr+lf + "You are already logged in from another session." + cr+lf, drain=True)
-          continue
+        # Duplicate login: kick the old session (it may be a dead connection
+        # whose user_loop is still hung in a read)
+        old = global_data.users.get(user_in_db["handle"].lower())
+        if old is not None and old is not user:
+          from logger import log as _log
+          _log.info("Kicking previous session for '%s' on new login", user_in_db["handle"])
+          try:
+            old.writer.write(cr+lf + "*** Disconnected: logged in from another location. ***" + cr+lf)
+          except Exception:
+            pass
+          try:
+            old.writer.close()
+          except Exception:
+            pass
+          # Remove from registry so the new session can take the slot;
+          # the old user_loop's finally will be a no-op for this key.
+          global_data.users.pop(user_in_db["handle"].lower(), None)
         uid = user_in_db["id"] if "id" in user_in_db.keys() else null
         setup_user_session(user, user_in_db["handle"], uid, user_in_db["time_created"])
         if 'banned' in user.keys:
@@ -1050,9 +1066,10 @@ async def user_director(user, next_destination, menu_item=null):
                      next_destination=fallback, next_menu_item=null)
 
   # Reset mouse reporting and colors before each destination (in case previous one didn't clean up)
-  user.writer.write("\x1b[?1002l\x1b[?1000l")
-  user.mouse_reporting = False
-  ansi_color(user, drain=True)
+  async with user.write_lock:
+    user.writer.write("\x1b[?1002l\x1b[?1000l")
+    user.mouse_reporting = False
+    ansi_color(user, drain=True)
 
   # Access granted — run the destination
   from logger import log as _log
@@ -1063,10 +1080,6 @@ async def user_director(user, next_destination, menu_item=null):
   except Disconnected:
     raise
   except Exception as _exc:
-    # Check for chat redirect (user accepted a chat invitation)
-    from input_output import ChatRedirect
-    if isinstance(_exc, ChatRedirect):
-      return RetVals(status=success, next_destination=Destinations.oneonone, next_menu_item=null)
     import traceback
     from logger import log as _log
     err_msg = traceback.format_exc()

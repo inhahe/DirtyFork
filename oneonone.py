@@ -538,38 +538,74 @@ async def send_chat_invitation(from_user, to_handle):
 
 
 async def _handle_invitation(user):
-  """Show chat invitation Y/N prompt. Called from popup drain.
-  If accepted, sets user._chat_partner so user_director can route them."""
+  """Show chat invitation Y/N popup. Called from popup drain.
+  Returns True if accepted, False if declined."""
   inv = getattr(user, '_chat_invitation', None)
   if not inv:
-    return
+    return False
   from_user, future = inv
   user._chat_invitation = None
 
-  from input_output import get_input_key as _gik
-
-  # Show Y/N prompt inline (no message box — just a direct prompt)
-  await ansi_move(user, user.screen_height, 1)
-  ansi_color(user, fg=cyan, fg_br=True, bg=black)
-  await send(user, f"{from_user.handle} wants to chat. Y/N? ", drain=True)
-
+  text = (f"{from_user.handle} wants to chat with you.\n\n"
+          "Press Y to accept, any other key to decline.")
   while True:
-    key = await _gik(user)
-    if isinstance(key, str) and key.lower() == 'y':
-      if not future.done():
-        future.set_result(True)
-      # Clear the prompt
-      await ansi_move(user, user.screen_height, 1)
-      ansi_color(user, fg=white, bg=black)
-      await send(user, " " * user.screen_width, drain=True)
-      return True
-    elif isinstance(key, str) and (key.lower() == 'n' or key == "esc"):
-      if not future.done():
-        future.set_result(False)
-      await ansi_move(user, user.screen_height, 1)
-      ansi_color(user, fg=white, bg=black)
-      await send(user, " " * user.screen_width, drain=True)
-      return False
+    key = await show_message_box(
+      user, text, title="Chat Invitation",
+      fg=white, fg_br=True, bg=black,
+      outline_fg=cyan, outline_fg_br=True,
+      return_key=True,
+    )
+    # Ignore mouse events / non-string keys — re-show the popup
+    if not isinstance(key, str):
+      continue
+    accepted = (key.lower() == 'y')
+    if not future.done():
+      future.set_result(accepted)
+    return accepted
+
+
+async def _run_invitee_session(user, session):
+  """Run the invitee's side of an existing ChatSession. Shared by the
+  legacy destination path and the inline overlay path."""
+  side = 'b' if user is session.user_b else 'a'
+  own_buf = session.buffer_b if side == 'b' else session.buffer_a
+  peer_buf = session.buffer_a if side == 'b' else session.buffer_b
+  my_event = session.event_b if side == 'b' else session.event_a
+  peer_event = session.event_a if side == 'b' else session.event_b
+
+  # Signal the inviter that we've joined
+  session.joined.set()
+
+  await session.setup_screen(user)
+  try:
+    await session._user_loop(user, own_buf, peer_buf, my_event, peer_event, side)
+  except (Disconnected, asyncio.CancelledError):
+    pass
+  finally:
+    session.active = False
+    peer_event.set()  # wake the other user so they notice we left
+
+
+async def run_invitee_overlay(user):
+  """Wait for the inviter to create a ChatSession, then run the invitee
+  side of the chat. The caller is responsible for push_screen / pop_screen
+  around this call so the underlying activity is preserved and restored."""
+  ev = getattr(user, '_chat_session_ready', None)
+  if ev is None:
+    user._chat_session_ready = asyncio.Event()
+    ev = user._chat_session_ready
+  try:
+    await asyncio.wait_for(ev.wait(), timeout=10.0)
+  except asyncio.TimeoutError:
+    log.info("Invitee %s timed out waiting for chat session", getattr(user, 'handle', '?'))
+    return
+  ev.clear()
+
+  session = _pending_sessions.pop(user, None)
+  if not session:
+    return
+
+  await _run_invitee_session(user, session)
 
 
 async def run(user, dest_conf, menu_item=None):
@@ -578,29 +614,6 @@ async def run(user, dest_conf, menu_item=None):
   Otherwise, prompt for a target handle and send an invitation."""
   from common import Destinations, global_data
   from input_fields import InputField
-
-  # Check if this user was invited and has a pending session to join
-  session = _pending_sessions.pop(user, None)
-  if session:
-    # Target user joining — run their side of the chat
-    side = 'b' if user is session.user_b else 'a'
-    own_buf = session.buffer_b if side == 'b' else session.buffer_a
-    peer_buf = session.buffer_a if side == 'b' else session.buffer_b
-    my_event = session.event_b if side == 'b' else session.event_a
-    peer_event = session.event_a if side == 'b' else session.event_b
-
-    # Signal the inviter that we've joined
-    session.joined.set()
-
-    await session.setup_screen(user)
-    try:
-      await session._user_loop(user, own_buf, peer_buf, my_event, peer_event, side)
-    except (Disconnected, asyncio.CancelledError):
-      pass
-    finally:
-      session.active = False
-      peer_event.set()  # wake the other user so they notice we left
-    return RetVals(status=success, next_destination=Destinations.main)
 
   # Inviter flow — prompt for target
   target_handle = None
@@ -622,43 +635,52 @@ async def run(user, dest_conf, menu_item=None):
     if not target_handle:
       return RetVals(status=success, next_destination=Destinations.main)
 
-  # Send invitation
+  err = await chat_with(user, target_handle)
+  if err:
+    await show_message_box(user, err, title="Chat",
+                           fg=white, fg_br=True, bg=black,
+                           outline_fg=red, outline_fg_br=True)
+  return RetVals(status=success, next_destination=Destinations.main)
+
+
+async def chat_with(user, target_handle):
+  """Inviter side of a one-on-one chat. Sends an invitation, runs the chat
+  session if accepted. Returns None on success, or an error string on
+  failure (target offline, declined, timeout, etc.).
+
+  The caller is responsible for push_screen / pop_screen if it wants the
+  underlying activity restored after the chat ends. Suitable for inline
+  use from teleconference, /j, slash commands, etc."""
+  from common import global_data
+
   await ansi_cls(user)
   ansi_color(user, fg=white, bg=black, fg_br=True)
   await send(user, f"Waiting for {target_handle} to accept..." + cr + lf, drain=True)
 
   accepted, reason = await send_chat_invitation(user, target_handle)
   if not accepted:
-    await show_message_box(user, reason, title="Chat",
-                           fg=white, fg_br=True, bg=black,
-                           outline_fg=red, outline_fg_br=True)
-    return RetVals(status=success, next_destination=Destinations.main)
+    return reason
 
-  # Both accepted — create session and register target
   target = global_data.users.get(target_handle.lower())
   if not target:
-    return RetVals(status=success, next_destination=Destinations.main)
+    return f"User '{target_handle}' is no longer online."
 
   session = ChatSession(user, target)
   session.joined = asyncio.Event()
 
-  # Register session for the target user and route them to oneonone
+  # Hand the session off to the invitee, who is parked in
+  # _drain_popup_queue waiting on _chat_session_ready.
   _pending_sessions[target] = session
-  target._chat_redirect = True
-  target.popup_notify.set()  # wake them to notice the redirect
+  if not hasattr(target, '_chat_session_ready') or target._chat_session_ready is None:
+    target._chat_session_ready = asyncio.Event()
+  target._chat_session_ready.set()
 
-  # Wait for the target to join (up to 10 seconds)
   try:
     await asyncio.wait_for(session.joined.wait(), timeout=10.0)
   except asyncio.TimeoutError:
     _pending_sessions.pop(target, None)
-    target._chat_redirect = None
-    await show_message_box(user, f"{target_handle} failed to join the chat.",
-                           title="Chat", fg=white, fg_br=True, bg=black,
-                           outline_fg=red, outline_fg_br=True)
-    return RetVals(status=success, next_destination=Destinations.main)
+    return f"{target_handle} failed to join the chat."
 
-  # Run the inviter's side
   await session.setup_screen(user)
   try:
     await session._user_loop(user, session.buffer_a, session.buffer_b,
@@ -667,6 +689,6 @@ async def run(user, dest_conf, menu_item=None):
     pass
   finally:
     session.active = False
-    session.event_b.set()  # wake target so they notice we left
+    session.event_b.set()
 
-  return RetVals(status=success, next_destination=Destinations.main)
+  return None

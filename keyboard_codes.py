@@ -190,7 +190,7 @@ keyboard_codes = {
   "\x0d": cr,
   "\x0a": lf,
   "\x09": tab,
-  "\x7f": delete,
+  "\x7f": back,
   "\x07": beep,
   "\x03": ctrl_c,
   "\x1b[3~": delete,

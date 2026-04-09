@@ -142,6 +142,9 @@ async def _show_post_list(user, posts, title):
       subj = post.get("subject", "") or ""
       if post.get("reply_to"):
         subj = reply_marker + " " + subj
+      fname = post.get("forum_name")
+      if fname and "All Forums" in title:
+        subj = f"[{fname}] {subj}"
 
       line_text = f"  {status}  {date_str:<17} {from_handle:<16} {subj}"
       padded = line_text[:user.screen_width].ljust(user.screen_width)
@@ -210,6 +213,8 @@ async def _show_post_list(user, posts, title):
     elif key == "\r" or key == "\x0d":
       return posts[selected]
     elif isinstance(key, str) and key.lower() == "q":
+      return None
+    elif key == "esc" or key == "\x1b":
       return None
 
 
@@ -304,7 +309,8 @@ async def _read_post(user, post, posts, post_index, con, forum_id):
     key = r.key if hasattr(r, 'key') else None
 
     if isinstance(key, str) and key.lower() == "r":
-      await _compose_post(user, con, forum_id, reply_to_post=post)
+      reply_forum_id = post.get("forum") if post.get("forum") is not None else forum_id
+      await _compose_post(user, con, reply_forum_id, reply_to_post=post)
       continue
     elif isinstance(key, str) and key.lower() == "n":
       if post_index + 1 < len(posts):
@@ -440,19 +446,24 @@ async def _compose_post(user, con, forum_id, reply_to_post=None):
 # ---------------------------------------------------------------------------
 
 async def _new_posts(user, con, forum_id, forum_name):
-  """Show unread posts in this forum."""
+  """Show unread posts in this forum (or all forums if forum_id is None)."""
   db_cur = con.cursor()
-  db_cur.execute(
-    "SELECT fm.id, fm.from_user, fm.reply_to, fm.subject, fm.message, fm.time_created, "
+  base_sql = (
+    "SELECT fm.id, fm.from_user, fm.reply_to, fm.subject, fm.message, fm.time_created, fm.forum, "
+    "f.name AS forum_name, "
     "u.handle AS from_handle, "
     "CASE WHEN fmr.id IS NOT NULL THEN 1 ELSE 0 END AS is_read "
     "FROM FORUM_MESSAGES fm "
     "JOIN USERS u ON fm.from_user = u.id "
+    "JOIN FORUMS f ON fm.forum = f.id "
     "LEFT JOIN FORUM_MESSAGES_READ fmr ON fmr.message_id = fm.id AND fmr.user_id = ? "
-    "WHERE fm.forum = ? AND fmr.id IS NULL "
-    "ORDER BY fm.time_created DESC",
-    (user.user_id, forum_id)
   )
+  if forum_id is None:
+    db_cur.execute(base_sql + "WHERE fmr.id IS NULL ORDER BY fm.time_created DESC",
+                   (user.user_id,))
+  else:
+    db_cur.execute(base_sql + "WHERE fm.forum = ? AND fmr.id IS NULL ORDER BY fm.time_created DESC",
+                   (user.user_id, forum_id))
   rows = db_cur.fetchall()
 
   posts = [dict(r) for r in rows]
@@ -551,8 +562,11 @@ async def _search_posts(user, con, forum_id, forum_name):
   date_to_text = result.fields[4].content.strip()
 
   # Build query
-  conditions = ["fm.forum = ?"]
-  params = [forum_id]
+  conditions = []
+  params = []
+  if forum_id is not None:
+    conditions.append("fm.forum = ?")
+    params.append(forum_id)
 
   if from_text:
     from_row = _lookup_handle(con, from_text)
@@ -589,17 +603,19 @@ async def _search_posts(user, con, forum_id, forum_name):
       await show_message_box(user, "Invalid 'Date to' format. Use YYYY-MM-DD.")
       return
 
-  where_clause = " AND ".join(conditions)
+  where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
   db_cur = con.cursor()
   db_cur.execute(
-    f"SELECT fm.id, fm.from_user, fm.reply_to, fm.subject, fm.message, fm.time_created, "
+    f"SELECT fm.id, fm.from_user, fm.reply_to, fm.subject, fm.message, fm.time_created, fm.forum, "
+    f"f.name AS forum_name, "
     f"u.handle AS from_handle, "
     f"CASE WHEN fmr.id IS NOT NULL THEN 1 ELSE 0 END AS is_read "
     f"FROM FORUM_MESSAGES fm "
     f"JOIN USERS u ON fm.from_user = u.id "
+    f"JOIN FORUMS f ON fm.forum = f.id "
     f"LEFT JOIN FORUM_MESSAGES_READ fmr ON fmr.message_id = fm.id AND fmr.user_id = ? "
-    f"WHERE {where_clause} "
+    f"{where_clause} "
     f"ORDER BY fm.time_created DESC",
     [user.user_id] + params
   )
@@ -712,7 +728,11 @@ async def run(user, destination, menu_item=None):
 
   con = _get_db()
   try:
-    forum_id = _get_or_create_forum(con, forum_name)
+    if forum_name == "*":
+      forum_id = None
+      forum_name = "All Forums"
+    else:
+      forum_id = _get_or_create_forum(con, forum_name)
     if action:
       # Jump directly to the action (from /j or sub-menu)
       if action in ("new", "new posts"):

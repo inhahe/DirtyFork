@@ -89,7 +89,7 @@ async def run(user, dest_conf, menu_item=None):
   lines.append("Source:       github.com/inhahe/DirtyFork")
 
   text = "\n".join(lines)
-  await show_message_box(user, text, title=f" About {bbs_name} ",
+  await show_message_box(user, text, title=f"About {bbs_name}",
                          fg=white, fg_br=True, bg=black,
                          outline_fg=cyan, outline_fg_br=True)
 
