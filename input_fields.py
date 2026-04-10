@@ -72,6 +72,19 @@ class Space:
     return f"Space({self.count})"
 
 
+class Cell:
+  """One screen cell in the wrap-mode grid. Maps a (grid_row, grid_col)
+  position to the source token + offset that produced it. Margin and fill
+  cells have token=None."""
+  __slots__ = ('char', 'token', 'token_offset', 'line_index', 'col_in_line')
+  def __init__(self, char=' ', token=None, token_offset=0, line_index=-1, col_in_line=-1):
+    self.char = char
+    self.token = token
+    self.token_offset = token_offset
+    self.line_index = line_index
+    self.col_in_line = col_in_line
+
+
 def _tokenize(text):
   """Split a plain text string into a list of Word and Space tokens.
   Preserves all characters and order; ''.join(tok-text for tok in result) == text."""
@@ -1272,13 +1285,15 @@ class Line:
 
   All edit operations (insert_char, delete_char, etc.) manipulate the token
   list directly, merging adjacent same-type tokens and splitting on type
-  boundaries as needed. The cached text is invalidated on every mutation."""
-  __slots__ = ('_tokens', 'level', '_cached_text')
+  boundaries as needed. The cached text is invalidated on every mutation.
+  The total length is cached and maintained incrementally so len(line) is O(1)."""
+  __slots__ = ('_tokens', 'level', '_cached_text', '_length')
 
   def __init__(self, text="", level=0):
     self._tokens = _tokenize(text)
     self.level = level
     self._cached_text = text
+    self._length = len(text)
 
   # ---- Text representation (derived) ----
 
@@ -1300,12 +1315,13 @@ class Line:
   def text(self, new_text):
     self._tokens = _tokenize(new_text)
     self._cached_text = new_text
+    self._length = len(new_text)
 
   def get_tokens(self):
     return self._tokens
 
   def __len__(self):
-    return sum(len(t) for t in self._tokens)
+    return self._length
 
   # ---- Token-based edit operations ----
 
@@ -1351,6 +1367,7 @@ class Line:
     tokens as needed to maintain the invariant that no two adjacent tokens
     are the same type."""
     self._invalidate_text()
+    self._length += 1
     is_space = (ch == ' ')
     pos = 0
     for i, tok in enumerate(self._tokens):
@@ -1416,7 +1433,10 @@ class Line:
   def delete_char(self, col):
     """Delete a single character at the given column. Removes empty tokens
     and merges any newly-adjacent same-type tokens."""
+    if col < 0 or col >= self._length:
+      return
     self._invalidate_text()
+    self._length -= 1
     pos = 0
     for i, tok in enumerate(self._tokens):
       tlen = len(tok)
@@ -1474,93 +1494,153 @@ class DisplayRow:
     self.trim_trailing = trim_trailing
 
 
-def _wrap_line_to_rows(line, li, usable, prefix):
-  """Token-based word-wrap. Walks the Word/Space tokens of `line` and emits
-  DisplayRow objects, each spanning at most `usable` visible chars.
+def _build_grid_for_field(field):
+  """Build a 2D grid of Cell objects representing the wrapped layout of all
+  lines in `field`. Each cell maps a (grid_row, grid_col) screen position
+  to its source token + offset in the line's text. Margin and fill cells
+  have token=None and col_in_line=-1.
 
-  Space-at-wrap rule: when a Space token straddles the wrap boundary, exactly
-  one space is consumed by the wrap. The remaining spaces in the run stay on
-  whichever side of the wrap they fell on. So 'hello world' wrapping at 5
-  becomes 'hello' / 'world' (1 space consumed); 'hello  world' becomes
-  'hello ' / 'world' (1 of 2 spaces consumed, 1 remains as trailing on row 1)."""
-  tokens = line.get_tokens()
-  rows = []
+  Also builds field.line_char_to_grid: per logical line, a list of
+  (grid_row, grid_col) tuples indexed by col_in_line. Includes one extra
+  entry at index len(line) for the end-of-line cursor position. Used by
+  cursor lookup to convert (line, col) → screen position in O(1).
 
-  if not tokens:
-    rows.append(DisplayRow(li, 0, 0, prefix))
-    return rows
+  Side-effects on `field`:
+    field.grid: list[list[Cell]]
+    field.line_grid_ranges: list[(first_grid_row, last_grid_row)] per logical line
+    field.line_char_to_grid: list[list[(grid_row, grid_col)]] per logical line
 
-  cur_start = 0       # text col where current row begins
-  cur_pos = 0         # text col where current row's content currently ends
-  cur_width = 0       # visible chars in current row so far
-  ti = 0              # token index
+  Wrap mode only — caller must verify."""
+  total_width = field.width if field.no_cursor_margin else field.width - 1
+  grid = []
+  line_grid_ranges = []
+  line_char_to_grid = []
+  fill_char = field.fill or ' '
 
-  while ti < len(tokens):
-    tok = tokens[ti]
-    tok_len = len(tok)
+  for li, line in enumerate(field.lines):
+    prefix = field._margin_prefix(line.level)
+    mw = len(prefix)
+    line_usable = total_width - mw
+    if line_usable <= 0:
+      line_usable = 1
 
-    if isinstance(tok, Word):
-      if cur_width + tok_len <= usable:
-        # Word fits entirely on the current row
-        cur_pos += tok_len
-        cur_width += tok_len
-        ti += 1
-      elif cur_width == 0:
-        # Word is wider than the entire usable area — hard-break it.
-        # Emit a row containing the first `usable` chars of this word.
-        rows.append(DisplayRow(li, cur_start, cur_start + usable, prefix))
-        cur_start += usable
-        cur_pos = cur_start
-        cur_width = 0
-        # Replace this token with a smaller Word containing the remainder.
-        # We don't mutate tokens (cached), so we synthesize and continue.
-        remaining = tok.text[usable:]
-        tokens = tokens[:ti] + [Word(remaining)] + tokens[ti+1:]
-        # Stay on same ti — process the remainder next iteration
+    line_first_row = len(grid)
+    char_to_grid = [None] * (len(line) + 1)  # +1 for end-of-line cursor pos
+
+    def new_row():
+      row = []
+      for c in prefix:
+        row.append(Cell(char=c, token=None, line_index=li))
+      return row
+
+    def finish_row(row):
+      while len(row) < total_width:
+        row.append(Cell(char=fill_char, token=None, line_index=li))
+      grid.append(row)
+
+    cur_row = new_row()
+    line_col = 0
+    tokens = list(line.get_tokens())  # local copy so we can splice for hard-break
+
+    if not tokens:
+      # Empty line — end-of-line cursor at start of the (only) grid row's content area
+      char_to_grid[0] = (len(grid), mw)
+      finish_row(cur_row)
+      line_grid_ranges.append((line_first_row, len(grid) - 1))
+      line_char_to_grid.append(char_to_grid)
+      continue
+
+    i = 0
+    while i < len(tokens):
+      tok = tokens[i]
+      tlen = len(tok)
+      remaining_in_row = total_width - len(cur_row)
+
+      if isinstance(tok, Word):
+        if tlen <= remaining_in_row:
+          for k in range(tlen):
+            char_to_grid[line_col + k] = (len(grid), len(cur_row))
+            cur_row.append(Cell(char=tok.text[k], token=tok, token_offset=k,
+                                line_index=li, col_in_line=line_col + k))
+          line_col += tlen
+          i += 1
+        elif len(cur_row) == mw:
+          # Empty row (just margin) — hard-break the word
+          chunk = remaining_in_row
+          for k in range(chunk):
+            char_to_grid[line_col + k] = (len(grid), len(cur_row))
+            cur_row.append(Cell(char=tok.text[k], token=tok, token_offset=k,
+                                line_index=li, col_in_line=line_col + k))
+          line_col += chunk
+          finish_row(cur_row)
+          cur_row = new_row()
+          tokens[i] = Word(tok.text[chunk:])
+          # stay on i
+        else:
+          # Wrap before this word. If the row ends with space cells, consume one.
+          if cur_row and isinstance(cur_row[-1].token, Space):
+            popped = cur_row.pop()
+            # Re-record the consumed char's grid position as the cell that
+            # was just vacated by the pop — i.e. just past the last visible
+            # content cell. This way the cursor at that col_in_line lands
+            # right after the last visible char on the previous row, not at
+            # the screen's right edge.
+            char_to_grid[popped.col_in_line] = (len(grid), len(cur_row))
+          finish_row(cur_row)
+          cur_row = new_row()
+          # don't advance i — re-process the word on the new row
       else:
-        # Word doesn't fit — wrap before it. If the current row ends with
-        # a space, that space is "consumed" by the wrap (single space at
-        # a wrap is invisible; multi-space runs lose one to the wrap).
-        end_col = cur_pos
-        if end_col > cur_start and line.text[end_col - 1] == ' ':
-          end_col -= 1
-        rows.append(DisplayRow(li, cur_start, end_col, prefix))
-        cur_start = cur_pos  # next row starts after the unconsumed text
-        cur_width = 0
-        # Don't advance ti — re-process the word on the new row
+        # Space token
+        if tlen <= remaining_in_row:
+          for k in range(tlen):
+            char_to_grid[line_col + k] = (len(grid), len(cur_row))
+            cur_row.append(Cell(char=' ', token=tok, token_offset=k,
+                                line_index=li, col_in_line=line_col + k))
+          line_col += tlen
+          i += 1
+        else:
+          # Spaces straddle the row boundary
+          fit = remaining_in_row
+          for k in range(fit):
+            char_to_grid[line_col + k] = (len(grid), len(cur_row))
+            cur_row.append(Cell(char=' ', token=tok, token_offset=k,
+                                line_index=li, col_in_line=line_col + k))
+          line_col += fit
+          # The space at line_col is consumed by the wrap
+          char_to_grid[line_col] = (len(grid), total_width)
+          finish_row(cur_row)
+          cur_row = new_row()
+          line_col += 1
+          spaces_remaining = tlen - fit - 1
+          if spaces_remaining > 0:
+            for k in range(spaces_remaining):
+              char_to_grid[line_col + k] = (len(grid), len(cur_row))
+              cur_row.append(Cell(char=' ', token=tok, token_offset=fit + 1 + k,
+                                  line_index=li, col_in_line=line_col + k))
+            line_col += spaces_remaining
+          i += 1
 
-    else:
-      # Space token. Try to fit it on the current row.
-      if cur_width + tok_len <= usable:
-        # Fits entirely
-        cur_pos += tok_len
-        cur_width += tok_len
-        ti += 1
-      else:
-        # Space straddles the wrap boundary. Consume what fits on the
-        # current row PLUS one extra space (the wrap-consumed one), then
-        # the rest goes to the next row.
-        fit_on_row = usable - cur_width  # spaces that fit visibly on this row
-        spaces_consumed_by_wrap = 1
-        spaces_remaining = tok_len - fit_on_row - spaces_consumed_by_wrap
+    # Record end-of-line cursor position (one past the last char)
+    if char_to_grid[len(line) - 1] is not None and len(line) > 0:
+      last_r, last_c = char_to_grid[len(line) - 1]
+      eol_r, eol_c = last_r, last_c + 1
+      # If the last char was at the rightmost grid col, the EOL position
+      # is just past it (cursor margin column).
+      char_to_grid[len(line)] = (eol_r, eol_c)
+    elif len(line) == 0:
+      char_to_grid[0] = (len(grid), mw)
+    # else: last char wasn't placed (consumed) — fall back to row end
+    if char_to_grid[len(line)] is None:
+      char_to_grid[len(line)] = (len(grid), len(cur_row))
 
-        # Extend current row to cover the spaces that fit
-        cur_pos += fit_on_row
-        # Emit the current row
-        rows.append(DisplayRow(li, cur_start, cur_pos, prefix))
-        # The wrap-consumed space advances cur_pos but isn't drawn
-        cur_pos += spaces_consumed_by_wrap
-        cur_start = cur_pos
-        cur_width = 0
-        if spaces_remaining > 0:
-          # Leftover spaces become leading spaces on the new row.
-          cur_pos += spaces_remaining
-          cur_width = spaces_remaining
-        ti += 1
+    # Emit final row for this line (always at least one row even if empty)
+    finish_row(cur_row)
+    line_grid_ranges.append((line_first_row, len(grid) - 1))
+    line_char_to_grid.append(char_to_grid)
 
-  # Emit final row (always emit even if empty, so the cursor has a row)
-  rows.append(DisplayRow(li, cur_start, cur_pos, prefix))
-  return rows
+  field.grid = grid
+  field.line_grid_ranges = line_grid_ranges
+  field.line_char_to_grid = line_char_to_grid
 
 
 class InputField:
@@ -1604,6 +1684,11 @@ class InputField:
     # The column the cursor tries to maintain when moving up/down
     self._updown_col = 0
 
+    # Wrap-mode cell grid (parallel structure built by _compute_display_rows)
+    self.grid = []
+    self.line_grid_ranges = []
+    self.line_char_to_grid = []
+
     # Resolve config vs explicit parameters
     if conf is null:
       conf = config.input_fields.input_field
@@ -1645,7 +1730,9 @@ class InputField:
     if (not self.width or self.width is null) and self.width_from_end is not null:
       self.width = self.user.screen_width - self.col_offset + 1 - self.width_from_end
 
-    self.max_length = max_length if max_length is not null else (conf.max_length or 1000)
+    _is_multiline = (word_wrap if word_wrap is not null else (conf.word_wrap or False)) or self.height > 1
+    default_max = 100000 if _is_multiline else 1000
+    self.max_length = max_length if max_length is not null else (conf.max_length or default_max)
     self.max_lines = conf.max_lines if max_lines is null else max_lines
 
     # Colors
@@ -1763,25 +1850,36 @@ class InputField:
   # ---- Display row computation ----
 
   def _compute_display_rows(self):
-    """Recompute self.display_rows from self.lines using token-based wrap."""
+    """Recompute the layout from self.lines. In wrap mode this builds the
+    cell grid; in non-wrap mode it builds the simpler display_rows list."""
+    if self.word_wrap:
+      self.display_rows = []
+      _build_grid_for_field(self)
+      return
+
     rows = []
     for li, line in enumerate(self.lines):
       prefix = self._margin_prefix(line.level)
-      mw = len(prefix)
-      if self.word_wrap:
-        usable = (self.width if self.no_cursor_margin else self.width - 1) - mw
-        if usable <= 0:
-          usable = 1
-        rows.extend(_wrap_line_to_rows(line, li, usable, prefix))
-      else:
-        # No word wrap: one display row per line
-        rows.append(DisplayRow(li, 0, len(line.text), prefix))
+      rows.append(DisplayRow(li, 0, len(line.text), prefix))
     if not rows:
       rows.append(DisplayRow(0, 0, 0, ""))
     self.display_rows = rows
+    self.grid = []
+    self.line_grid_ranges = []
+    self.line_char_to_grid = []
 
   def _display_row_for_cursor(self):
-    """Find the display row index that contains (cursor_line, cursor_col)."""
+    """Find the display row index (= grid row index in wrap mode) that contains
+    (cursor_line, cursor_col)."""
+    if self.word_wrap and self.line_char_to_grid:
+      char_to_grid = self.line_char_to_grid[self.cursor_line]
+      if 0 <= self.cursor_col < len(char_to_grid) and char_to_grid[self.cursor_col] is not None:
+        return char_to_grid[self.cursor_col][0]
+      # Fallback: last grid row of this line
+      if self.cursor_line < len(self.line_grid_ranges):
+        return self.line_grid_ranges[self.cursor_line][1]
+      return 0
+
     for i, dr in enumerate(self.display_rows):
       if dr.line_index != self.cursor_line:
         continue
@@ -1805,8 +1903,20 @@ class InputField:
     return last
 
   def _set_updown_col(self):
-    """Set _updown_col as the offset of cursor_col within its display row.
-    Must be called after display_rows is up to date."""
+    """Set _updown_col as the offset of the cursor within its display row's
+    content area (i.e. screen column from the left edge of content, ignoring
+    margin). Must be called after the layout is up to date."""
+    if self.word_wrap and self.line_char_to_grid:
+      char_to_grid = self.line_char_to_grid[self.cursor_line]
+      if 0 <= self.cursor_col < len(char_to_grid) and char_to_grid[self.cursor_col] is not None:
+        gr, gc = char_to_grid[self.cursor_col]
+      elif char_to_grid and char_to_grid[-1] is not None:
+        gr, gc = char_to_grid[-1]
+      else:
+        gr, gc = 0, 0
+      mw = len(self._margin_prefix(self.lines[self.cursor_line].level))
+      self._updown_col = max(0, gc - mw)
+      return
     dri = self._display_row_for_cursor()
     self._updown_col = self.cursor_col - self.display_rows[dri].start_col
 
@@ -1821,20 +1931,31 @@ class InputField:
 
   def _cursor_to_screen(self):
     """Convert cursor position to screen (row, col). Returns (screen_row, screen_col)."""
+    if self.word_wrap and self.line_char_to_grid:
+      char_to_grid = self.line_char_to_grid[self.cursor_line]
+      if 0 <= self.cursor_col < len(char_to_grid) and char_to_grid[self.cursor_col] is not None:
+        gr, gc = char_to_grid[self.cursor_col]
+      else:
+        # Fallback: end of line position
+        gr, gc = (char_to_grid[-1] if char_to_grid and char_to_grid[-1] is not None
+                  else (self.line_grid_ranges[self.cursor_line][1], 0))
+      screen_row = self.row_offset + gr - self.scroll_offset
+      screen_col = self.col_offset + gc
+      return screen_row, screen_col
+
     dri = self._display_row_for_cursor()
     dr = self.display_rows[dri]
     screen_row = self.row_offset + dri - self.scroll_offset
     mw = len(dr.margin_prefix)
-    if self.word_wrap:
-      screen_col = self.col_offset + mw + (self.cursor_col - dr.start_col)
-    else:
-      screen_col = self.col_offset + mw + self.cursor_col - self.h_scroll
+    screen_col = self.col_offset + mw + self.cursor_col - self.h_scroll
     return screen_row, screen_col
 
   def _sync_compat_cursor(self):
     """Update self.row/self.col/self.content_row_offset for InputFields container compatibility."""
     dri = self._display_row_for_cursor()
-    self.scroll_offset = max(0, min(self.scroll_offset, len(self.display_rows) - 1))
+    total_rows = len(self.grid) if self.word_wrap else len(self.display_rows)
+    if total_rows > 0:
+      self.scroll_offset = max(0, min(self.scroll_offset, total_rows - 1))
     self.content_row_offset = self.scroll_offset
     self.row = dri - self.scroll_offset
     sr, sc = self._cursor_to_screen()
@@ -1862,6 +1983,9 @@ class InputField:
 
   async def _draw_line(self, dri):
     """Draw one display row to screen."""
+    if self.word_wrap:
+      await self._draw_grid_row(dri)
+      return
     screen_row = self.row_offset + dri - self.scroll_offset
     if screen_row < self.row_offset or screen_row >= self.row_offset + self.height:
       return  # off screen
@@ -1933,6 +2057,83 @@ class InputField:
     if need_nowrap:
       ansi_wrap(self.user, True)
 
+  def _row_to_line(self, grid_row_idx):
+    """Find the logical line index that owns this grid row."""
+    for li, (first, last) in enumerate(self.line_grid_ranges):
+      if first <= grid_row_idx <= last:
+        return li
+    return None
+
+  async def _draw_grid_row(self, grid_row_idx):
+    """Draw one row of the wrap-mode cell grid. Cells are classified as
+    margin (col < margin width), content (token != None), or fill (token
+    == None and col >= margin width). Consecutive cells of the same kind
+    are batched into a single send so the lock contention with the stars
+    background task stays low."""
+    if grid_row_idx >= len(self.grid):
+      return
+    row_cells = self.grid[grid_row_idx]
+    screen_row = self.row_offset + grid_row_idx - self.scroll_offset
+    if screen_row < self.row_offset or screen_row >= self.row_offset + self.height:
+      return  # off screen
+
+    li = self._row_to_line(grid_row_idx)
+    mw = len(self._margin_prefix(self.lines[li].level)) if li is not None else 0
+
+    need_nowrap = (self.col_offset + self.width - 1 >= self.user.screen_width)
+    if need_nowrap:
+      ansi_wrap(self.user, False)
+
+    await ansi_move(self.user, screen_row, self.col_offset)
+
+    # Walk cells, group runs of same kind
+    prev_kind = None
+    prev_chars = []
+
+    async def flush():
+      nonlocal prev_chars
+      if not prev_chars:
+        return
+      if prev_kind == 'margin':
+        ansi_color(self.user, fg=self.outline_fg, fg_br=self.outline_fg_br,
+                   bg=self.bg, bg_br=self.bg_br)
+      elif prev_kind == 'content':
+        ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
+      else:
+        ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br,
+                   bg=self.fill_bg, bg_br=self.fill_bg_br)
+      await send(self.user, ''.join(prev_chars), drain=False)
+      prev_chars = []
+
+    for col_idx, cell in enumerate(row_cells):
+      if col_idx < mw:
+        kind = 'margin'
+      elif cell.token is not None:
+        kind = 'content'
+      else:
+        kind = 'fill'
+      char = cell.char
+      if kind == 'content' and self.mask_char:
+        char = self.mask_char
+      if kind != prev_kind:
+        await flush()
+        prev_kind = kind
+      prev_chars.append(char)
+    await flush()
+
+    # Cursor margin column (extra fill cell at the right)
+    if not self.no_cursor_margin:
+      usable = self.width - 1
+      drawn = len(row_cells)
+      remaining = self.width - max(drawn, usable)
+      if remaining > 0:
+        ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br,
+                   bg=self.fill_bg, bg_br=self.fill_bg_br)
+        await send(self.user, self.fill * remaining, drain=False)
+
+    if need_nowrap:
+      ansi_wrap(self.user, True)
+
   async def _draw_line_tail(self, dri, from_col):
     """Draw the visible portion of one display row's text starting from
     `from_col` (a column within line.text), then fill the rest of the row
@@ -1982,37 +2183,147 @@ class InputField:
       ansi_wrap(self.user, True)
 
   def _snapshot_display_rows(self):
-    """Capture a lightweight snapshot of the current display_rows for
-    later comparison by the wrap fast path."""
+    """Capture a lightweight snapshot of the current VISIBLE layout for
+    later comparison by the fast path. In wrap mode, snapshots the cell
+    chars for each visible screen row (grid[scroll_offset..+height]),
+    so the diff works correctly even when scroll_offset changes. In
+    non-wrap mode, snapshots display_rows."""
+    if self.word_wrap:
+      result = []
+      for si in range(self.height):
+        gi = self.scroll_offset + si
+        if gi < len(self.grid):
+          result.append(tuple(c.char for c in self.grid[gi]))
+        else:
+          result.append(None)  # empty screen row (below content)
+      return result
     return [(dr.line_index, dr.start_col, dr.end_col, dr.margin_prefix)
             for dr in self.display_rows]
 
+  async def _draw_grid_row_diff(self, grid_row_idx, old_row_chars):
+    """Draw only the cells that differ between `old_row_chars` (a tuple of
+    chars from a previous snapshot) and the current grid row. Unchanged
+    cells are skipped so ambient stars aren't disturbed."""
+    if grid_row_idx >= len(self.grid):
+      return
+    row = self.grid[grid_row_idx]
+    screen_row = self.row_offset + grid_row_idx - self.scroll_offset
+    if screen_row < self.row_offset or screen_row >= self.row_offset + self.height:
+      return
+
+    li = self._row_to_line(grid_row_idx)
+    mw = len(self._margin_prefix(self.lines[li].level)) if li is not None else 0
+
+    need_nowrap = (self.col_offset + self.width - 1 >= self.user.screen_width)
+    if need_nowrap:
+      ansi_wrap(self.user, False)
+
+    old_len = len(old_row_chars) if old_row_chars else 0
+    new_len = len(row)
+    max_len = max(old_len, new_len)
+
+    col = 0
+    while col < max_len:
+      new_char = row[col].char if col < new_len else self.fill
+      old_char = old_row_chars[col] if col < old_len else None
+      if new_char == old_char:
+        col += 1
+        continue
+      # Start of a changed run — collect consecutive changed cells of same kind
+      run_start = col
+      run_chars = []
+      run_kind = None
+      while col < max_len:
+        nc = row[col].char if col < new_len else self.fill
+        oc = old_row_chars[col] if col < old_len else None
+        if nc == oc:
+          break
+        cell = row[col] if col < new_len else None
+        if col < mw:
+          kind = 'margin'
+        elif cell is not None and cell.token is not None:
+          kind = 'content'
+        else:
+          kind = 'fill'
+        ch = nc
+        if kind == 'content' and self.mask_char:
+          ch = self.mask_char
+        if run_kind is not None and kind != run_kind:
+          # Flush the current run before switching color
+          if run_kind == 'margin':
+            ansi_color(self.user, fg=self.outline_fg, fg_br=self.outline_fg_br,
+                       bg=self.bg, bg_br=self.bg_br)
+          elif run_kind == 'content':
+            ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
+          else:
+            ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br,
+                       bg=self.fill_bg, bg_br=self.fill_bg_br)
+          await ansi_move(self.user, screen_row, self.col_offset + run_start)
+          await send(self.user, ''.join(run_chars), drain=False)
+          run_start = col
+          run_chars = []
+        run_kind = kind
+        run_chars.append(ch)
+        col += 1
+      if run_chars:
+        if run_kind == 'margin':
+          ansi_color(self.user, fg=self.outline_fg, fg_br=self.outline_fg_br,
+                     bg=self.bg, bg_br=self.bg_br)
+        elif run_kind == 'content':
+          ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
+        else:
+          ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br,
+                     bg=self.fill_bg, bg_br=self.fill_bg_br)
+        await ansi_move(self.user, screen_row, self.col_offset + run_start)
+        await send(self.user, ''.join(run_chars), drain=False)
+
+    if need_nowrap:
+      ansi_wrap(self.user, True)
+
   async def _redraw_changed_rows(self, old_snapshot):
-    """Redraw display rows that differ from `old_snapshot`. Walks both lists
-    in lock-step, redraws the first changed row and everything below it
-    (within the visible area). If the new rows are longer/shorter, the
-    extra rows are drawn or blanked. Used by the wrap fast path after an
-    edit so unchanged rows aren't touched (so ambient stars aren't disturbed)."""
-    # Find first changed display row index
-    new_len = len(self.display_rows)
+    """Redraw cells that differ from `old_snapshot`. In wrap mode, compares
+    cell-by-cell within each row so only the actually-changed cells are
+    written (preserving ambient stars in unchanged cells). In non-wrap mode,
+    redraws whole rows from the first changed row onward."""
+    new_snapshot = self._snapshot_display_rows()
+    new_len = len(new_snapshot)
     old_len = len(old_snapshot)
+    visible_start = self.scroll_offset
+    visible_end_new = min(self.scroll_offset + self.height, new_len)
+
+    if self.word_wrap:
+      # Cell-level diff: walk each visible screen row, compare old snapshot
+      # (which is also screen-relative) vs current grid content.
+      for si in range(self.height):
+        old_row = old_snapshot[si] if si < len(old_snapshot) else None
+        gi = self.scroll_offset + si
+        if gi < len(self.grid):
+          new_row = new_snapshot[si] if si < len(new_snapshot) else None
+          if old_row == new_row:
+            continue  # screen row unchanged — skip entirely
+          await self._draw_grid_row_diff(gi, old_row)
+        else:
+          # Screen row is below all content — blank it if it wasn't before
+          if old_row is not None:
+            screen_row = self.row_offset + si
+            await ansi_move(self.user, screen_row, self.col_offset)
+            ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br,
+                       bg=self.fill_bg, bg_br=self.fill_bg_br)
+            await send(self.user, self.fill * self.width, drain=False)
+      return
+
+    # Non-wrap: find first changed row, redraw from there
     first_changed = min(new_len, old_len)
     for i in range(min(new_len, old_len)):
-      dr = self.display_rows[i]
-      old = old_snapshot[i]
-      if (dr.line_index, dr.start_col, dr.end_col, dr.margin_prefix) != old:
+      if new_snapshot[i] != old_snapshot[i]:
         first_changed = i
         break
     if new_len != old_len and first_changed >= min(new_len, old_len):
       first_changed = min(new_len, old_len)
-    # If nothing changed, no draws.
     if first_changed >= max(new_len, old_len):
       return
-    # Redraw from first_changed to end of visible
-    visible_end = min(self.scroll_offset + self.height, new_len)
-    for i in range(max(first_changed, self.scroll_offset), visible_end):
+    for i in range(max(first_changed, self.scroll_offset), visible_end_new):
       await self._draw_line(i)
-    # Blank any rows that were visible before but no longer exist
     if old_len > new_len:
       blank_start = max(new_len - self.scroll_offset, 0)
       blank_end = min(old_len - self.scroll_offset, self.height)
@@ -2025,10 +2336,11 @@ class InputField:
 
   async def _draw_visible(self):
     """Redraw all visible display rows and position cursor."""
-    for i in range(self.scroll_offset, min(self.scroll_offset + self.height, len(self.display_rows))):
+    total_rows = len(self.grid) if self.word_wrap else len(self.display_rows)
+    for i in range(self.scroll_offset, min(self.scroll_offset + self.height, total_rows)):
       await self._draw_line(i)
     # Fill any remaining screen rows below content
-    for vr in range(len(self.display_rows) - self.scroll_offset, self.height):
+    for vr in range(total_rows - self.scroll_offset, self.height):
       screen_row = self.row_offset + vr
       if screen_row >= self.row_offset + self.height:
         break
@@ -2175,23 +2487,46 @@ class InputField:
 
   def _place_cursor_at_screen_pos(self, screen_row, screen_col):
     """Move cursor to position corresponding to a 1-based screen click."""
-    # Convert to display row index
     vis_row = screen_row - self.row_offset
     vis_row = max(0, min(vis_row, self.height - 1))
+
+    if self.word_wrap and self.grid:
+      gr = self.scroll_offset + vis_row
+      gr = max(0, min(gr, len(self.grid) - 1))
+      row = self.grid[gr]
+      gc = screen_col - self.col_offset
+      gc = max(0, min(gc, len(row) - 1))
+      cell = row[gc]
+      if cell.col_in_line >= 0:
+        self.cursor_line = cell.line_index
+        self.cursor_col = cell.col_in_line
+      else:
+        # Click on margin or fill — find the nearest content cell on this row
+        target_li = self._row_to_line(gr)
+        mw = len(self._margin_prefix(self.lines[target_li].level)) if target_li is not None else 0
+        # Find rightmost content cell at or before the click
+        for c_idx in range(min(gc, len(row) - 1), mw - 1, -1):
+          c = row[c_idx]
+          if c.col_in_line >= 0:
+            self.cursor_line = c.line_index
+            self.cursor_col = c.col_in_line + (1 if c_idx < gc else 0)
+            break
+        else:
+          self.cursor_line = target_li if target_li is not None else 0
+          self.cursor_col = 0
+      self._set_updown_col()
+      self._ensure_cursor_visible()
+      return
+
     dri = self.scroll_offset + vis_row
     dri = max(0, min(dri, len(self.display_rows) - 1))
     dr = self.display_rows[dri]
     line = self.lines[dr.line_index]
     mw = len(dr.margin_prefix)
 
-    # Convert screen col to text col
-    if self.word_wrap:
-      rel_col = screen_col - self.col_offset - mw
-    else:
-      rel_col = screen_col - self.col_offset - mw + self.h_scroll
+    rel_col = screen_col - self.col_offset - mw + self.h_scroll
     text_col = dr.start_col + max(0, rel_col)
     text_col = max(0, min(text_col, len(line.text)))
-    # Don't place cursor past the display row's end
     text_col = min(text_col, dr.end_col)
 
     self.cursor_line = dr.line_index
@@ -2379,10 +2714,16 @@ class InputField:
 
       # Enter on empty quoted line: decrease level
       if line.level > 0 and not line.text:
+        old_snapshot = self._snapshot_display_rows() if self.word_wrap else None
+        saved_scroll_offset = self.scroll_offset
         line.level -= 1
         self._compute_display_rows()
         self._ensure_cursor_visible()
-        await self._draw_visible()
+        if self.word_wrap and old_snapshot is not None:
+          await self._redraw_changed_rows(old_snapshot)
+          await self._position_cursor(drain=True)
+        else:
+          await self._draw_visible()
         return None
 
       # Check max_lines
@@ -2392,6 +2733,8 @@ class InputField:
       # Split line at cursor: this line keeps the prefix; the suffix becomes a new line
       split_col = self.cursor_col  # save for potential undo
       new_level = line.level
+      old_snapshot = self._snapshot_display_rows() if self.word_wrap else None
+      saved_scroll_offset = self.scroll_offset
       after_text = line.split_at(self.cursor_col)
       self.lines.insert(self.cursor_line + 1, Line(after_text, new_level))
 
@@ -2414,7 +2757,11 @@ class InputField:
         return None
 
       self._ensure_cursor_visible()
-      await self._draw_visible()
+      if self.word_wrap and old_snapshot is not None:
+        await self._redraw_changed_rows(old_snapshot)
+        await self._position_cursor(drain=True)
+      else:
+        await self._draw_visible()
       return None
     else:
       return self._make_retvals(cr)
@@ -2478,9 +2825,53 @@ class InputField:
         return self._make_retvals(right)
     return None
 
+  def _grid_move_to_row(self, target_gr):
+    """Place the cursor at the cell on `target_gr` whose column-within-content
+    is closest to `self._updown_col`. Used by grid-mode up/down/pgup/pgdn.
+    Updates self.cursor_line and self.cursor_col. Caller is responsible for
+    redraw/reposition."""
+    if not (0 <= target_gr < len(self.grid)):
+      return
+    target_li = self._row_to_line(target_gr)
+    if target_li is None:
+      return
+    mw = len(self._margin_prefix(self.lines[target_li].level))
+    target_gc = mw + self._updown_col
+    row = self.grid[target_gr]
+    if target_gc >= len(row):
+      target_gc = len(row) - 1
+    cell = row[target_gc]
+    if cell.col_in_line >= 0:
+      self.cursor_line = target_li
+      self.cursor_col = cell.col_in_line
+      return
+    # Fill cell — fall back to the position right after the rightmost
+    # content cell on this row.
+    for gc in range(target_gc - 1, mw - 1, -1):
+      c = row[gc]
+      if c.col_in_line >= 0:
+        self.cursor_line = target_li
+        self.cursor_col = c.col_in_line + 1
+        return
+    # No content on this row at all — cursor at the line's start
+    self.cursor_line = target_li
+    self.cursor_col = 0
+
   async def _handle_up(self):
     if not self.allow_edit and self.parent:
       return self._make_retvals(up)
+
+    if self.word_wrap and self.line_char_to_grid:
+      cur_gr = self._display_row_for_cursor()
+      if cur_gr > 0:
+        if self.insert_mode:
+          await self._hide_insert_cursor()
+        self._grid_move_to_row(cur_gr - 1)
+        await self._redraw_or_reposition()
+      else:
+        if self.height == 1 and self.parent:
+          return self._make_retvals(up)
+      return None
 
     dri = self._display_row_for_cursor()
     if dri > 0:
@@ -2503,6 +2894,18 @@ class InputField:
     if not self.allow_edit and self.parent:
       return self._make_retvals(down)
 
+    if self.word_wrap and self.line_char_to_grid:
+      cur_gr = self._display_row_for_cursor()
+      if cur_gr + 1 < len(self.grid):
+        if self.insert_mode:
+          await self._hide_insert_cursor()
+        self._grid_move_to_row(cur_gr + 1)
+        await self._redraw_or_reposition()
+      else:
+        if self.height == 1 and self.parent:
+          return self._make_retvals(down)
+      return None
+
     dri = self._display_row_for_cursor()
     if dri + 1 < len(self.display_rows):
       if self.insert_mode:
@@ -2522,7 +2925,25 @@ class InputField:
   async def _handle_home(self):
     if self.insert_mode:
       await self._hide_insert_cursor()
-    # In word wrap, home goes to the start of the current display row
+    if self.word_wrap and self.line_char_to_grid:
+      # Go to first content cell on the current grid row
+      gr = self._display_row_for_cursor()
+      target_li = self._row_to_line(gr)
+      mw = len(self._margin_prefix(self.lines[target_li].level)) if target_li is not None else 0
+      row = self.grid[gr]
+      if mw < len(row):
+        cell = row[mw]
+        if cell.col_in_line >= 0:
+          self.cursor_line = target_li
+          self.cursor_col = cell.col_in_line
+        else:
+          # Empty row — cursor at line start
+          self.cursor_line = target_li
+          self.cursor_col = 0
+      self._updown_col = 0
+      self._ensure_cursor_visible()
+      await self._position_cursor(drain=True)
+      return
     dri = self._display_row_for_cursor()
     dr = self.display_rows[dri]
     self.cursor_col = dr.start_col
@@ -2539,21 +2960,31 @@ class InputField:
     if self.insert_mode:
       await self._hide_insert_cursor()
     line = self.lines[self.cursor_line]
-    if self.word_wrap:
-      # Go to end of current display row
-      dri = self._display_row_for_cursor()
-      dr = self.display_rows[dri]
-      self.cursor_col = min(dr.end_col, len(line.text))
-      self._updown_col = self.cursor_col - dr.start_col
-    else:
-      self.cursor_col = len(line.text)
-      self._updown_col = self.cursor_col
+    if self.word_wrap and self.line_char_to_grid:
+      # Find rightmost content cell on the current grid row
+      gr = self._display_row_for_cursor()
+      target_li = self._row_to_line(gr)
+      mw = len(self._margin_prefix(self.lines[target_li].level)) if target_li is not None else 0
+      row = self.grid[gr]
+      end_col = 0
+      for c_idx in range(len(row) - 1, mw - 1, -1):
+        c = row[c_idx]
+        if c.col_in_line >= 0:
+          end_col = c.col_in_line + 1
+          break
+      else:
+        end_col = 0
+      self.cursor_line = target_li
+      self.cursor_col = min(end_col, len(line))
+      self._set_updown_col()
+      self._ensure_cursor_visible()
+      await self._position_cursor(drain=True)
+      return
+    self.cursor_col = len(line.text)
+    self._updown_col = self.cursor_col
     self._ensure_h_scroll()
     self._ensure_cursor_visible()
-    if not self.word_wrap:
-      await self._draw_visible()
-    else:
-      await self._position_cursor(drain=True)
+    await self._draw_visible()
 
   async def _handle_ctrl_home(self):
     """Jump to the very top of the field (line 0, col 0)."""
@@ -2590,13 +3021,20 @@ class InputField:
     if self.insert_mode:
       await self._hide_insert_cursor()
     old_offset = self.scroll_offset
-    dri = self._display_row_for_cursor()
-    new_dri = max(0, dri - self.height)
-    new_dr = self.display_rows[new_dri]
-    self.cursor_line = new_dr.line_index
-    target_col = new_dr.start_col + self._updown_col
-    max_col = min(new_dr.end_col, len(self.lines[self.cursor_line]))
-    self.cursor_col = max(new_dr.start_col, min(target_col, max_col))
+
+    if self.word_wrap and self.line_char_to_grid:
+      cur_gr = self._display_row_for_cursor()
+      target_gr = max(0, cur_gr - self.height)
+      self._grid_move_to_row(target_gr)
+    else:
+      dri = self._display_row_for_cursor()
+      new_dri = max(0, dri - self.height)
+      new_dr = self.display_rows[new_dri]
+      self.cursor_line = new_dr.line_index
+      target_col = new_dr.start_col + self._updown_col
+      max_col = min(new_dr.end_col, len(self.lines[self.cursor_line]))
+      self.cursor_col = max(new_dr.start_col, min(target_col, max_col))
+
     self._ensure_cursor_visible()
     if self.scroll_offset != old_offset:
       await self._draw_visible()
@@ -2608,13 +3046,20 @@ class InputField:
     if self.insert_mode:
       await self._hide_insert_cursor()
     old_offset = self.scroll_offset
-    dri = self._display_row_for_cursor()
-    new_dri = min(len(self.display_rows) - 1, dri + self.height)
-    new_dr = self.display_rows[new_dri]
-    self.cursor_line = new_dr.line_index
-    target_col = new_dr.start_col + self._updown_col
-    max_col = min(new_dr.end_col, len(self.lines[self.cursor_line]))
-    self.cursor_col = max(new_dr.start_col, min(target_col, max_col))
+
+    if self.word_wrap and self.line_char_to_grid:
+      cur_gr = self._display_row_for_cursor()
+      target_gr = min(len(self.grid) - 1, cur_gr + self.height)
+      self._grid_move_to_row(target_gr)
+    else:
+      dri = self._display_row_for_cursor()
+      new_dri = min(len(self.display_rows) - 1, dri + self.height)
+      new_dr = self.display_rows[new_dri]
+      self.cursor_line = new_dr.line_index
+      target_col = new_dr.start_col + self._updown_col
+      max_col = min(new_dr.end_col, len(self.lines[self.cursor_line]))
+      self.cursor_col = max(new_dr.start_col, min(target_col, max_col))
+
     self._ensure_cursor_visible()
     if self.scroll_offset != old_offset:
       await self._draw_visible()
@@ -2642,7 +3087,7 @@ class InputField:
         await self._position_cursor(drain=True)
         return
       # Fast path (word-wrap): redraw only display rows whose content changed
-      if self.word_wrap and self.scroll_offset == saved_scroll_offset:
+      if self.word_wrap:
         await self._redraw_changed_rows(old_snapshot)
         await self._position_cursor(drain=True)
         return
@@ -2689,7 +3134,7 @@ class InputField:
         await self._position_cursor(drain=True)
         return
       # Fast path (word-wrap): redraw only display rows whose content changed
-      if self.word_wrap and self.scroll_offset == saved_scroll_offset:
+      if self.word_wrap:
         await self._redraw_changed_rows(old_snapshot)
         await self._position_cursor(drain=True)
         return
@@ -2840,10 +3285,16 @@ class InputField:
         self.h_scroll = max(0, cpos)
 
   async def _redraw_or_reposition(self):
-    """After cursor movement, redraw if scrolled, otherwise just reposition."""
+    """After cursor movement, redraw if scrolled, otherwise just reposition.
+    In wrap mode, uses cell-level diff so scroll only redraws changed cells."""
     old_offset = self.scroll_offset
+    old_snapshot = self._snapshot_display_rows() if self.word_wrap else None
     self._ensure_cursor_visible()
     if self.scroll_offset != old_offset:
-      await self._draw_visible()
+      if self.word_wrap and old_snapshot is not None:
+        await self._redraw_changed_rows(old_snapshot)
+        await self._position_cursor(drain=True)
+      else:
+        await self._draw_visible()
     else:
       await self._position_cursor(drain=True)

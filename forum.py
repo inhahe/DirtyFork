@@ -400,6 +400,7 @@ async def _compose_post(user, con, forum_id, reply_to_post=None):
     word_wrap=True,
     height=editor_height,
     width=user.screen_width,
+    max_length=100000,
     fill=" ",
     fill_fg=white, fill_fg_br=False,
     fill_bg=black, fill_bg_br=False,
