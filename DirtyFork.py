@@ -233,6 +233,14 @@ async def user_loop(reader, writer, connection_type="telnet"):
     # Terminal setup — only once per connection
     await Destinations.setup_terminal(user)
 
+    # Start ambient star animation as a background task. Started here (after the
+    # character set / screen size have been detected by setup_terminal, so
+    # user.screen exists) rather than after login, so stars also animate on the
+    # login screen. stars_loop gates itself on the config: before login user.conf
+    # is absent, so it falls back to the system-wide stars.enabled setting.
+    from stars import stars_loop
+    user._stars_task = asyncio.create_task(stars_loop(user))
+
     # Login phase — handles "new" registration internally
     try:
       r = await Destinations.login(user)
@@ -268,10 +276,6 @@ async def user_loop(reader, writer, connection_type="telnet"):
     log.info("User '%s' logged in (%s)", user.handle, connection_type)
     next_destination = r.next_destination if r.next_destination else Destinations.main
     next_menu_item = getattr(r, 'next_menu_item', null)
-
-    # Start ambient star animation as a background task
-    from stars import stars_loop
-    user._stars_task = asyncio.create_task(stars_loop(user))
 
     # Main destination loop — user_director handles key checks, errors, fallbacks, and history
     while True:

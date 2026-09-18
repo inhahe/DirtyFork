@@ -17,20 +17,25 @@
 
 #dropfile types to pass on command line:
 #DOOR.SYS # pcboard
-#DORINFO  # Wildcat
-#CHAIN    # WWIV
-#CALLINFO # Wildcat
+#DORINFO1.DEF  # Wildcat
+#CHAIN.TXT    # WWIV
+#CALLINFO.BBS # Wildcat
+		
+^ those are the four major ones
+
 #SFDOORS  # Spitfire
 #TRIBBS   # TriBBS
 #SPITFIRE   
 #DOOR32   # modern
 
+JUMPER.DAT # 2am-bbs
+
 #dropfile filenames:
 #DOOR.SYS      # Most common (PCBoard format)
 #DORINFO1.DEF  # Wildcat/others
-#CALLINFO.BBS  # Wildcat
+	#CALLINFO.BBS  # Wildcat
 #CHAIN.TXT     # WWIV
-#SFDOORS.DAT   # Spitfire
+	#SFDOORS.DAT   # Spitfire
 #DOOR32.SYS    # modern
 #TRIBBS.SYS    # TriBBS
       command: 'TW0002.EXE {node}'
@@ -156,3 +161,4 @@
 # LASTCALL.EXE <node>
 # LASTCALL.EXE 1
         
+

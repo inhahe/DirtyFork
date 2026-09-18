@@ -1,5 +1,3 @@
-process ctrl chars - don't print 7
-
 "todo: this is wrong"
 
 ask claude how to make a function that only runs when .drain() is called  so we can do the same thing for ansi_move that we did for ansi_color

@@ -26,3 +26,36 @@ DirtyFork.db
 # User data generated at runtime (in project root when no --data-dir)
 user_configs/
 files/
+
+# Local-only. We publish straight from this directory now instead of copying
+# a filtered subset into D:\github, so these are excluded here instead.
+backup/
+backup[0-9]*/
+.vs/
+.claude/
+CLAUDE.md
+DirtyFork.pyproj
+lib/
+*.log
+
+# Present in this project directory but never published from the staging
+# copy; keep them local.
+DirtyFork.slnx
+architecture.txt
+cc2html.py
+cclist.py
+cptogithub.bat
+cptok.bat
+dependencies.txt
+df.bat
+doors/
+imports.txt
+misc/
+stars.py
+temp/
+todo.4.txt
+todo.txt
+todo.txt.docx
+todo2.txt
+todo2txt.txt
+todo3.txt

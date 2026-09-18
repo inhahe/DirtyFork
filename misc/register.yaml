@@ -6,14 +6,8 @@
 # length, height is for the field, max_length is for the contents.
 # todo: i suppose we should add type: int, float, or string to our parameters 
 # should support drop-down lists. we really need one for time_zone. 
-# problem with this .yaml approach to input screens: no room for anything but the top blurb and input field names.
-# how would i structure it so i could register multiple input fields with any given destination and the class knows how to switch between input fields depending on what the user enters (
-# (or on mouse clicks)?
-# but that wouldn't work very will with the ability to scroll up and down the entire page as needed to fit all the input fields'. it would be doable, though.
-# problem: how do we submit? <enter> should go to the next field.
-# for now, let's just forgo having entry fields being switchable between, and just enter and validate them sequentially.
 
-  type: input
+  type: input	
   blurb: Enter your information to register. 
   screen_path: # none of the inputs values will actually be used because path is null. the idea is to that we know where to put the inputs in a custom-made ansi screen.
   inputs:

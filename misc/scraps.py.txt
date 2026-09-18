@@ -342,149 +342,308 @@ if field_height==1: # somewhere in here, there is a missing close-parentheses
           await await ansi_color(user, fg, bg, fg_br, bg_br)
           await ansi_left(user)
     await user.writer.drain()
-  
-if self.height == 1: # do i really want a separate function for this special case? i just didn't want to waste the code I already had...
-  if key == "left":
-    if user.cur_input_col == 1:
-      if user.cur_input_pos > 1:
-        user.cur_input_pos -= 1
-        await send(user, user.cur_input[user.cur_input_pos:user.cur_input_pos+length], in_input=True)
-        await ansi_left(user.screen_width)
+
+
+  async def redraw_field(self, start_row=None, start_col=None, end_row=None):
+    # todo: maybe we shouldn't compare character-by-character and just send everything from start row/col to end row/col. why wouldn't they all be different?
+    # on the other hand, it'll probably only compare one character per line..
+    if start_row is None:
+      start_row = 0
+    if end_row is None:
+      end_row = self.height - 1
+    line = self.content[self.content_row_offset+start_row]
+    col = start_col
+    screen_line = self.user.screen[self.row_offset+start_row]
+    max_col = min(self.width-1, len(line)-self.content_col_offset)
+    while col <= max_col:
+      if line[self.content_col_ofdfset+col] != screen_line[self.col_offset+col]:
+        break
+      col += 1
+    await ansi_move(self.user, self.row_offset+start_row, self.col_offset+col)
+    await send(self.user, line[self.content_col_offset+col:self.width+self.content_col_offset])
+    await ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br, bg=self.fill_bg, bg_br=self.fill_bg_br)
+    # todo: might these color values be null?
+    await send(self.user, self.fill*(self.width-col-1))
+    for row in range(start_row+1, end_row):
+      screen_line = self.user.screen[self.row_offset+row]
+      line = self.content[self.content_row_offset+row]
+      col = 0
+      while col < len(line):
+        if line[col] != screen_line[self.col_offset+col-self.content_col_offset]:
+          break
+        col += 1
+      await ansi_move(self.user, row-self.content_row_offset, col-self.content_col_offset)
+      await ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
+      await send(self.user, line[col:self.width+self.content_col_offset])
+      await ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br, bg=self.fill_bg, bg_br=self.fill_bg_br)  # todo: might these values be null?
+      await send(self.user, self.fill*(self.width-col-1))
+    if content_end_row != content_start_row:
+      line = self.content[content_end_row]
+      screen_line = self.user.screen[self.row_offset+content_end_row-self.content_row_offset]
+      col = content_start_col
+      while col < len(line):
+        if line[col] != screen_line[self.col_offset+col-self.content_col_offset]:
+          break
+        col += 1
+      await ansi_move(self.user, content_end_row-self.content_row_offset, col-self.content_col_offset)
+      await ansi_color(self.user, fg=self.fg, fg_br=self.fg_br, bg=self.bg, bg_br=self.bg_br)
+      await send(self.user, line[col:self.width+self.content_col_offset])
+      await ansi_color(self.user, fg=self.fill_fg, fg_br=self.fill_fg_br, bg=self.fill_bg, bg_br=self.fill_bg_br)  # todo: might these values be null?
+      await send(self.user, self.fill*(self.width-col-1))
+
+if len(self.content[adjusted_row]) + 1 > self.width - 1:  # if cursor is all the way to the right
+    if adjusted_row + 1 < self.max_lines:  # we'd have to
+        self.content_length += 1
+        if self.content_col_offset:
+            do_redraw = True
+        self.col = self.content_col_offset = 0
+        if self.row + 1 == self.height:
+            self.content_row_offset += 1
+            self.content.append("")
+            if not do_redraw:
+                await self.scroll_down()
     else:
-      ansi_left(user, 1)
-      user.cur_input_pos -= 1
-      user.cur_input_col -= 1
-  elif key == "right":
-    if user.cur_input_col == user.screen_width:
-      if user.cur_input_pos < len(user.cur_input):
-        user.cur_input_pos += 1
-        await ansi_left(user.screen_width)
-        await send(user, user.cur_input[user.cur_input_pos:user.cur_input_pos+length], in_input=True)
-    else:
-      ansi_right(user, 1)
-      user.cur_input_pos += 1
-      user.cur_input_col += 1
-  elif key == "home":
-    pass # todo
-  elif key == "end":
-    pass # todo
-  elif key == "ins":  
-    pass # todo
-  elif key == "del":
-    user.cur_input = user.cur_input[:user.cur_input_pos] + user.cur_input[user.cur_input_pos+1:]
-    s = user.cur_input[user.cur_input_pos:user.cur_input_pos+length-user.cur_input_col]+" "
-    await send(user, s, in_input=True)
-    await ansi_left(user, len(s), in_input=True)
-  elif key == ctrl_u or key == ctrl_c or key == cr: # we don't have to distinguish here, input_field looks for cr to know when editing is complete. 
-    await ansi_move(user, col=col_offset)                         # ctrl_u = clear line
-    user.cur_input = ""
-    field_pos = content_pos = 0
-    ansi_color(fill_fg, fill_bg, fill_fg_br, fill_bg_br)
-    send(user, fill*field_length)
-    ansi_left(user)
-  elif ord(key) >= 32:
-    if user.cur_input_pos <= len(user.cur_input):
-      await send(user, key+user.cur_input[user.cur_input_pos:user.cur_input_pos+length-user.cur_input_col], in_input=True)
-      user.cur_input = user.cur_input[:user.cur_input_pos]+key+user.cur_input[user.cur_input_pos:]
-    user.cur_input_pos += 1
-    user.cur_input_col += 1
-    await user.writer.drain()
+        self.row += 1
+else:
+    self.col += 1
+if do_redraw:
+    await self.redraw_field()
+else:
+    await ansi_move(self.user, self.row, self.col, drain=False)
+    await self.show_insert_char(drain=True)
+else:
+if self.content_length + 1 > self.max_length:
+    continue
 
-  
-async def clear_input_line(user, row, col, length):
-  if user.in_input == False:
-    await ansi_move(user, row, col, in_input=True)
-  await send(user, " "*length)
-
-
-class Subdestinations:
-  def input_field(user, field_length, content_length, fg=config.input_fields.fg, bg=config.input_fields.bg, fg_br=config.input_fields.fg_br, bg_br=contfig.input_fields.bg_br,
-                fill=config.input_fields.fill, fill_fg=config.input_fields.fill_fg, fill_bg=config.input_fields.fill_bg, fill_fg_br=config.input_fields.fill_fg_br, 
-                fill_bg_br=config.input_fields.fill_bg_br, insert_mode = True, outline=None, content=""): 
-
-class InputBox:
-  async def __init__(self, user, conf, r): # r is probably unnecessary. do we need destination? after all, we do have user_cur_destination. i think.
-    self.user = user
-    self.conf = conf
-    self.r = r
-    self.contents = ""
-    self.cur_col == 1 # these are relative to the position of the input_field.
-    self.cur_row = 1
-    self.scrolled_down = 0
-    self.scrolled_right = 0
-    await ansi_move(conf.row, conf.col)
-
-async def do_input_screen(user, dest, r): # todo: make it so the user can cycle through simultaneous inputs using tab, or enter, but when do we return all the values?
-  # todo: this needs to be in an input_screen class.
-  input_fields = {}
-  if screen.path: 
-    await show_screen(user, dest.screen_path, r)
-  for inp in dest.inputs:
-    input_fields[inp]=InputField(user, inp, r)
-  user.input_fields = input_fields
-  user.cur_input = input_fields[dest.inputs[0]] # todo: what to do if dest.inputs is empty?
-  while True:
-    for inp in get_code(user):
-      r = await user.cur_input.process_input(inp, r) 
-      if r.status == "submit":
-        r = await getattr(validators, user.cur_destination)._submit(user, values, r)
-        if r.status == success:
-          r = await getattr(validators, user.cur_destination)._execute(user, values, r)
-          if r.status == success:
-            r.values = values
-            r.next_destination = r.previous_destination
-            return r
-          else:
-            send(user, "Submission failed because of reason: " + r.status, r) # we might need to figure out our scrolling region for sending this.
-        else:                                                                   # todo: maybe _execute should return a dict of errors, too? why not?
-          for input_field, err_msg in r.err_msgs.items():                       # or maybe a failed execution should bring us to some error page?
-            input_field.show_err_msg(err_msg)                                   # user should always have a scroll region defined in is config for receiving messages
-                                                                    # todo: wait, where's next_destination? how do we know what it is? 
-                                                                    # ok, we need to call getattr(validators, user.cur_destination)._execute(user, values, r)
-                                                                    # when r.status says "submitted" (we should probably also have a case in which to 
-                                                                    # run validators...._submit()) and that program will know where the next destination is.
-                                                                    # it will return it in return_value.next_destination.
-  r = RetVals()
-  lacking_keys = item.white_keys - user.keys
-  bad_keys = item.black_keys & user.keys
-  return r(allowed=bool(lacking_keys or bad_keys), lacking_keys=lacking_keys, bad_keys=bad_keys)
-
-async def show_screen(user, screen_path):
-  await ansi_cls()
-  await send(user, open(screen_path, "r").read()) 
-  return 
-  # todo: this runs the risk of a zombie coroutine showing the user a screen out of nowhere. wait, could the same thing happen with other input, now that i'm using classes instead of functions?
-
-
-# class BufferedWriter:
-#   def __init__(self, writer):
-#     self._writer = writer
-#     self._buffer = []
-    
-#   def write(self, data):
-#     self._buffer.append(data)
-    
-#   async def drain(self):
-#     if self._buffer:
-#       self._writer.write(''.join(self._buffer))
-#       self._buffer.clear()
-#     await self._writer.drain()
-
-async def read_input_batch(user, window_size=0.02, char_threshold=2, batch_pause=0.03): 
-  key = await get_input_key(user)
-  now = time.perf_counter()
-  user.input_timestamps.append(now)
-  # Check if recent input looks like a paste
-  if len(user.input_timestamps) == char_threshold:
-    oldest = user.input_timestamps.pop()
-    if now - oldest < window_size:
-      # Paste detected - batch the rest
-      batch = [key]
+    if self.height==1:
       while True:
-        try:
-          key = await asyncio.wait_for(get_input_key(user), timeout=batch_pause)
-          batch.append(key)
-          user.input_timestamps.append(time.perf_counter())
-        except asyncio.TimeoutError:
-          return batch
-  return [key]
+        key = await get_input_key(self.user)
+        if key == "left":
+          if self.col == 0:
+            if self.content_col_offset > 0: # field is scrolled to the right, cursor is at the beginning
+              self.content_col_offset -= 1
+              if self.insert_mode:
+                await send(self.user, self.content[self.content_col_offset:self.content_col_offset+self.length])
+              else:
+                await ansi_color(self.user, self.bg, self.fg, False, False)
+                await send(self.user, self.content[self.content_col_offset]) # write inverted color char at cursor pos
+                await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
+                await send(self.user, self.content[self.content_col_offset+1:self.content_col_offset+self.length]) # write rest of self.content in normal colors
+              await ansi_move(self.user, col=self.col_offset)
+          else:
+            self.col -= 1
+            if self.insert_mode:
+              await ansi_left(self.user)
+            else:
+              await send(self.user, self.content[self.content_col_offset+self.col+1])
+              await ansi_color(self.user, self.bg, self.fg, False, False)
+              await send(self.user, self.content[self.content_col_offset+self.col])
+              await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
+              await ansi_left(self.user)
+              await ansi_left(self.user)
+        elif key == "right":
+          if self.col == self.length-1: # cursor is at the very right
+            if self.col+self.content_col_offset <= len(self.content): # make sure cursor is not at end of self.content already # off by one maybe?
+              self.content_col_offset += 1
+              await ansi_move(col=self.col_offset) # move the cursor the easy/cheating way, we totally optimized ansi_move() anyway.
+              if self.insert_mode:
+                await send(self.user, self.content[self.content_col_offset:self.content_col_offset+self.length])
+              else:
+                await ansi_move(col=self.col_offset)
+                await send(self.user, self.content[self.content_col_offset:self.content_col_offset+self.length-1]) # send normal characters up until the inverted character
+                await ansi_color(self.user, self.bg, self.fg, False, False)
+                await send(self.user, self.content[self.content_col_offset+self.length])              # send the inverted character
+                await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
+              await ansi_left(self.user)
+          else:
+            self.col += 1
+            if self.insert_mode:
+              await ansi_right(self.user)
+            else:
+              await send(self.user, self.content[self.content_col_offset+self.col-1])                 # send normal character to replace the inverted character
+              await ansi_color(self.user, self.bg, self.fg, False, False)
+              await send(self.user, self.content[self.content_col_offset+self.col])                   # send inverted character to replace the normal character one to the right
+              await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
+              await ansi_left(self.user)
+        elif key == "home":
+          if self.content_col_offset > 0:
+            self.col = self.content_col_offset = 0
+            await ansi_move(col=self.col_offset)
+            if self.insert_mode:
+              await send(self.user, self.content[:self.length])    # send <field_length> many characters of self.content
+              await ansi_move(col=self.col_offset)
+            else:
+              await ansi_color(self.bg, self.fg, False, False)
+              await send(self.user, self.content[0])
+              await ansi_color(self.fg, self.bg, self.fg_br, self.bg_br)
+              await send(self.user, self.content[1:self.length])
+          else:
+            await ansi_color(self.bg, self.fg, False, False)
+            await send(self.user, self.content[0])
+            await ansi_right(self.user, self.col)
+            await ansi_color(self.fg, self.bg, self.fg_br, self.bg_br)
+            await send(self.user, self.content[self.col])
+            await ansi_move(col=self.col_offset)
+          await ansi_move(self.user, col=self.col_offset)
+        elif key == "end":
+          if len(self.content) <= self.length:
+            await ansi_right(self.user, len(self.content)-self.col)
+            self.col = len(self.content)
+          else:
+            await ansi_move(self.user, col=self.col_offset)
+            self.content_col_offset = len(self.content)-self.length+1
+            await send(self.user, self.content[self.content_col_offset:self.content_col_offset+self.length])
+            await ansi_color(self.user, self.fill_self.bg, self.fill_self.fg, self.fill_self.bg_br, self.fill_self.fg_br)
+            await send(self.user, self.fill)
+            await ansi_color(self.user, self.bg, self.fg, self.bg_br, self.fg_br)
+        elif key == "ins":  # todo
+          self.insert_mode = not self.insert_mode
+          if self.insert_mode:
+            await send(self.user, self.content[self.content_col_offset+self.col]) # insert was turned on, replace block with the self.content character at that col.
+            await ansi_left()
+          else:
+            await ansi_color(self.user, self.bg, self.fg, False, False)
+            await send(self.user, self.content[self.content_col_offset+self.col])
+            await ansi_color(self.user, self.fg, self.br, self.fg_br, self.bg_br)
+            await ansi_left(self.user, self.bg, self.fg)
+        elif key == "back":
+          if self.col==0:
+            if self.content_col_offset>0:
+              self.content_col_offset -= 1
+              self.content=self.content[:self.content_col_offset]+self.content[self.content_col_offset+1:] # delete a char from self.content. we're at self.col=0 so we don't have to factor in self.col.
+          else:
+            self.col -= 1
+            self.content_col_offset -= 1
+            self.content=self.content[:self.content_col_offset+self.col]+self.content[self.content_col_offset+self.col+1:] # delete a char from self.content at new self.content_col_offset. factor in self.col.
+            await ansi_left(self.user)
+            if self.insert_mode:
+              await send(self.user, chr(217)+self.content[self.content_col_offset+1:self.content_col_offset+self.length-self.col]) # check: is this accurate?
+            else:
+              await send(self.user, self.content[self.content_col_offset:self.content_col_offset+self.length-self.col]) # check: is this accurate?
+            if self.length>len(self.content)-self.content_col_offset:
+              await ansi_color(self.user, self.fill_self.fg, self.fill_self.bg, self.fill_self.fg_br, self.fill_self.bg_br)
+              await send(self.user, self.fill)
+              await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.br_br)
+        elif key == "del":
+          end_pos = len(self.content) - self.content_col_offset-1
+          if end_pos==self.col: # if cursor is right at the end of the self.content
+            self.content = self.content[:self.col+self.content_col_offset-1]
+            if self.insert_mode:
+              await ansi_color(self.user, self.fill_self.fg, self.fill_self.bg, self.fill_self.fg_br, self.fill_self.bg_br)
+              await send(self.user, self.fill)
+            else:
+              await ansi_color(self.user, self.fill_self.bg, self.fill_self.fg)
+              await send(self.user, self.fill)
+              await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
+          else:
+            if end_pos < self.length + 1: # if there are multiple self.fill characters after the self.content # check: off by one error?
+              self.content = self.content[:self.content_col_offset]+self.content[self.col+self.content_col_offset+1:]
+              if self.insert_mode:
+                await send(self.user, self.content[self.col+self.content_col_offset:self.col+self.content_col_offset+self.length-self.col]) # check: is this correct? and is there an off by one error?
+                await ansi_color(self.fill_self.fg, self.fill_self.bg, self.fill_self.fg_br, self.fill_self.bg_br)
+                await send(self.user, self.fill)
+                await ansi_move(self.user, col=self.col_offset+self.col) # move cursor back to where it belongs
+              else:
+                await ansi_color(self.user, self.bg, self.fg, False, False)
+                await send(self.content[self.col+self.content_col_offset])
+                await ansi_color(self.user, self.fill_self.fg, self.fill_self.bg, self.fill_self.fg_br, self.fill_self.bg_br)
+                await send(self.user, self.fill)    # print the rest of the self.fill characters to the end of the input field in normal self.fill colors.
+            else: # if self.content takes up the entire field
+              self.content = self.content[:self.content_col_offset]+self.content[self.col+self.content_col_offset+1:] # delete a char from self.content.
+              if self.insert_mode:
+                await send(self.user, self.content[self.col+self.content_col_offset:self.col+self.content_col_offset+-self.length-self.col]) # print self.content from self.col to end of input starting with the appropriate self.content pos for the horizontal scroll
+              else:
+                await ansi_color(self.user, self.bg, self.fg, False, False)
+                await send(self.user, self.content[self.col+self.content_col_offset]) # send current char in reverse colors
+                await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
+                await send(self.user, self.content[self.col+self.content_col_offset+1:self.col+self.content_col_offset+self.length-self.col]) # send rest of chars in normal colors
+        elif key == ctrl_u: # ^U = clear line
+          self.content = ""
+          self.col = self.content_col_offset = 0
+          await ansi_move(col=self.col_offset)
+          await ansi_color(self.user, self.fill_self.fg, self.fill_self.bg, self.fill_self.fg_br, self.fill_self.bg_br)
+          await send(self.user, self.fill*self.length)
+          await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.br_br)
+        elif key == cr:
+          await send(self.user, cr+lf)
+          return self.content
+        elif isinstance(key, str) and ord(key) >= 32:
+          if self.insert_mode:
+            if len(self.content) < self.content_length:
+              self.content = self.content[:self.col+self.content_col_offset]+key+self.content[self.col+self.content_col_offset:]
+              await send(self.user, self.content[self.content_col_offset+self.col:self.content_col_offset+self.col+self.length-self.col])
+              await ansi_move(self.user, col=self.col_offset+self.input_pos)
+            self.col += 1
+          else:
+            self.content=self.content[:self.col+self.content_col_offset]+key+self.content[self.col_self.content_col_offset+1:]
+            end_pos = len(self.content)-self.content_col_offset
+            self.content.append(key)
+            await send(self.user, key)
+            await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
+            await send(self.user, key)
+            if self.col == end_pos: # cursor is one to the right of the self.content, self.fill char is currently inverted
+              if self.col < self.length-1: # self.col better not be > field_length-1, so if it's not < then it's ==, in which case we wouldn't send a new inverted self.fill char
+                await ansi_color(self.user, self.fill_self.bg, self.user_self.fill_self.fg, False, False)
+                await send(self.user, self.fill)
+                await ansi_left(self.user)
+            else: # self.col had better be < end_pos, because self.col>end_pos is an invalid state, the cursor would be in the middle of self.fill characters
+              await ansi_color(self.user, self.bg, self.fg, False, False)
+              await send(self.user, key)
+              await ansi_color(self.user, self.fg, self.bg, self.fg_br, self.bg_br)
+              await ansi_left(self.user)
+        await self.user.writer.drain()
+
+  async def submit_button(self, conf=config.input_fields.submit, fg=null, fg_br=null, bg=null, bg_br=null, outline=null, outline_fg=null,
+                          outline_fg_br=null, outline_bg=null, outline_bg_br=null, outline_double=null, outline_active_fg=null,
+                          outline_active_fg_br=null, outline_active_bg=null, outline_active_bg_br=null, text=null):
+    self.outline = conf.outline.outline if outline is null else outline
+    self.fg = conf.fg if fg is null else fg
+    self.bg = conf.bg if bg is null else bg
+    self.fg_br = conf.fg_br if fg_br is null else fg_br
+    self.bg_br = conf.bg_br if bg_br is null else bg_br
+    self.outline_fg = conf.outline.fg if outline_fg is null else outline_fg
+    self.outline_fg_br = conf.outline.fg_br if outline_fg_br is null else outline_fg_br
+    self.outline_bg = conf.outline.bg if outline_bg is null else outline_bg
+    self.outline_bg_br = conf.outline.bg_br if outline_bg_br is null else outline_bg_br
+    self.outline_active_fg = conf.outline.active.fg if outline_active_fg is null else outline_active_fg
+    self.outline_active_fg_br = conf.outline.active.fg_br if outline_active_fg_br is null else outline_active_fg_br
+    self.outline_active_bg = conf.outline.active_bg if outline_active_bg is null else outline_active_bg
+    self.outline_active_bg_br = conf.outline.active.bg_br if outline_active_bg_br is null else outline_active_bg_br
+    text = conf.text if text is null else text
+    width = len(text)
+    height = 1
+    col = self.user.cur_col
+    row = self.user.row
+    if self.outline:
+      width += 2
+      height += 2
+      row -= 1
+    self.submit_row = row
+    self.submit_col = col
+    self.submit_height = height
+    self.submit_width = width
+
+  def draw_submit(self, active=False, drain=False):
+
+    if outline:
+      ansi_color(self.user, fg=outline_fg, fg_br=outline_fg_br, bg=outline_bg, bg_br=outline_bg_br)
+      if self.outline_double:  # todo: use unicode if user.terminal == PuTTy
+        ords = chr(201), chr(205), chr(187), chr(186), chr(200), chr(188)
+      else:
+        ords = chr(218), chr(196), chr(191), chr(179), chr(192), chr(217)
+      await send(self.user, ords[0] + ords[1] * (self.width-2) + ords[2])  # todo: don't forget when we need nowrap
+      await ansi_move(self.user, self.submit_row, self.submit_col)
+      for l in range(self.submit_height-2):
+        await ansi_color(self.user, outline_fg, outline_fg_br, outline_bg, outline_bg_br)
+        await ansi_move(self.user, self.row+l+1, self.col)
+        await send(self.user, ords[3])
+        await ansi_color(self.user, fg, fg_br, bg, bg_br)
+        await send(self.user, text)
+        await ansi_color(self.user, outline_fg, outline_fg_br, outline_bg, outline_bg_br)
+        await send(self.user, ords[3])
+      await ansi_move(self.user, self.submit_row + self.submit_height + 1)
+      await send(self.user, ords[4] + ords[1] * (self.submit_width-2) + ords[5], drain=True)  # todo: don't forget when we need nowrap
+    else:
+      await ansi_move(self.user, self.row, self.col)
+      await ansi_color(self.user, fg, fg_br, bg, bg_br)
+      await send(self.user, text, drain=True)
