@@ -603,9 +603,8 @@ async def _handle_sub_menu(user, chosen, option_conf, default_sub, menu_name, De
 async def _show_sub_menu(user, parent_chosen, sub_options, parent_menu_name):
   """Show a sub-menu from option_defaults.options. Returns (chosen_sub, action) or None if exited."""
   from input_output import get_input_key
-  from common import Destinations
 
-  sub_keys = [k for k in (list(sub_options.keys()) if hasattr(sub_options, 'keys') else []) if k != 'option_defaults']
+  sub_keys =[k for k in (list(sub_options.keys()) if hasattr(sub_options, 'keys') else []) if k != 'option_defaults']
   sub_keys.append("eXit")
   sub_prefixes = _compute_min_prefixes(sub_keys)
 
@@ -669,7 +668,6 @@ async def _show_sub_menu(user, parent_chosen, sub_options, parent_menu_name):
 
 
 async def do_menu(user, menu_name_or_node):
-  from input_fields import InputField
   from common import check_keys, Destinations
   from config import get_config
   config = get_config()

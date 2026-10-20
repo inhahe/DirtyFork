@@ -9,9 +9,9 @@ from ruamel.yaml import YAML
 _yaml = YAML()
 _yaml.default_flow_style = False
 
-from input_fields import InputFields, InputField, show_message_box
+from input_fields import InputFields, show_message_box
 from input_output import send, ansi_color, ansi_move_deferred, ansi_cls
-from definitions import RetVals, success, fail, cr, lf, null, white, black, green, red
+from definitions import RetVals, success, cr, lf, null, white, black, green, red
 from config import get_config
 import paths
 
@@ -110,7 +110,7 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
   """Edit settings for target_handle. Called by both the user's own settings
   page and the sysop module. The form is displayed to `user` but the config
   read/written belongs to `target_handle`."""
-  from common import Destinations, _set_connection_encoding, global_data, con as db_con
+  from common import _set_connection_encoding, global_data, con as db_con
 
   is_self = (target_handle.lower() == (user.handle or "").lower())
 
@@ -288,7 +288,6 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
       await ansi_move_deferred(user, row=label_row, col=gap_col, drain=True)
       ansi_color(user, fg=white, bg=black, fg_br=False, bg_br=False)
       await send(user, "Pages: ", drain=True)
-      pages_idx = len(inputFields.fields)
       await inputFields.add_select(options=["yes", "no"], value=current.get("allow_pages", "yes"), conf=style_conf)
       field_types.append(BOOL)
 
@@ -297,7 +296,6 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
       await ansi_move_deferred(user, row=label_row, col=gap_col, drain=True)
       ansi_color(user, fg=white, bg=black, fg_br=False, bg_br=False)
       await send(user, "Chat: ", drain=True)
-      chat_idx = len(inputFields.fields)
       await inputFields.add_select(options=["yes", "no"], value=current.get("allow_chat", "yes"), conf=style_conf)
       field_types.append(BOOL)
 

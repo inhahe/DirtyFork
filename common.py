@@ -1109,7 +1109,7 @@ async def user_director(user, next_destination, menu_item=null):
   except (OSError, ConnectionError, EOFError):
     # Connection dropped — treat as a clean disconnect, no error popup.
     raise Disconnected()
-  except Exception as _exc:
+  except Exception:
     import traceback
     from logger import log as _log
     err_msg = traceback.format_exc()
