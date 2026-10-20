@@ -87,7 +87,7 @@ Top-level values like `bbs_name` are available as `{bbs_name}` placeholders anyw
 ### Database vs YAML
 
 - **SQLite database**: credentials (handle, password_hash), keys (USER_KEYS table), messages, forum posts — anything queried across users
-- **User YAML** (`user_configs/{handle}.yaml`): profile (email, age, bio), preferences (encoding, scroll_step, allow_door_popups, blocked_users, start_destination) — loaded only for the logged-in user
+- **User YAML** (`user_configs/{handle}.yaml`): profile (email, age, bio), preferences (encoding, scroll_step, allow_door_popups, blocked_users, start_destination, show_stars) — loaded only for the logged-in user
 
 ### Path Resolution: Project vs Data Directory
 
@@ -377,6 +377,11 @@ The BBS tracks cursor position and color state precisely:
 An ANSI emulator (`ansi_emulator.py`) maintains `user.screen` — a character-by-character copy of what the terminal displays. This is used for:
 - Saving/restoring screen around popups
 - Tracking door game output
+- Ambient stars (below): a star only appears in a cell the copy shows as an empty, default-colour space
+
+### Ambient Stars
+
+`stars.py` runs a background task per connection that twinkles dim stars in the empty parts of the screen, from the login screen on. They are off unless the `stars:` block in the main config sets `enabled: true` (see the commented example in `DirtyFork.yaml`, which also sets the animation speed, density and colour). Once logged in, a user can turn them off with `show_stars: false` in their user YAML (but not on, if the sysop has them off), and override the colour with `stars_fg` / `stars_fg_br`. Stars never appear inside doors. Whether they show is checked on every animation tick, and stars still on screen are erased when they switch off; drawing takes `user.write_lock`, so it never interleaves with other output, and a screen clear repaints the stars that are still active.
 
 ---
 
@@ -529,3 +534,4 @@ Rotating file logger with configurable:
 | `modem.py` | Serial/modem adapter classes and AT command handling |
 | `modules.py` | Dynamic module loader |
 | `paths.py` | Path resolution (project vs data directory) |
+| `stars.py` | Ambient star animation |

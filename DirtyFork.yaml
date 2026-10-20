@@ -23,6 +23,17 @@ menu_compactness: 1.0
 
 min_edit_width: 10  # minimum characters reserved for editing when quote margins get deep
 
+# Ambient stars: dim stars that twinkle in the empty parts of the screen, from
+# the login screen on (never inside doors). Off unless enabled here; a user can
+# turn them off with "show_stars: false" in their user yaml.
+# stars:
+#   enabled: true
+#   interval: 150       # ms per animation frame
+#   probability: 0.001  # chance per empty cell per frame that a star appears
+#   fg: 4               # colour 0-7 (0 black, 1 red, 2 green, 3 brown, 4 blue, 5 magenta,
+#                       # 6 cyan, 7 white); a user may override it with stars_fg
+#   fg_br: false        # bright colour; a user may override it with stars_fg_br
+
 # Idle timeout in seconds (0 = disabled). Separate values for telnet and modem.
 idle_timeout: 0
 # Seconds before timeout to show "are you still there?" warning (0 = no warning, just disconnect)
