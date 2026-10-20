@@ -110,9 +110,13 @@ class FindDoorConf(unittest.TestCase):
         conf = door._find_door_conf(types.SimpleNamespace(_option_menu=picked), "Same Name")
         self.assertEqual(conf.dir, "picked")
 
-    def test_falls_back_to_any_menu(self):
-        conf = door._find_door_conf(types.SimpleNamespace(_option_menu=None), "Test Door (BIOS)")
-        self.assertEqual(str(conf.dir), "testdoor")
+    def test_other_menus_are_not_searched(self):
+        # (the template lists this door in Sysop Tools; nobody picked it there)
+        self.assertIs(door._find_door_conf(types.SimpleNamespace(_option_menu=None),
+                                           "Test Door (BIOS)"), door.null)
+        elsewhere = types.SimpleNamespace(options_info={})
+        self.assertIs(door._find_door_conf(types.SimpleNamespace(_option_menu=elsewhere),
+                                           "Test Door (BIOS)"), door.null)
 
 
 if __name__ == "__main__":

@@ -128,7 +128,7 @@ destinations:
     black_keys: [banned]   # must NOT have "banned" key
 ```
 
-The rules also apply to menus entered as a submenu of another menu (e.g. a door category, or the Sysop menu from Main). They hold however a menu is reached: every menu a `/jump` path, a dotted path typed at a menu prompt, or a start destination passes through must admit the user, so going straight to a door can't get around its category's keys. Door entries can additionally carry their own `white_keys`/`black_keys`, which the door module enforces for that door only.
+The rules also apply to menus entered as a submenu of another menu (e.g. a door category, or the Sysop menu from Main). They hold however a menu is reached: every menu a `/jump` path, a dotted path typed at a menu prompt, or a start destination passes through must admit the user, and a menu jumped to by its bare name must be one the user could reach from Main through menus that admit them, so going straight to a door or a submenu can't get around its category's keys. Door entries can additionally carry their own `white_keys`/`black_keys`, which the door module enforces for that door only.
 
 New users receive default keys from `user_defaults.keys` in the config (e.g., `[doors]`).
 
@@ -177,11 +177,11 @@ The `/jump` (or `/j`) command navigates directly to any destination using dotted
 /j files.search          → opens the file search
 ```
 
-`resolve_jump()` walks the menu tree, matching each segment by prefix, and returns the menus it passed through; `route_denied()` checks each one's keys (those of its entry under `destinations`). Errors show which segment failed and what options are available, or which menu refused the user and the keys missing.
+`resolve_jump()` walks the menu tree, matching each segment by prefix, and returns the menus it passed through; `route_denied()` checks each one's keys (those of its entry under `destinations`). A single segment that matches no option of Main but names a menu (`/j doors_sysop`) is a jump to that menu, routed through every menu that links to it, not just one: it is allowed when some chain of options from Main (or from a menu nothing links to) through menus that admit the user leads there. Errors show which segment failed and what options are available, or which menu refused the user and the keys missing.
 
 ### Start Destination
 
-Users can set a `start_destination` in their settings (using `/jump` syntax). After login, the BBS sends them directly to that destination instead of the main menu; one that no longer resolves, or that passes through a menu the user's keys don't admit, is ignored. Configured via the Settings page.
+Users can set a `start_destination` in their settings (using `/jump` syntax). After login, the BBS sends them directly to that destination instead of the main menu; one that no longer resolves, or that passes through a menu the user's keys don't admit, is skipped, and the main menu says why. Configured via the Settings page, which refuses a destination the user's own keys don't admit (a sysop setting another user's isn't checked against that user's keys).
 
 ---
 
@@ -258,7 +258,7 @@ Configure doors to read their dropfile from `C:\` (e.g. `C:\DOOR.SYS`) and their
 
 **Screen handling**: the screen is cleared before a door starts. DOS doors were written for ANSI.SYS, where `ESC[2J` (and a form feed) clears the screen *and homes the cursor*; BBS terminals do the same, but VT100-style clients (PuTTY, xterm) don't, so door output has both rewritten to `ESC[2J ESC[H`, which means the same on every terminal.
 
-**Session log**: the raw output of the most recent session on each node is kept in `doors/_nodes/<dir>/session<N>.log`, which helps when a door misbehaves.
+**Session log**: the raw output of the most recent session on each node is kept in `doors/_nodes/<dir>/session<N>.log`, which helps when a door misbehaves. If it can't be written (a full disk, say), the session goes on without it.
 
 **Cross-platform**: DOSBox/DOSBox-X runs on Linux and macOS too. The BBS generates DOSBox configs with OS-native paths, so doors work identically on all platforms. Just set `dosbox_path` to the correct binary (e.g., `/usr/bin/dosbox-x` on Linux).
 
@@ -516,7 +516,7 @@ Plain `unittest`, in `tests/`. Run from the project directory, with the BBS's Py
 python -m unittest discover -s tests
 ```
 
-They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data directory that is removed afterwards, and need no network, DOSBox or door files. Covered: door node directories, the generated autoexec and dropfiles, the daily mark, the door I/O pumps and process handling, menu keys on `/jump` and dotted paths, and the ambient stars.
+They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data directory that is removed afterwards, and need no network, DOSBox or door files. Covered: door node directories, the generated autoexec and dropfiles, the daily mark, the door I/O pumps and process handling, menu keys on `/jump`, dotted paths and jumps to a menu by name, the text menu's prompt line, and the ambient stars.
 
 ---
 

@@ -226,18 +226,39 @@ def _resolve_greedy(node, path_str, path_so_far=(), route=()):
   return (None, None, None, f"At {node.menu_name.title()}: \"{path_str}\" doesn't match any option.", route)
 
 
-def _ancestors(node):
-  """The menus above *node*, from the top one down to its parent: the route
-  to a menu reached by name rather than by a path.  (A menu that options in
-  several menus link to counts the last-linked one as its parent; options
-  linking back up, e.g. to main, can make the chain a loop.)"""
-  chain, seen = [], {id(node)}
-  node = node.parent
-  while node is not None and id(node) not in seen:
-    seen.add(id(node))
-    chain.append(node)
-    node = node.parent
-  return tuple(reversed(chain))
+def _route_to(target, admits=None):
+  """A shortest route to the menu *target* for a jump that names it: the
+  menus whose options lead there, ending with one that links to it.  It
+  starts at main, or at a menu that no option links to (one reached only by
+  name), and passes only through menus that *admits* (MenuNode -> bool)
+  accepts, when given.  Returns () when *target* is such a starting menu
+  itself, None when no route exists.
+
+  Every link counts, not just MenuNode.parent (the last menu found linking
+  to a menu): a menu can be listed in several menus, and options can link
+  back up, e.g. to main.
+  """
+  nodes = list(_jump_nodes.values()) if _jump_nodes else []
+  linked = {id(child) for node in nodes for child in node.children.values()}
+  starts = [node for node in nodes if node.name == "main" or id(node) not in linked]
+  if any(start is target for start in starts):
+    return ()
+  came_from = {id(start): None for start in starts}
+  queue = list(starts)
+  for node in queue:  # breadth first: the list grows while it is walked
+    if admits is not None and not admits(node):
+      continue
+    for child in node.children.values():
+      if id(child) in came_from:
+        continue
+      came_from[id(child)] = node
+      if child is target:
+        route = [node]
+        while came_from[id(route[-1])] is not None:
+          route.append(came_from[id(route[-1])])
+        return tuple(reversed(route))
+      queue.append(child)
+  return None
 
 
 def route_denied(user, route):
@@ -251,10 +272,13 @@ def route_denied(user, route):
   return None
 
 
-def resolve_jump(path_str):
-  """Resolve a dotted path from the main menu (for /jump).
+def resolve_jump(path_str, user=None):
+  """Resolve a dotted path from the main menu (for /jump and start destinations).
   Uses greedy longest-match to support option names containing dots.
-  Returns (dest_name, menu_item, parent_menu, error, route); see _resolve_greedy."""
+  Returns (dest_name, menu_item, parent_menu, error, route); see _resolve_greedy.
+  A path that is just a menu's name has no menus of its own to go through:
+  its route is one through menus that admit *user* if there is one, else a
+  shortest one (where route_denied then finds a menu that refuses them)."""
   _ensure_jump_tree()
   _no_match = f'"{path_str}" doesn\'t match any destination. Usage: /j option or menu.option'
   if not _jump_nodes:
@@ -263,21 +287,26 @@ def resolve_jump(path_str):
   if not path_str:
     return (None, None, None, "Usage: /j option or menu.option", ())
   root = _jump_nodes.get("main")
-  if root is not None:
-    result = _resolve_greedy(root, path_str)
-    if result[3] is None:
-      return result
+  result = _resolve_greedy(root, path_str) if root is not None else None
+  if result is not None and result[3] is None:
+    return result
   # Single component: try matching a menu name directly (e.g. /j main)
   if "." not in path_str:
     p = path_str.lower()
     matches = [mn for mn in _jump_nodes if mn.lower().startswith(p)]
     if len(matches) == 1:
-      return (matches[0], null, None, None, _ancestors(_jump_nodes[matches[0]]))
+      target = _jump_nodes[matches[0]]
+      route = None
+      if user is not None:
+        from common import check_menu_keys
+        route = _route_to(target, lambda node: check_menu_keys(user, node).status == success)
+      if route is None:
+        route = _route_to(target)
+      # (still None: only a closed loop of menus that nothing else leads to
+      # links to it, so there is nothing above it to check)
+      return (matches[0], null, None, None, route or ())
   # No match
-  if root is not None:
-    result = _resolve_greedy(root, path_str)
-    return (None, None, None, result[3] or _no_match, ())
-  return (None, None, None, _no_match, ())
+  return (None, None, None, (result[3] if result is not None else None) or _no_match, ())
 
 
 def resolve_dotted(menu_name, path_str):
@@ -563,108 +592,6 @@ def _resolve_menu_item_template(template, context):
     else:
       result.append(item)
   return tuple(result)
-
-
-async def _handle_sub_menu(user, chosen, option_conf, default_sub, menu_name, Destinations):
-  """Show a sub-menu from option_defaults.options, then build the result.
-  Returns RetVals on success, or None if user exited the sub-menu."""
-
-  sub_chosen = await _show_sub_menu(user, chosen, default_sub, menu_name)
-  if sub_chosen is None:
-    return None
-
-  # Find target from sub-option config, sub option_defaults, or parent option
-  sub_conf = default_sub[sub_chosen] if sub_chosen in default_sub else null
-  sub_defaults = default_sub.option_defaults if hasattr(default_sub, 'option_defaults') and default_sub.option_defaults else null
-  target = None
-  if sub_conf and sub_conf is not null and hasattr(sub_conf, 'target') and sub_conf.target:
-    target = str(sub_conf.target)
-  elif sub_defaults and sub_defaults is not null and hasattr(sub_defaults, 'target') and sub_defaults.target:
-    target = str(sub_defaults.target)
-  elif option_conf and option_conf.target:
-    target = str(option_conf.target)
-  else:
-    target = chosen.lower()
-
-  # Build menu_item from template or default
-  template = None
-  if sub_defaults and sub_defaults is not null and sub_defaults.menu_item:
-    template = list(sub_defaults.menu_item) if hasattr(sub_defaults.menu_item, '__iter__') and not isinstance(sub_defaults.menu_item, str) else [str(sub_defaults.menu_item)]
-  if not template:
-    template = ['..', '.']
-  mi = _resolve_menu_item_template(template, {
-    'parent_name': chosen, 'parent_conf': option_conf,
-    'self_name': sub_chosen, 'self_conf': sub_conf,
-  })
-  return RetVals(status=success, next_destination=_resolve_destination(target, menu_name),
-                 next_menu_item=mi)
-
-
-async def _show_sub_menu(user, parent_chosen, sub_options, parent_menu_name):
-  """Show a sub-menu from option_defaults.options. Returns (chosen_sub, action) or None if exited."""
-  from input_output import get_input_key
-
-  sub_keys =[k for k in (list(sub_options.keys()) if hasattr(sub_options, 'keys') else []) if k != 'option_defaults']
-  sub_keys.append("eXit")
-  sub_prefixes = _compute_min_prefixes(sub_keys)
-
-  while True:
-    await ansi_cls(user)
-    ansi_color(user, fg=cyan, fg_br=False, bg=black)
-    breadcrumb = _build_breadcrumb(parent_menu_name)
-    await send(user, f" {breadcrumb} > {parent_chosen}" + cr + lf + cr + lf, drain=False)
-
-    # Render sub-menu options (same style as text menus: 1 space indent)
-    for sk in sub_keys:
-      prefix_len = sub_prefixes.get(sk, 1)
-      ansi_color(user, fg=white, fg_br=True, bg=black)
-      await send(user, " " + sk[:prefix_len], drain=False)
-      ansi_color(user, fg=white, fg_br=False, bg=black)
-      await send(user, sk[prefix_len:] + cr + lf, drain=False)
-
-    await send(user, cr + lf, drain=False)
-    ansi_color(user, fg=white, fg_br=False, bg=black)
-    await send(user, "Option: ", drain=True)
-
-    # Read input
-    buf = []
-    while True:
-      key = await get_input_key(user)
-      if key == cr:
-        break
-      if key == back:
-        if buf:
-          buf.pop()
-          user.writer.write(back + " " + back)
-          await user.writer.drain()
-        continue
-      if isinstance(key, str) and len(key) == 1 and ord(key) >= 32:
-        buf.append(key)
-        await send(user, key, drain=True)
-        # Auto-submit on unambiguous single-char match
-        text = "".join(buf)
-        matched, _ = _match_option(text, sub_keys, sub_prefixes)
-        if matched:
-          await send(user, cr + lf, drain=False)
-          break
-        continue
-
-    text = "".join(buf).strip()
-    if not text:
-      continue
-
-    if text.lower() == "x":
-      return None
-
-    matched, err = _match_option(text, sub_keys, sub_prefixes)
-    if matched:
-      if matched == "eXit":
-        return None
-      return matched
-    # Show error and loop
-    ansi_color(user, fg=red, fg_br=True, bg=black)
-    await send(user, cr + lf + "  " + (err or "No match.") + cr + lf, drain=True)
-    await get_input_key(user)
 
 
 async def do_menu(user, menu_name_or_node):
@@ -1019,7 +946,7 @@ async def do_menu(user, menu_name_or_node):
         nonlocal needs_render, prompt_row, prompt_col, error_row
         if not menu_conf.screen_path:
           prompt_row, prompt_col, error_row = await _show_text_error(
-            user, msg, can_inline, prompt_row, prompt_col, len(option_text), error_row)
+            user, msg, can_inline, prompt_row, prompt_col, len(buf), error_row)  # all typed, spaces too
           buf.clear()
           needs_render = False
           return True  # caller should continue
@@ -1085,7 +1012,7 @@ async def do_menu(user, menu_name_or_node):
           if await _err("Usage: /j option or menu.option"): continue
           else: error_msg = "Usage: /j option or menu.option"
           continue
-        dest_name, menu_item_name, parent_name, err, route = resolve_jump(jump_path)
+        dest_name, menu_item_name, parent_name, err, route = resolve_jump(jump_path, user)
         err = err or route_denied(user, route)
         if err:
           if await _err(err): continue

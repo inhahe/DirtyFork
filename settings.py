@@ -392,8 +392,11 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
   # Validate start destination
   sd_raw = values.get("start_destination", "").strip()
   if sd_raw:
-    from menu import resolve_jump
-    dest_name, mi, parent_menu, err, route = resolve_jump(sd_raw)
+    from menu import resolve_jump, route_denied
+    dest_name, mi, parent_menu, err, route = resolve_jump(sd_raw, user if is_self else None)
+    if is_self:
+      # (another user's keys aren't loaded here; login tells them if it is skipped)
+      err = err or route_denied(user, route)
     if err:
       await show_message_box(user, err,
                            title="Error", outline_fg=red, outline_fg_br=True,

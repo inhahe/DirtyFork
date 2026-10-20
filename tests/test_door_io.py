@@ -3,6 +3,7 @@ import asyncio
 import sys
 import types
 import unittest
+from unittest import mock
 
 import _setup
 import door
@@ -82,13 +83,21 @@ class Pumps(unittest.IsolatedAsyncioTestCase):
         chunks = [b"one", b"two", b""]
         async def read(n):
             return chunks.pop(0)
-        class BadLog:
+        class FullDisk:
             def write(self, s):
                 raise OSError(28, "No space left on device")
+            close = write  # closing flushes, so it fails the same way
         user = pump_user()
-        result = await door._pump_door_to_user(user, read, session_log=BadLog())
+        with mock.patch.object(door, "open", create=True, return_value=FullDisk()):
+            with door._SessionLog("session1.log") as session_log:   # leaving it closes it
+                result = await door._pump_door_to_user(user, read, session_log=session_log)
         self.assertEqual(result, door.ENDED_BY_DOOR)
         self.assertEqual(user.writer.text(), "onetwo")
+
+    def test_session_log_that_cannot_be_opened(self):
+        with mock.patch.object(door, "open", create=True, side_effect=PermissionError(13, "denied")):
+            with door._SessionLog("session1.log") as session_log:
+                session_log.write("text")
 
     async def test_input_pump(self):
         di = door._DoorInput(Config({}))
@@ -144,8 +153,10 @@ class Processes(unittest.IsolatedAsyncioTestCase):
             await door._wait_for_dosbox(loop.create_future(), p, 30)   # doesn't wait 30 s
         p = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(30)")
         try:
+            late = loop.create_future()
             with self.assertRaisesRegex(door._DoorStartError, "timed out"):
-                await door._wait_for_dosbox(loop.create_future(), p, 0.2)
+                await door._wait_for_dosbox(late, p, 0.2)
+            self.assertTrue(late.cancelled())   # a connection still coming in gets closed
             fut = loop.create_future()
             fut.set_result(("reader", "writer"))
             self.assertEqual(await door._wait_for_dosbox(fut, p, 5), ("reader", "writer"))

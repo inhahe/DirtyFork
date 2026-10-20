@@ -887,10 +887,15 @@ class _DestinationRegistry:
         start_item = null
         if user.conf.start_destination:
           from menu import resolve_jump, route_denied
-          dest_name, menu_item, parent_menu, err, route = resolve_jump(str(user.conf.start_destination))
-          if dest_name and not err and not route_denied(user, route):
+          dest_name, menu_item, parent_menu, err, route = resolve_jump(str(user.conf.start_destination), user)
+          err = err or route_denied(user, route)
+          if dest_name and not err:
             start_dest = getattr(Destinations, dest_name, self.main)
             start_item = menu_item if menu_item else null
+            user._option_menu = route[-1] if route else None  # (as for /jump)
+          else:
+            # shown by the main menu, so they know why they landed there
+            user.pending_menu_error = f"Start destination skipped: {err}"
         return RetVals(status=success, next_destination=start_dest, next_menu_item=start_item)
       user.login_tries.append((handle, password))
       from logger import log as _log

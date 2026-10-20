@@ -567,26 +567,19 @@ def _is_door_option(option_conf):
 
 
 def _find_door_conf(user, door_name):
-    """Find the config for the door the user picked.
+    """The config of the door the user picked, or null.
 
-    Doors can live in any menu (e.g. category submenus of the doors menu), so
-    look first in the menu whose option the user picked, then in every menu
-    (a start destination, say, picks no option).
+    Doors can live in any menu (e.g. category submenus of the doors menu):
+    it is option *door_name* of the menu whose option the user picked
+    (user._option_menu, set by a menu pick, /jump, a dotted path or a start
+    destination, once the keys of the menus on the way have been checked).
+    Other menus are deliberately not searched: a door of the same name there
+    may sit behind keys nobody checked.
     """
     picked = getattr(user, "_option_menu", None)
-    info = getattr(picked, "options_info", {}).get(door_name) if picked is not None else None
+    info = picked.options_info.get(door_name) if picked is not None else None
     if info is not None and _is_door_option(info.conf):
         return info.conf
-    menus = config.menu_system
-    if not menus:
-        return null
-    for menu_name in menus.keys():
-        mc = menus[menu_name]
-        if not mc or not mc.options or door_name not in mc.options:
-            continue
-        oc = mc.options[door_name]
-        if _is_door_option(oc):
-            return oc
     return null
 
 
@@ -931,31 +924,74 @@ async def _pump_user_to_door(user, door_input, write, drain, still_running=lambd
         return ENDED_BY_CALLER
 
 
+class _SessionLog:
+    """The raw output of a door session (session<N>.log), kept for debugging.
+
+    A debugging aid must never disturb the session, so nothing here raises:
+    if the file can't be opened, written or closed (a full disk, say; closing
+    flushes, so it can fail too), the log stops and the session goes on.
+    """
+
+    def __init__(self, path):
+        self._path = path
+        self._file = None
+        try:
+            self._file = open(path, "w", encoding="utf-8", errors="replace")
+        except OSError as e:
+            log.warning("Door session log %s not kept: %s", path, e)
+
+    def write(self, text):
+        if self._file is not None:
+            try:
+                self._file.write(text)
+            except Exception as e:
+                self._stop(e)
+
+    def close(self):
+        if self._file is not None:
+            try:
+                self._file.close()
+                self._file = None
+            except Exception as e:
+                self._stop(e)
+
+    def _stop(self, error):
+        log.warning("Door session log %s stopped: %s", self._path, error)
+        f, self._file = self._file, None
+        try:
+            f.close()  # (closed already if it was close() that failed)
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+
 async def _pump_door_to_user(user, read, emulator=None, session_log=None):
     """Door -> caller, keeping the ANSI emulator's copy of the screen in step.
+    *session_log*, if given, is a _SessionLog.
 
     Returns ENDED_BY_DOOR when the door closes its side, ENDED_BY_CALLER
     when writing to the caller fails (the caller hung up).
     """
     door_output = _DoorOutput()
-    broken = set()  # "emulator" / "log" once they have failed: the session goes on without them
 
     async def deliver(text):
+        nonlocal emulator
         if not text:
             return
-        if emulator and "emulator" not in broken:
+        if emulator:
             try:
                 emulator.feed(text)
             except Exception:
-                broken.add("emulator")
+                emulator = None  # the session goes on without it
                 log.error("Door output: ANSI emulator failed; popups over this door "
                           "may not restore its screen", exc_info=True)
-        if session_log and "log" not in broken:
-            try:
-                session_log.write(text)
-            except Exception as e:
-                broken.add("log")
-                log.warning("Door output: session log stopped: %s", e)
+        if session_log:
+            session_log.write(text)
         user.writer.write(text)
         await user.writer.drain()
 
@@ -1108,6 +1144,7 @@ async def _wait_for_dosbox(conn_future, process, timeout):
             exited.cancel()
     if conn_future.done():
         return conn_future.result()
+    conn_future.cancel()  # so a connection that still comes in gets closed
     if process.returncode is not None:
         raise _DoorStartError(f"DOSBox-X exited (code {process.returncode}) before the door started.")
     raise _DoorStartError("Door timed out (DOSBox did not connect).")
@@ -1386,7 +1423,7 @@ async def run(user, destination, menu_item=None):
                 dosbox_tcp_server.close()  # stop accepting new connections
 
             log.debug("DOSBox connected on port %s", socket_port)
-            with open(session_log_path, "w", encoding="utf-8", errors="replace") as session_log:
+            with _SessionLog(session_log_path) as session_log:
                 ended_by = await _bridge_socket(user, door_reader, door_writer, process, door_conf, emulator, session_log=session_log)
 
         elif comm_type == "SOCKET":
@@ -1403,7 +1440,7 @@ async def run(user, destination, menu_item=None):
             )
             node.process = process
 
-            with open(session_log_path, "w", encoding="utf-8", errors="replace") as session_log:
+            with _SessionLog(session_log_path) as session_log:
                 ended_by = await _bridge_socket(user, "127.0.0.1", socket_port, process, door_conf, emulator, session_log=session_log)
 
         elif comm_type == "STDIO":
@@ -1421,7 +1458,7 @@ async def run(user, destination, menu_item=None):
             )
             node.process = process
 
-            with open(session_log_path, "w", encoding="utf-8", errors="replace") as session_log:
+            with _SessionLog(session_log_path) as session_log:
                 ended_by = await _bridge_stdio(user, process, door_conf, emulator, session_log=session_log)
 
         else:
@@ -1494,12 +1531,11 @@ async def run(user, destination, menu_item=None):
                 _log_dosbox_output(node_dir, door_name, node_num)
             if daily_marked and not os.path.exists(os.path.join(node_dir, DAILY_DONE_FLAG)):
                 _unmark_daily(door_dir)
-            # Remove the node directory
-            try:
-                if os.path.exists(node_dir):
-                    shutil.rmtree(node_dir, ignore_errors=True)
-            except Exception as e:
-                log.error("Failed to clean up node dir %s: %s", node_dir, e)
+            # Remove the node directory (the next session on the node empties
+            # it again if something in it was still held open)
+            shutil.rmtree(node_dir, ignore_errors=True)
+            if os.path.exists(node_dir):
+                log.error("Could not remove all of node dir %s", node_dir)
             log.debug("Cleaned up %s node %s", door_name, node_num)
         if region_set:
             try:
