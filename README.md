@@ -92,7 +92,7 @@ menu_system:
         dir: 'tw2002'
 ```
 
-Inside DOSBox, `C:\` holds the dropfiles for the session, `D:\` is the door's directory and `E:\` is `doors/tools` (FOSSIL driver, DOORWAY); point the door's own configuration at `C:\` for its dropfile. Each session gets its own node directory and the BBS writes all supported dropfile formats automatically. A sysop-only DOS shell door lets you run door installers and config programs from your terminal.
+Inside DOSBox, `C:\` holds the dropfiles for the session, `D:\` is the door's directory and `E:\` is `doors/tools` (not included: put a FOSSIL driver and DOORWAY there if your doors need them); point the door's own configuration at `C:\` for its dropfile. Each session gets its own node directory and the BBS writes all supported dropfile formats automatically. With DOORWAY installed, a sysop-only DOS shell door lets you run door installers and config programs from your terminal.
 
 ### Supported Dropfile Formats
 
@@ -123,7 +123,7 @@ files/meta.yaml       # file metadata (keys, descriptions)
 doors/                # door game directories
 doors/dosbox.conf     # shared DOSBox-X base config
 doors/dropfiles/      # dropfile format defaults
-doors/tools/          # mounted as E: in door sessions (FOSSIL driver, DOORWAY)
+doors/tools/          # mounted as E: in door sessions (FOSSIL driver, DOORWAY; not included)
 doors/_nodes/         # per-session node dirs (dropfiles) and last session logs
 input_fields.yaml     # input field definitions
 register.yaml         # registration form config

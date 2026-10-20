@@ -249,12 +249,12 @@ Variables available in `command` and `pre_commands`: `{node}`, `{dropfile_path}`
 **DOSBox drive mapping:**
 - `C:\` — the node directory (`doors/_nodes/<dir>/node<N>`), where the dropfiles are written. It is removed when the session ends.
 - `D:\` — the door's game directory (`doors/<dir>`), where the game EXE lives. The command runs from here.
-- `E:\` — `tools_path` (`doors/tools`): the FOSSIL driver and DOORWAY.
+- `E:\` — `tools_path` (`doors/tools`, not included): put a FOSSIL driver there (e.g. X00.EXE, for doors with `fossil: true`) and DOORWAY (`doors/tools/doorway`, for the sysop DOS shell).
 - COM1 — the caller, through DOSBox-X's null-modem serial port.
 
 Configure doors to read their dropfile from `C:\` (e.g. `C:\DOOR.SYS`) and their data from `D:\`; never put host paths in a door's own config files. If `dropfile_dir` is set, the dropfiles are also copied there before the door starts.
 
-**Sysop DOS shell.** The *Sysop Tools* category has a sysop-only **DOS Shell** door: a remote DOS prompt (through DOORWAY, which mirrors the DOSBox screen to your terminal and feeds your keys in) with `D:\` = `doors/`. Use it to run door installers and config programs (TEDIT, LORDCFG, ...) from your terminal, since DOSBox runs hidden. A config program that stores paths should be run with the same drive mapping the door has during play: give it its own sysop entry with `dir:` set to the door's directory, e.g. `command: 'E:\DOORWAY\DOORWAY.EXE COM1 /V:D /O:T /M:999 /G:ON /P:CONFIG.EXE'` (or `/C:DOS` for a prompt). DOORWAY feeds keys through the 15-key BIOS keyboard buffer, so pasting long text into it can drop characters.
+**Sysop DOS shell.** With DOORWAY in `doors/tools/doorway`, the sysop-only **DOS Shell** door (commented out in the *Sysop Tools* category of `DirtyFork.yaml`) gives a remote DOS prompt (through DOORWAY, which mirrors the DOSBox screen to your terminal and feeds your keys in) with `D:\` = `doors/`. Use it to run door installers and config programs (TEDIT, LORDCFG, ...) from your terminal, since DOSBox runs hidden. A config program that stores paths should be run with the same drive mapping the door has during play: give it its own sysop entry with `dir:` set to the door's directory, e.g. `command: 'E:\DOORWAY\DOORWAY.EXE COM1 /V:D /O:T /M:999 /G:ON /P:CONFIG.EXE'` (or `/C:DOS` for a prompt). DOORWAY feeds keys through the 15-key BIOS keyboard buffer, so pasting long text into it can drop characters.
 
 **Screen handling**: the screen is cleared before a door starts. DOS doors were written for ANSI.SYS, where `ESC[2J` (and a form feed) clears the screen *and homes the cursor*; BBS terminals do the same, but VT100-style clients (PuTTY, xterm) don't, so door output has both rewritten to `ESC[2J ESC[H`, which means the same on every terminal.
 

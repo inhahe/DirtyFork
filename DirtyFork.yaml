@@ -119,7 +119,10 @@ destinations:
     # Path to your DOSBox-X executable:
     dosbox_path: C:\dosbox-x\dosbox-x.exe
     base_path: doors  # relative paths in door configs are relative to this directory
-    tools_path: tools  # mounted as E: in every DOSBox door session (FOSSIL driver, DOORWAY)
+    # doors/tools (not included) is mounted as E: in every DOSBox door session.
+    # Put a FOSSIL driver there (e.g. X00.EXE) for doors that need one, and
+    # DOORWAY (in doors/tools/doorway) for the sysop DOS shell below.
+    tools_path: tools
     fossil_command: X00.EXE  # run from E:\ before doors that have fossil: true
     max_nodes: 20
   teleconference:
@@ -173,9 +176,9 @@ destinations:
   doors_rpg:
     type: menu
     white_keys: [doors]
-  doors_space:
-    type: menu
-    white_keys: [doors]
+  # doors_space:          # e.g. a Space category (see the commented example below)
+  #   type: menu
+  #   white_keys: [doors]
   doors_sysop:
     type: menu
     white_keys: [sysop]
@@ -280,8 +283,8 @@ menu_system:
         target: doors_popular
       Role-Playing:
         target: doors_rpg
-      Space:
-        target: doors_space
+      # Space:
+      #   target: doors_space
       Sysop Tools:
         target: doors_sysop
   doors_popular:
@@ -303,39 +306,42 @@ menu_system:
       door32_sys:  !include doors/dropfiles/door32_sys.yaml
       sfdoors_dat: !include doors/dropfiles/sfdoors_dat.yaml
     options:
-      # Example entries — edit paths and commands to match your installation.
       Legend of the Red Dragon: &door_lord
-        # NODE<n>.DAT in the LORD dir: BBSTYPE QBBS, BBSDROP C:\
+        # LORD (doors/lord_demo).  NODE<n>.DAT in its dir: BBSTYPE QBBS, BBSDROP C:\
         max_nodes: 10
         command: 'START.BAT {node}'
-        dir: 'lord'
-      Trade Wars 2002: &door_tw2002
-        # nodes set up in TEDIT: DOOR drop file type, path C:\, COM1
-        max_nodes: 4
-        command: 'TW2002.EXE TWNODE={node}'
-        dir: 'tw2002'
+        dir: 'lord_demo'
+      # Example of a door you install yourself (doors/tw2002); add it to a
+      # category too, e.g. a Space category:
+      # Trade Wars 2002: &door_tw2002
+      #   # nodes set up in TEDIT: DOOR drop file type, path C:\, COM1
+      #   max_nodes: 4
+      #   command: 'TW2002.EXE TWNODE={node}'
+      #   dir: 'tw2002'
   doors_rpg:
     title: Role-Playing
     option_defaults: *door_defaults
     options:
       Legend of the Red Dragon: *door_lord
-  doors_space:
-    title: Space
-    option_defaults: *door_defaults
-    options:
-      Trade Wars 2002: *door_tw2002
+  # doors_space:
+  #   title: Space
+  #   option_defaults: *door_defaults
+  #   options:
+  #     Trade Wars 2002: *door_tw2002
   doors_sysop:
     title: Sysop Tools
     option_defaults: *door_defaults
     options:
-      DOS Shell (doors directory):
-        # Remote DOS prompt (via DOORWAY in doors/tools/doorway) with D:\ = doors/,
-        # for running door installers and config programs from your terminal.
-        white_keys: [sysop]
-        max_nodes: 1
-        command: 'E:\DOORWAY\DOORWAY.EXE COM1 /V:D /O:T /M:999 /G:ON /C:DOS'
-        dir: '.'
+      # Remote DOS prompt with D:\ = doors/, for running door installers and
+      # config programs from your terminal.  Needs DOORWAY in doors/tools/doorway.
+      # DOS Shell (doors directory):
+      #   white_keys: [sysop]
+      #   max_nodes: 1
+      #   key_translation: doorway   # your terminal's arrow/function keys -> DOORWAY
+      #   command: 'E:\DOORWAY\DOORWAY.EXE COM1 /V:D /O:T /M:999 /G:ON /C:DOS'
+      #   dir: '.'
       Test Door (FOSSIL):
+        # loads the FOSSIL driver from doors/tools; without one it falls back to BIOS
         fossil: true
         command: 'TESTDOOR.EXE /FOSSIL /PORT:0'
         dir: 'testdoor'
