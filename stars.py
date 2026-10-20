@@ -260,8 +260,9 @@ async def stars_loop(user):
 def _chosen_cells(n, p):
   """Yield, in increasing order, the indices in range(n) that a Bernoulli(p)
   trial per index would pick, without drawing a random number per index:
-  the gap to the next pick is geometrically distributed."""
-  if p <= 0:
+  the gap to the next pick is geometrically distributed.  A p that is not a
+  positive number (0, negative, NaN) picks nothing."""
+  if not p > 0:
     return
   if p >= 1:
     yield from range(n)
@@ -269,7 +270,11 @@ def _chosen_cells(n, p):
   log_q = math.log1p(-p)
   i = -1
   while True:
-    i += 1 + int(math.log(1.0 - random.random()) / log_q)  # 1 - random() is in (0, 1]
+    # 1 - random() is in (0, 1]; a tiny p makes the gap huge or infinite
+    gap = math.log(1.0 - random.random()) / log_q
+    if not gap < n - i:
+      return
+    i += 1 + int(gap)
     if i >= n:
       return
     yield i

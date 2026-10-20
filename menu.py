@@ -154,61 +154,18 @@ def get_menu_node(name):
 _ensure_jump_tree = _ensure_menu_tree
 
 
-def _resolve_path(node, parts):
-  """Walk a dotted path from a given jump node.
-  Supports 'x' segments to go up to parent menu before continuing.
-  'xx' is expanded to 'x.x', 'xxx' to 'x.x.x', etc.
-  Returns (dest_name, menu_item, parent_menu, error)."""
-  # Expand multi-x segments: "xx.foo" → "x.x.foo", "xxx" → "x.x.x"
-  expanded = []
-  for part in parts:
-    if len(part) > 1 and part.lower() == 'x' * len(part):
-      expanded.extend(['x'] * len(part))
-    else:
-      expanded.append(part)
-  parts = expanded
-
-  for i, part in enumerate(parts):
-    # Handle 'x' (exit) — go up to parent menu
-    if part.lower() == 'x':
-      if not node.parent:
-        remaining = ".".join(parts[i:])
-        return (None, None, None, f"At {node.menu_name.title()}: can't exit further with \"{remaining}\"")
-      node = node.parent
-      # If this is the last part, return to the parent menu
-      if i == len(parts) - 1:
-        return (parent_menu, None, None, None)
-      continue
-
-    matched, err = _match_option(part, node.option_names, node.prefixes)
-    if not matched:
-      level = " > ".join(parts[:i]) if i > 0 else node.menu_name.title()
-      remaining = ".".join(parts[i:])
-      return (None, None, None, f"At {level}: \"{remaining}\" doesn't match any option.")
-
-    target = node.targets[matched]
-    parent = node.menu_name
-    is_last = (i == len(parts) - 1)
-
-    if is_last:
-      return (target, matched, parent, None)
-    else:
-      if matched in node.children:
-        node = node.children[matched]
-      else:
-        return (None, None, None, f"\"{matched}\" is not a submenu — can't go deeper.")
-
-  return (None, None, None, "Empty path.")
-
-
-def _resolve_greedy(node, path_str, path_so_far=()):
+def _resolve_greedy(node, path_str, path_so_far=(), route=()):
   """Resolve a dotted path greedily: try longest literal match first at each level.
   For 'a.b.c.d', try matching 'a.b.c.d' as one option, then 'a.b.c' + recurse on 'd',
   then 'a.b' + recurse on 'c.d', then 'a' + recurse on 'b.c.d'.
   path_so_far accumulates matched names into a tuple for multi-level menu_item.
-  Returns (dest_name, menu_item_tuple, parent_menu, error)."""
+  Returns (dest_name, menu_item_tuple, parent_menu, error, route): route is the
+  MenuNodes the path goes through, from the first node to the menu whose
+  option the last segment matched.  The path skips the menus' own key checks,
+  so callers check each one (route_denied)."""
+  route = route + (node,)
   if not path_str:
-    return (None, None, None, "Empty path.")
+    return (None, None, None, "Empty path.", route)
 
   # Find all dot positions
   dots = [i for i, ch in enumerate(path_str) if ch == '.']
@@ -235,8 +192,8 @@ def _resolve_greedy(node, path_str, path_so_far=()):
         current = current.parent
       if ok:
         if not remainder:
-          return (current.menu_name, None, None, None)
-        result = _resolve_greedy(current, remainder, path_so_far)
+          return (current.menu_name, None, None, None, route + (current,))
+        result = _resolve_greedy(current, remainder, path_so_far, route)
         if result[3] is None:
           return result
       continue
@@ -252,7 +209,7 @@ def _resolve_greedy(node, path_str, path_so_far=()):
 
     if not remainder:
       # This is the last segment — return the match with accumulated path
-      return (target, new_path, parent, None)
+      return (target, new_path, parent, None, route)
 
     # More segments to resolve — this must be a submenu
     if matched in node.children:
@@ -260,26 +217,51 @@ def _resolve_greedy(node, path_str, path_so_far=()):
       # If the child is a top-level menu destination, reset the path
       # (the menu transition is handled by user_director, path restarts)
       child_path = () if child.name in (_menu_nodes or {}) else new_path
-      result = _resolve_greedy(child, remainder, child_path)
+      result = _resolve_greedy(child, remainder, child_path, route)
       if result[3] is None:
         return result
       # This split didn't work — try shorter segment
 
   # Nothing worked
-  return (None, None, None, f"At {node.menu_name.title()}: \"{path_str}\" doesn't match any option.")
+  return (None, None, None, f"At {node.menu_name.title()}: \"{path_str}\" doesn't match any option.", route)
+
+
+def _ancestors(node):
+  """The menus above *node*, from the top one down to its parent: the route
+  to a menu reached by name rather than by a path.  (A menu that options in
+  several menus link to counts the last-linked one as its parent; options
+  linking back up, e.g. to main, can make the chain a loop.)"""
+  chain, seen = [], {id(node)}
+  node = node.parent
+  while node is not None and id(node) not in seen:
+    seen.add(id(node))
+    chain.append(node)
+    node = node.parent
+  return tuple(reversed(chain))
+
+
+def route_denied(user, route):
+  """The access-denied message for the first menu in *route* (from
+  resolve_jump / resolve_dotted) that *user* may not enter, or None."""
+  from common import check_menu_keys
+  for node in route:
+    result = check_menu_keys(user, node)
+    if result.status == fail:
+      return result.err_msg
+  return None
 
 
 def resolve_jump(path_str):
   """Resolve a dotted path from the main menu (for /jump).
   Uses greedy longest-match to support option names containing dots.
-  Returns (dest_name, menu_item, parent_menu, error)."""
+  Returns (dest_name, menu_item, parent_menu, error, route); see _resolve_greedy."""
   _ensure_jump_tree()
   _no_match = f'"{path_str}" doesn\'t match any destination. Usage: /j option or menu.option'
   if not _jump_nodes:
-    return (None, None, None, _no_match)
+    return (None, None, None, _no_match, ())
   path_str = path_str.strip()
   if not path_str:
-    return (None, None, None, "Usage: /j option or menu.option")
+    return (None, None, None, "Usage: /j option or menu.option", ())
   root = _jump_nodes.get("main")
   if root is not None:
     result = _resolve_greedy(root, path_str)
@@ -290,25 +272,25 @@ def resolve_jump(path_str):
     p = path_str.lower()
     matches = [mn for mn in _jump_nodes if mn.lower().startswith(p)]
     if len(matches) == 1:
-      return (matches[0], null, None, None)
+      return (matches[0], null, None, None, _ancestors(_jump_nodes[matches[0]]))
   # No match
   if root is not None:
     result = _resolve_greedy(root, path_str)
-    return (None, None, None, result[3] or _no_match)
-  return (None, None, None, _no_match)
+    return (None, None, None, result[3] or _no_match, ())
+  return (None, None, None, _no_match, ())
 
 
 def resolve_dotted(menu_name, path_str):
   """Resolve a dotted path relative to the given menu (for inline dotted input).
   Uses greedy longest-match to support option names containing dots.
-  Returns (dest_name, menu_item, parent_menu, error)."""
+  Returns (dest_name, menu_item, parent_menu, error, route); see _resolve_greedy."""
   _ensure_jump_tree()
   node = _jump_nodes.get(menu_name) if _jump_nodes else None
   if node is None:
-    return (None, None, None, None)  # no tree for this menu, let normal matching handle it
+    return (None, None, None, None, ())  # no tree for this menu, let normal matching handle it
   path_str = path_str.strip()
   if not path_str:
-    return (None, None, None, None)
+    return (None, None, None, None, ())
   return _resolve_greedy(node, path_str)
 
 
@@ -1013,7 +995,7 @@ async def do_menu(user, menu_name_or_node):
         if child_node and child_node.option_names:
           return RetVals(status=success, next_destination=child_node, next_menu_item=null)
         # Leaf option — remember source menu and return target + menu_item tuple
-        user._source_menu = node
+        user._source_menu = user._option_menu = node
         info = node.options_info.get(chosen)
         if info and info.template:
           mi = _resolve_menu_item_template(info.template, {
@@ -1105,12 +1087,14 @@ async def do_menu(user, menu_name_or_node):
           if await _err("Usage: /j option or menu.option"): continue
           else: error_msg = "Usage: /j option or menu.option"
           continue
-        dest_name, menu_item_name, parent_name, err = resolve_jump(jump_path)
+        dest_name, menu_item_name, parent_name, err, route = resolve_jump(jump_path)
+        err = err or route_denied(user, route)
         if err:
           if await _err(err): continue
           else: error_msg = err
           continue
         user._source_menu = node  # return to the menu they were viewing
+        user._option_menu = route[-1] if route else None
         return RetVals(status=success,
                        next_destination=_resolve_destination(dest_name, parent_name),
                        next_menu_item=menu_item_name)
@@ -1172,8 +1156,14 @@ async def do_menu(user, menu_name_or_node):
 
       # Dotted path: resolve relative to current menu
       if "." in option_text:
-        dest_name, menu_item_name, parent_name, err = resolve_dotted(menu_name, option_text)
+        dest_name, menu_item_name, parent_name, err, route = resolve_dotted(menu_name, option_text)
+        denied = route_denied(user, route) if dest_name else None
+        if denied:
+          if await _err(denied): continue
+          else: error_msg = denied
+          continue
         if dest_name:
+          user._option_menu = route[-1] if route else None
           # Set source menu: walk from the parent menu node through the path
           parent_node = _menu_nodes.get(parent_name, node) if parent_name else node
           if isinstance(menu_item_name, tuple) and len(menu_item_name) > 1:
@@ -1203,7 +1193,7 @@ async def do_menu(user, menu_name_or_node):
         if child_node and child_node.option_names:
           return RetVals(status=success, next_destination=child_node, next_menu_item=null)
         # Leaf option — remember source menu and return target + menu_item tuple
-        user._source_menu = node
+        user._source_menu = user._option_menu = node
         info = node.options_info.get(chosen)
         if info and info.template:
           mi = _resolve_menu_item_template(info.template, {

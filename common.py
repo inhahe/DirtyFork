@@ -262,6 +262,7 @@ class User:
     self._chat_invitation = None  # (from_user, asyncio.Future) when a chat invite is pending
     self._chat_session_ready = None  # asyncio.Event set when the inviter has constructed a ChatSession for this user
     self._source_menu = None      # MenuNode the user was in when entering a module
+    self._option_menu = None      # MenuNode whose option the user picked last (the menu it is listed in)
     from input_output import ReentrantAsyncLock
     self.write_lock = ReentrantAsyncLock()  # serializes writes to user.writer so background tasks (e.g. ambient stars) can't interleave
 
@@ -617,6 +618,17 @@ def check_keys(user, destination, menu_item=None):
   bad_keys = black_set & user.keys
   return RetVals(status=fail if (lacking_keys or bad_keys) else success, lacking_keys=lacking_keys, bad_keys=bad_keys)
 
+def check_menu_keys(user, node):
+  """Whether *user* may enter the menu *node* (a MenuNode): the white_keys /
+  black_keys of its destination, destinations.<menu name>.  Returns
+  check_keys' result; when denied, its err_msg names the menu by its title."""
+  dest = config.destinations[node.name] if config.destinations else null
+  result = check_keys(user, dest)
+  if result.status == fail:
+    title = node.config.title if node.config else None
+    result.err_msg = access_denied_message(str(title) if title else node.name, result)
+  return result
+
 def access_denied_message(what, result):
   """Error text for a failed check_keys() result."""
   lacking = getattr(result, 'lacking_keys', set())
@@ -874,9 +886,9 @@ class _DestinationRegistry:
         start_dest = self.main
         start_item = null
         if user.conf.start_destination:
-          from menu import resolve_jump
-          dest_name, menu_item, parent_menu, err = resolve_jump(str(user.conf.start_destination))
-          if dest_name and not err:
+          from menu import resolve_jump, route_denied
+          dest_name, menu_item, parent_menu, err, route = resolve_jump(str(user.conf.start_destination))
+          if dest_name and not err and not route_denied(user, route):
             start_dest = getattr(Destinations, dest_name, self.main)
             start_item = menu_item if menu_item else null
         return RetVals(status=success, next_destination=start_dest, next_menu_item=start_item)
@@ -1040,11 +1052,9 @@ async def user_director(user, next_destination, menu_item=null):
     # A menu option that links to a submenu arrives here as a MenuNode, so the
     # destination key check below never sees it: enforce the submenu's own
     # destination keys (destinations.<menu>.white_keys/black_keys) here.
-    menu_dest_conf = config.destinations[next_destination.name] if config.destinations else null
-    result = check_keys(user, menu_dest_conf)
+    result = check_menu_keys(user, next_destination)
     if result.status == fail:
-      title = next_destination.config.title if next_destination.config else None
-      err_msg = access_denied_message(str(title) if title else next_destination.name, result)
+      err_msg = result.err_msg
       user.pending_menu_error = err_msg
       parent = next_destination.parent
       return RetVals(status=fail, err_msg=err_msg,

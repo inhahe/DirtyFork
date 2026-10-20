@@ -395,7 +395,7 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
   sd_raw = values.get("start_destination", "").strip()
   if sd_raw:
     from menu import resolve_jump
-    dest_name, mi, parent_menu, err = resolve_jump(sd_raw)
+    dest_name, mi, parent_menu, err, route = resolve_jump(sd_raw)
     if err:
       await show_message_box(user, err,
                            title="Error", outline_fg=red, outline_fg_br=True,
