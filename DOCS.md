@@ -128,7 +128,7 @@ destinations:
     black_keys: [banned]   # must NOT have "banned" key
 ```
 
-The rules apply however the destination is reached — including menus entered as a submenu of another menu (e.g. a door category, or the Sysop menu from Main). Door entries can additionally carry their own `white_keys`/`black_keys`, which the door module enforces for that door only.
+The rules also apply to menus entered as a submenu of another menu (e.g. a door category, or the Sysop menu from Main). A door checks the keys of the menu it is listed in, and of the menus above that, when it starts, so `/jump` or a dotted path straight to a door can't get around its category's keys. Door entries can additionally carry their own `white_keys`/`black_keys`, which the door module enforces for that door only.
 
 New users receive default keys from `user_defaults.keys` in the config (e.g., `[doors]`).
 
@@ -232,10 +232,10 @@ menu_system:
 | Option | Meaning |
 |--------|---------|
 | `fossil: true` | Load the FOSSIL driver (`fossil_command`, from `E:\`) before the door. Doors with their own serial routines don't need it. |
-| `pre_commands: [...]` | DOS commands run from `D:\` before the door (e.g. a dropfile converter, or deleting a stale lock file of a one-node door). |
+| `pre_commands: [...]` | DOS commands run from `D:\` before the door (e.g. a dropfile converter, or deleting a stale lock file of a one-node door). Each is `CALL`ed, so a batch file among them returns. |
 | `dosbox_settings: {cpu: {cycles: 20000}}` | Per-door DOSBox-X settings, layered over `dosbox_conf`. |
 | `date_shift_years: 28` | Run the door's clock N years in the past, for doors with Y2K bugs. Multiples of 28 keep the weekdays and leap years of the real calendar, and the date still advances daily. |
-| `daily_commands: [...]` | DOS commands run before the door on the first session of each day only (e.g. the door's maintenance program). Entries that share a `dir` share the once-a-day mark (`doors/_nodes/<dir>/daily.stamp`). |
+| `daily_commands: [...]` | DOS commands run before the door on the first session of each day only (e.g. the door's maintenance program). Entries that share a `dir` share the once-a-day mark (`daily.stamp` in the door's `doors/_nodes` directory); if that session fails to start the door, the mark is taken back. |
 | `key_translation: doorway` | Translate the caller's ANSI/VT cursor, Home/End, PgUp/PgDn, Ins/Del and F1–F12 key sequences into DOORWAY's NUL + scan code, so arrow-key driven DOS programs run through DOORWAY work from any terminal. A lone ESC still reaches the program. |
 | `screen_rows: 24` | For doors written for 24-line screens: the terminal's scroll region is limited to that many rows during the door (and reset afterwards), and the dropfiles report that page length. |
 | `input_pace_ms: 30` | Send the caller's keys one at a time, this many ms apart, for doors that throw away typed-ahead input. |
@@ -247,7 +247,7 @@ Variables available in `command` and `pre_commands`: `{node}`, `{dropfile_path}`
 **Supported dropfile formats** (all written for every session): `DOOR.SYS` (52-line GAP/PCBoard/Wildcat), `DOOR<node>.SYS`, `DORINFO1.DEF` and `DORINFO<node>.DEF` (line 13 is `-1` only when `fossil: true`), `CHAIN.TXT` (32-line WWIV), `DOOR32.SYS` (11 lines; comm type 1/COM1 for DOSBox doors, 2/telnet socket for native doors), `CALLINFO.BBS`, `SFDOORS.DAT`. Field defaults are in `doors/dropfiles/*.yaml` and can be overridden per door.
 
 **DOSBox drive mapping:**
-- `C:\` — the node directory (`doors/_nodes/<dir>/node<N>`), where the dropfiles are written. It is removed when the session ends.
+- `C:\` — the node directory (`doors/_nodes/<dir>/node<N>`), where the dropfiles are written. It is removed when the session ends. (`<dir>` is the door's path under `base_path` with `_` doubled and separators turned into `_`; a door outside `base_path` gets its folder name plus a hash of its path.)
 - `D:\` — the door's game directory (`doors/<dir>`), where the game EXE lives. The command runs from here.
 - `E:\` — `tools_path` (`doors/tools`, not included): put a FOSSIL driver there (e.g. X00.EXE, for doors with `fossil: true`) and DOORWAY (`doors/tools/doorway`, for the sysop DOS shell).
 - COM1 — the caller, through DOSBox-X's null-modem serial port.

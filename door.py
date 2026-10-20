@@ -8,6 +8,7 @@ for native doors).
 """
 
 import asyncio
+import hashlib
 import os
 import shutil
 import socket
@@ -292,15 +293,14 @@ def _generate_chain_txt(user, node_num, node_dir, door_conf, variables):
     return "\r\n".join(lines) + "\r\n"
 
 
-def _generate_door32_sys(user, node_num, socket_handle, door_conf, variables):
+def _generate_door32_sys(user, node_num, socket_handle, door_conf, variables, in_dosbox):
     """Generate DOOR32.SYS (11 lines).
 
-    Native doors get the telnet socket (comm type 2); DOSBox doors are on a
-    serial port, so they get comm type 1 and COM port 1.
+    Native doors get the telnet socket (comm type 2); DOSBox doors
+    (*in_dosbox*) are on a serial port, so they get comm type 1 and COM port 1.
     """
     df = door_conf.door32_sys if door_conf else null
     gdf = lambda key, default: _get_df(df, key, default, variables)
-    in_dosbox = variables["door_node_dir"] == DOS_NODE_DRIVE + "\\"
 
     lines = [
         gdf("comm_type", "1" if in_dosbox else "2"),  #  1 comm type (0=local, 1=serial, 2=telnet)
@@ -373,7 +373,7 @@ def _generate_callinfo_bbs(user, node_num, door_conf, variables):
     return "\r\n".join(lines) + "\r\n"
 
 
-def _write_all_dropfiles(user, node_num, node_dir, door_conf, variables, socket_handle=0):
+def _write_all_dropfiles(user, node_num, node_dir, door_conf, variables, in_dosbox, socket_handle=0):
     """Write every supported dropfile format into *node_dir*."""
     files = {
         "DOOR.SYS":            _generate_door_sys(user, node_num, node_dir, door_conf, variables),
@@ -381,7 +381,7 @@ def _write_all_dropfiles(user, node_num, node_dir, door_conf, variables, socket_
         "DORINFO1.DEF":        _generate_dorinfo(user, node_num, door_conf, variables),
         f"DORINFO{node_num}.DEF": _generate_dorinfo(user, node_num, door_conf, variables),
         "CHAIN.TXT":           _generate_chain_txt(user, node_num, node_dir, door_conf, variables),
-        "DOOR32.SYS":          _generate_door32_sys(user, node_num, socket_handle, door_conf, variables),
+        "DOOR32.SYS":          _generate_door32_sys(user, node_num, socket_handle, door_conf, variables, in_dosbox),
         "SFDOORS.DAT":         _generate_sfdoors_dat(user, node_num, door_conf, variables),
         "CALLINFO.BBS":        _generate_callinfo_bbs(user, node_num, door_conf, variables),
     }
@@ -536,14 +536,25 @@ def _node_root(door_dir):
 
     Kept outside the door's own directory so that removing a finished node
     can never touch the door's data files (some doors keep their own NODEn
-    files or directories)."""
-    rel = os.path.relpath(os.path.abspath(door_dir), os.path.abspath(_base_path()))
-    if rel.startswith(".."):
-        rel = os.path.basename(os.path.abspath(door_dir))
-    elif rel == ".":
-        rel = "_base"  # a door whose dir is base_path itself (e.g. the sysop DOS shell)
-    safe = rel.replace("\\", "_").replace("/", "_").replace(":", "_")
-    return os.path.join(_base_path(), "_nodes", safe)
+    files or directories).  One flat directory per door directory, named so
+    that two different door directories never share one: a door under
+    base_path is named after its path there ('_' doubled, separators made
+    '_'), any other door after its last component plus a hash of its full
+    path.
+    """
+    door_abs = os.path.abspath(door_dir)
+    try:
+        rel = os.path.relpath(door_abs, os.path.abspath(_base_path()))
+    except ValueError:  # on another drive (Windows)
+        rel = None
+    if rel is None or rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        digest = hashlib.sha1(_node_key(door_dir).encode("utf-8")).hexdigest()[:8]
+        name = f"{os.path.basename(door_abs) or 'door'}-{digest}"
+    elif rel == os.curdir:
+        name = "_base"  # a door whose dir is base_path itself (e.g. the sysop DOS shell)
+    else:
+        name = os.path.normcase(rel).replace("_", "__").replace(os.sep, "_").replace("/", "_")
+    return os.path.join(_base_path(), "_nodes", name)
 
 
 def _is_door_option(option_conf):
@@ -551,31 +562,70 @@ def _is_door_option(option_conf):
 
 
 def _find_door_conf(user, door_name):
-    """Find the config for the door the user picked.
+    """Find the config for the door the user picked, and the menu listing it.
 
     Doors can live in any menu (e.g. category submenus of the doors menu), so
-    look first in the menu the user chose from, then in every menu.
+    look first in the menu the user chose from, then in every menu.  Returns
+    (door config, MenuNode of that menu or None), or (null, None).
     """
+    from menu import get_menu_node
     source = getattr(user, "_source_menu", None)
     info = getattr(source, "options_info", {}).get(door_name) if source is not None else None
     if info is not None and _is_door_option(info.conf):
-        return info.conf
+        return info.conf, source
     menus = config.menu_system
     if not menus:
-        return null
+        return null, None
     for menu_name in menus.keys():
         mc = menus[menu_name]
         if not mc or not mc.options or door_name not in mc.options:
             continue
         oc = mc.options[door_name]
         if _is_door_option(oc):
-            return oc
-    return null
+            return oc, get_menu_node(menu_name)
+    return null, None
+
+
+def _menu_access_denied(user, node):
+    """Check the keys of menu *node* and of every menu above it.
+
+    A door can be reached without entering its menu (with /jump or a dotted
+    path), and then user_director checks only the door module's own keys, so
+    the door checks the keys of the menu it is listed in.  Returns (menu
+    label, failed check_keys result) for the first menu the user may not
+    enter, or None.
+    """
+    from common import check_keys
+    while node is not None:
+        dest = config.destinations[node.name] if config.destinations else null
+        result = check_keys(user, dest)
+        if result.status == fail:
+            title = node.config.title if node.config else None
+            return (str(title) if title else node.name), result
+        node = node.parent
+    return None
 
 
 # ---------------------------------------------------------------------------
 # DOSBox config generation
 # ---------------------------------------------------------------------------
+
+def _daily_stamp_path(door_dir):
+    return os.path.join(_node_root(door_dir), "daily.stamp")
+
+
+def _unmark_daily(door_dir):
+    """Take back today's mark (the session that was to run the daily commands
+    never got going), so the next session runs them."""
+    stamp = _daily_stamp_path(door_dir)
+    try:
+        with open(stamp) as f:
+            if f.read().strip() != time.strftime("%Y-%m-%d"):
+                return
+        os.remove(stamp)
+    except OSError:
+        pass
+
 
 def _daily_commands_due(door_dir, door_conf):
     """True if the door has daily_commands and they haven't run yet today.
@@ -587,7 +637,7 @@ def _daily_commands_due(door_dir, door_conf):
     """
     if not door_conf.daily_commands:
         return False
-    stamp = os.path.join(_node_root(door_dir), "daily.stamp")
+    stamp = _daily_stamp_path(door_dir)
     today = time.strftime("%Y-%m-%d")
     try:
         with open(stamp) as f:
@@ -678,7 +728,10 @@ def _generate_dosbox_config(node_dir, door_dir, door_conf, variables, socket_por
         if isinstance(commands, str):
             commands = [commands]
         pre += [_safe_format(str(c), variables) for c in commands]
-    pre_text = "".join(c + "\n" for c in pre)
+    # Each line is CALLed: a batch file run without CALL replaces the autoexec
+    # and never returns.  DOSBox-X's CALL also runs programs and internal
+    # commands (IF, DATE, DEL ...).
+    pre_text = "".join(f"CALL {c}\n" for c in pre)
 
     # Only [serial] and [autoexec] go here; everything else lives in the
     # sysop-editable doors/dosbox.conf which is loaded first by DOSBox-X.
@@ -842,8 +895,18 @@ class _DoorOutput:
         return held
 
 
+# Why a door session ended (returned by the pumps and bridges)
+ENDED_BY_DOOR = "door"      # the door exited or closed its side
+ENDED_BY_CALLER = "caller"  # the caller hung up or aborted with Ctrl+X (or the BBS side failed)
+
+
 async def _pump_user_to_door(user, door_input, write, drain, still_running=lambda: True):
-    """Caller -> door.  Pauses while a popup is shown; returns when the caller aborts or hangs up."""
+    """Caller -> door.  Pauses while a popup is shown.
+
+    Returns ENDED_BY_CALLER when the caller aborts (Ctrl+X three times) or
+    hangs up, ENDED_BY_DOOR when the door goes away (its process exits, or
+    writing to it fails).
+    """
     try:
         while still_running():
             if user.popup_event and user.popup_event.is_set():
@@ -852,24 +915,34 @@ async def _pump_user_to_door(user, door_input, write, drain, still_running=lambd
             try:
                 data = await asyncio.wait_for(user.reader.read(4096), timeout=0.1)
             except asyncio.TimeoutError:
-                await door_input.send(door_input.flush(), write, drain)
-                continue
-            if not data:
-                break
-            if isinstance(data, str):
-                data = data.encode("cp437", errors="replace")
-            if door_input.aborted(data, asyncio.get_event_loop().time()):
-                log.info("User aborted door session via escape sequence")
-                return
-            await door_input.send(door_input.keys(data), write, drain)
-    except (ConnectionError, Disconnected, asyncio.CancelledError):
-        pass
-    except Exception as e:
-        log.error("user_to_door error: %s", e)
+                keys = door_input.flush()
+            else:
+                if not data:
+                    return ENDED_BY_CALLER
+                if isinstance(data, str):
+                    data = data.encode("cp437", errors="replace")
+                if door_input.aborted(data, asyncio.get_event_loop().time()):
+                    log.info("User aborted door session via escape sequence")
+                    return ENDED_BY_CALLER
+                keys = door_input.keys(data)
+            try:
+                await door_input.send(keys, write, drain)
+            except OSError:
+                return ENDED_BY_DOOR
+        return ENDED_BY_DOOR
+    except (OSError, Disconnected):
+        return ENDED_BY_CALLER
+    except Exception:
+        log.error("user_to_door error", exc_info=True)
+        return ENDED_BY_CALLER
 
 
 async def _pump_door_to_user(user, read, emulator=None, session_log=None):
-    """Door -> caller, keeping the ANSI emulator's copy of the screen in step."""
+    """Door -> caller, keeping the ANSI emulator's copy of the screen in step.
+
+    Returns ENDED_BY_DOOR when the door closes its side, ENDED_BY_CALLER
+    when writing to the caller fails (the caller hung up).
+    """
     door_output = _DoorOutput()
 
     async def deliver(text):
@@ -882,40 +955,41 @@ async def _pump_door_to_user(user, read, emulator=None, session_log=None):
         user.writer.write(text)
         await user.writer.drain()
 
-    try:
-        while True:
+    while True:
+        try:
             if door_output.held:
                 try:
                     data = await asyncio.wait_for(read(4096), timeout=0.05)
                 except asyncio.TimeoutError:
-                    await deliver(door_output.flush())
-                    continue
+                    data = None  # nothing more came: send what was held back
             else:
                 data = await read(4096)
+        except OSError:
+            data = b""  # the door's side broke: treat it as closed
+        try:
+            if data is None:
+                await deliver(door_output.flush())
+                continue
             if not data:
-                break
+                await deliver(door_output.flush())
+                return ENDED_BY_DOOR
             if isinstance(data, bytes):
                 data = data.decode("cp437", errors="replace")
             await deliver(door_output.feed(data))
-        await deliver(door_output.flush())
-    except (ConnectionError, Disconnected, asyncio.CancelledError):
-        pass
-    except Exception as e:
-        log.error("door_to_user error: %s", e)
-
-
-# Why a door session ended (returned by the bridges)
-ENDED_BY_DOOR = "door"      # the door exited or closed its side
-ENDED_BY_CALLER = "caller"  # the caller hung up or aborted with Ctrl+X
+        except (OSError, Disconnected):
+            return ENDED_BY_CALLER
+        except Exception:
+            log.error("door_to_user error", exc_info=True)
+            return ENDED_BY_CALLER
 
 
 async def _run_until_first_done(*coros):
     """Run the bridge tasks; when any finishes, cancel the rest.
 
-    Returns the index of the task that finished first."""
+    Returns the result of the task that finished first."""
     tasks = [asyncio.create_task(c) for c in coros]
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    first = next(i for i, t in enumerate(tasks) if t in done)
+    first = next(t for t in tasks if t in done)
     for t in pending:
         t.cancel()
     for t in pending:
@@ -923,7 +997,7 @@ async def _run_until_first_done(*coros):
             await t
         except asyncio.CancelledError:
             pass
-    return first
+    return first.result()
 
 
 async def _bridge_socket(user, reader_or_host, writer_or_port, process, door_conf,
@@ -941,17 +1015,16 @@ async def _bridge_socket(user, reader_or_host, writer_or_port, process, door_con
         max_retries = 50  # 10 seconds total
         for attempt in range(max_retries):
             if process.returncode is not None:
-                log.warning("Process exited before socket connection (code %s)", process.returncode)
-                return
+                raise RuntimeError(f"the door exited (code {process.returncode}) "
+                                   f"before opening its socket")
             try:
                 reader, writer = await asyncio.open_connection(host, port)
                 break
-            except (ConnectionRefusedError, OSError):
+            except OSError:
                 await asyncio.sleep(retry_delay)
         else:
-            log.error("Could not connect to door socket at %s:%s after %s retries",
-                      host, port, max_retries)
-            return
+            raise RuntimeError(f"the door did not open its socket on port {port} "
+                               f"within {max_retries * retry_delay:.0f} s")
         log.debug("Connected to door socket at %s:%s", host, port)
     else:
         # DOSBox door: connection already established, reader/writer passed directly
@@ -961,14 +1034,14 @@ async def _bridge_socket(user, reader_or_host, writer_or_port, process, door_con
         """Wait for the door subprocess to exit."""
         while process.returncode is None:
             await asyncio.sleep(0.25)
+        return ENDED_BY_DOOR
 
     try:
-        first = await _run_until_first_done(
+        return await _run_until_first_done(
             _pump_user_to_door(user, _DoorInput(door_conf), writer.write, writer.drain),
             _pump_door_to_user(user, reader.read, emulator, session_log),
             watch_process(),
         )
-        return ENDED_BY_CALLER if first == 0 else ENDED_BY_DOOR
     finally:
         try:
             writer.close()
@@ -979,12 +1052,44 @@ async def _bridge_socket(user, reader_or_host, writer_or_port, process, door_con
 
 async def _bridge_stdio(user, process, door_conf, emulator=None, session_log=None):
     """Bridge data between the user's telnet connection and a subprocess's stdin/stdout."""
-    first = await _run_until_first_done(
-        _pump_user_to_door(user, _DoorInput(door_conf), process.stdin.write, process.stdin.drain,
-                           still_running=lambda: process.returncode is None),
-        _pump_door_to_user(user, process.stdout.read, emulator, session_log),
-    )
-    return ENDED_BY_CALLER if first == 0 else ENDED_BY_DOOR
+    try:
+        return await _run_until_first_done(
+            _pump_user_to_door(user, _DoorInput(door_conf), process.stdin.write, process.stdin.drain,
+                               still_running=lambda: process.returncode is None),
+            _pump_door_to_user(user, process.stdout.read, emulator, session_log),
+        )
+    finally:
+        # A door that is still running sees its input end (its "carrier
+        # drop"), so it can save and exit within the hangup grace.
+        try:
+            process.stdin.close()
+        except Exception:
+            pass
+
+
+async def _stop_process(process, grace):
+    """Give *process* up to *grace* seconds to exit by itself, then terminate
+    it (kill it if that fails).  Returns True if it had to be stopped."""
+    if process is None or process.returncode is not None:
+        return False
+    try:
+        await asyncio.wait_for(process.wait(), timeout=grace)
+        return False
+    except asyncio.TimeoutError:
+        pass
+    try:
+        process.terminate()
+        await asyncio.wait_for(process.wait(), timeout=5.0)
+    except asyncio.TimeoutError:
+        log.warning("Door process did not exit after terminate, killing it")
+        try:
+            process.kill()
+            await asyncio.wait_for(process.wait(), timeout=3.0)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1012,6 +1117,7 @@ async def run(user, destination, menu_item=None):
     # whose option targets the door module).
     door_name = None
     door_conf = null
+    door_menu = None  # MenuNode of the menu the door is listed in, when found there
 
     if menu_item is not None and menu_item is not null:
         # menu_item is a tuple: (door_name,)
@@ -1023,7 +1129,7 @@ async def run(user, destination, menu_item=None):
             door_conf = menu_item
             door_name = getattr(menu_item, "name", None) or "unknown_door"
         if door_conf is null and door_name:
-            door_conf = _find_door_conf(user, door_name)
+            door_conf, door_menu = _find_door_conf(user, door_name)
             if door_conf is null or not door_conf:
                 door_conf = null
 
@@ -1041,6 +1147,10 @@ async def run(user, destination, menu_item=None):
     access = check_keys(user, door_conf)
     if access.status == fail:
         return RetVals(status=fail, err_msg=access_denied_message(door_name, access),
+                       next_destination=null, next_menu_item=null)
+    denied = _menu_access_denied(user, door_menu)
+    if denied:
+        return RetVals(status=fail, err_msg=access_denied_message(denied[0], denied[1]),
                        next_destination=null, next_menu_item=null)
 
     # ---- resolve paths -------------------------------------------------------
@@ -1116,7 +1226,6 @@ async def run(user, destination, menu_item=None):
         node_num=node_num,
         user=user,
         process=None,
-        config_path=None,
         node_dir=node_dir,
         socket_port=socket_port,
         door_name=door_name,
@@ -1134,6 +1243,8 @@ async def run(user, destination, menu_item=None):
     dosbox_tcp_server = None
     region_set = False
     ended_by = ENDED_BY_DOOR
+    daily_marked = False  # this session is the day's first: it runs the daily commands
+    bridged = False       # the door started and the session got under way
 
     try:
         # ---- notify user of escape sequence ----------------------------------
@@ -1177,19 +1288,19 @@ async def run(user, destination, menu_item=None):
                                 in_dosbox=in_dosbox)
 
         # ---- generate dropfiles ----------------------------------------------
-        _write_all_dropfiles(user, node_num, node_dir, door_conf, variables, socket_handle=socket_port)
+        _write_all_dropfiles(user, node_num, node_dir, door_conf, variables, in_dosbox,
+                             socket_handle=socket_port)
 
         # ---- launch door -----------------------------------------------------
         command_template = str(door_conf.command) if door_conf.command else ""
 
         if in_dosbox:
+            daily_marked = _daily_commands_due(door_dir, door_conf)
             dosbox_config = _generate_dosbox_config(
-                node_dir, door_dir, door_conf, variables, socket_port,
-                run_daily=_daily_commands_due(door_dir, door_conf),
+                node_dir, door_dir, door_conf, variables, socket_port, run_daily=daily_marked,
             )
             with open(config_path, "w") as f:
                 f.write(dosbox_config)
-            node.config_path = config_path
 
             dosbox_exe = str(conf.dosbox_path) if conf.dosbox_path else "dosbox"
             dosbox_base_conf = paths.resolve_project(str(door_conf.dosbox_conf)) if door_conf.dosbox_conf else ""
@@ -1223,6 +1334,7 @@ async def run(user, destination, menu_item=None):
                 dosbox_tcp_server.close()  # stop accepting new connections
 
             log.debug("DOSBox connected on port %s", socket_port)
+            bridged = True
             with open(session_log_path, "w", encoding="utf-8", errors="replace") as session_log:
                 ended_by = await _bridge_socket(user, door_reader, door_writer, process, door_conf, emulator, session_log=session_log)
 
@@ -1230,7 +1342,7 @@ async def run(user, destination, menu_item=None):
             # Native socket door (DOOR32 style): launch process, bridge via TCP socket
             resolved_cmd = _safe_format(command_template, variables)
             cmd_parts = resolved_cmd.split()
-            cwd = door_dir if os.path.isdir(door_dir) else None
+            cwd = door_dir  # (run() has checked it exists)
 
             log.debug("Launching native socket door: %s (cwd=%s)", resolved_cmd, cwd)
             process = await asyncio.create_subprocess_exec(
@@ -1248,7 +1360,7 @@ async def run(user, destination, menu_item=None):
             # Native stdio door: launch process, bridge via stdin/stdout pipes
             resolved_cmd = _safe_format(command_template, variables)
             cmd_parts = resolved_cmd.split()
-            cwd = door_dir if os.path.isdir(door_dir) else None
+            cwd = door_dir  # (run() has checked it exists)
 
             log.debug("Launching native stdio door: %s (cwd=%s)", resolved_cmd, cwd)
             process = await asyncio.create_subprocess_exec(
@@ -1274,27 +1386,8 @@ async def run(user, destination, menu_item=None):
         # its carrier drop (the connection to DOSBox is closed by now) and needs
         # a few seconds to save the player and clear its "online" records --
         # killing it at once leaves those behind.
-        terminated = False
         grace = DOOR_EXIT_GRACE if ended_by == ENDED_BY_DOOR else HANGUP_EXIT_GRACE
-        if node.process and node.process.returncode is None:
-            try:
-                await asyncio.wait_for(node.process.wait(), timeout=grace)
-            except asyncio.TimeoutError:
-                pass
-        if node.process and node.process.returncode is None:
-            terminated = True
-            try:
-                node.process.terminate()
-                await asyncio.wait_for(node.process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                log.warning("Process did not exit after terminate, killing")
-                try:
-                    node.process.kill()
-                    await asyncio.wait_for(node.process.wait(), timeout=3.0)
-                except Exception:
-                    pass
-            except Exception:
-                pass
+        terminated = await _stop_process(node.process, grace)
 
         rc = node.process.returncode if node.process else None
         if dosbox_log_file:
@@ -1325,27 +1418,21 @@ async def run(user, destination, menu_item=None):
 
     except Disconnected:
         log.info("User disconnected while in %s node %s", door_name, node_num)
-        # Kill the door process if it's still running
-        if node.process and node.process.returncode is None:
-            try:
-                node.process.terminate()
-            except Exception:
-                pass
-        raise
+        raise  # (the door process is stopped below)
 
     except Exception as e:
         log.error("Error running %s node %s: %s", door_name, node_num, e)
-        # Kill the door process if it's still running
-        if node.process and node.process.returncode is None:
-            try:
-                node.process.terminate()
-            except Exception:
-                pass
         return RetVals(status=fail, err_msg=f"Door error: {e}",
                        next_destination=null, next_menu_item=null)
 
     finally:
         # ---- cleanup ---------------------------------------------------------
+        # A door still running here is one whose session failed (DOSBox never
+        # connected, an error, the caller gone before it started): stop it now,
+        # before its node directory goes and the node is handed out again.
+        await _stop_process(node.process, 0)
+        if daily_marked and not bridged:
+            _unmark_daily(door_dir)
         user.in_door = False
         user.popup_event = None
         _release_node(node_key, node)
@@ -1369,13 +1456,6 @@ async def run(user, destination, menu_item=None):
                 shutil.rmtree(node_dir, ignore_errors=True)
         except Exception as e:
             log.error("Failed to clean up node dir %s: %s", node_dir, e)
-
-        # Remove DOSBox config if it exists outside node_dir
-        if node.config_path and os.path.exists(node.config_path):
-            try:
-                os.remove(node.config_path)
-            except Exception:
-                pass
 
         log.debug("Cleaned up %s node %s", door_name, node_num)
 

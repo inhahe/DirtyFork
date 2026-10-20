@@ -417,6 +417,11 @@ async def ansi_set_region(user, top_row=None, bottom_row=None, drain=False):
         user.writer.write(f"\x1b[{top_row};{bottom_row}r")
       user.scroll_region_top = top_row
       user.scroll_region_bottom = bottom_row
+      # Setting the scroll region (DECSTBM) also homes the terminal's cursor.
+      # Track that; the pending position is kept, so the next output moves
+      # back to where the caller meant it to go.
+      user.cur_row = user.cur_col = 1
+      user._wrap_ambiguous = False
       if drain:
         await user.writer.drain()
 

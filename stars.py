@@ -18,10 +18,12 @@ its writes don't interleave with the main coroutine's renders.
 
 import asyncio
 import contextlib
+import math
 import random
 
 from definitions import white, black, blue
-from input_output import ansi_move, ansi_color, send, ansi_color_2
+from input_output import (ansi_move, ansi_move_deferred, ansi_color, ansi_color_2, send,
+                          ansi_hide_cursor, ansi_show_cursor)
 from logger import log
 from config import get_config
 
@@ -56,6 +58,9 @@ DEFAULT_FG_BR = True
 # Polling rate of the background task. Smaller = finer-grained per-star
 # scheduling, but more CPU. 50ms is plenty for visual smoothness.
 _POLL_MS = 50
+# While stars aren't showing (off, in a door), it only has to notice when they
+# should start again.
+_IDLE_POLL_MS = 500
 
 # A star is the tuple (row, col, frame_index, next_advance_time, fg, fg_br):
 # 1-based screen position, index into _FRAMES of the frame now on screen,
@@ -131,35 +136,32 @@ def _showing(user, enabled):
 
 @contextlib.asynccontextmanager
 async def _cursor_preserved(user, hide_cursor=False):
-  """Draw stars inside this block: on exit, the colour, the cursor position
-  (current and pending) and the wrap state are what they were on entry, and
-  the output is flushed.  With hide_cursor, the terminal cursor is hidden
-  while drawing so it doesn't flicker around."""
-  save_cur_row = user.cur_row
-  save_cur_col = user.cur_col
-  save_new_row = user.new_row
-  save_new_col = user.new_col
-  save_fg = user.cur_fg
-  save_fg_br = user.cur_fg_br
-  save_bg = user.cur_bg
-  save_bg_br = user.cur_bg_br
-  save_show_cursor = getattr(user, 'cur_show_cursor', True)
+  """Draw stars inside this block.  On exit the terminal's colour and cursor
+  position are back to what they were on entry, and so is what the main
+  coroutine has staged but not sent yet (its pending colour and move, which a
+  tick can land between), and the output is flushed.  With hide_cursor, the
+  terminal cursor is hidden while drawing so it doesn't flicker around."""
+  save_cur_row, save_cur_col = user.cur_row, user.cur_col
+  save_new_row, save_new_col = user.new_row, user.new_col
+  save_cur_colour = (user.cur_fg, user.cur_bg, user.cur_fg_br, user.cur_bg_br)
+  save_new_colour = (user.new_fg, user.new_bg, user.new_fg_br, user.new_bg_br)
   save_wrap_ambiguous = getattr(user, '_wrap_ambiguous', False)
-  if hide_cursor and save_show_cursor:
-    user.writer.write("\x1b[?25l")
-    user.cur_show_cursor = False
+  hidden = hide_cursor and getattr(user, 'cur_show_cursor', True)
+  if hidden:
+    await ansi_hide_cursor(user)
   try:
     yield
   finally:
-    ansi_color(user, fg=save_fg, fg_br=save_fg_br, bg=save_bg, bg_br=save_bg_br)
+    fg, bg, fg_br, bg_br = save_cur_colour
+    ansi_color(user, fg=fg, bg=bg, fg_br=fg_br, bg_br=bg_br)
     await ansi_color_2(user)
-    await ansi_move(user, save_cur_row or 1, save_cur_col or 1, drain=False)
-    user.new_row = save_new_row
-    user.new_col = save_new_col
+    await ansi_move(user, save_cur_row or 1, save_cur_col or 1)
+    fg, bg, fg_br, bg_br = save_new_colour
+    ansi_color(user, fg=fg, bg=bg, fg_br=fg_br, bg_br=bg_br)
+    await ansi_move_deferred(user, row=save_new_row, col=save_new_col)
     user._wrap_ambiguous = save_wrap_ambiguous
-    if hide_cursor and save_show_cursor and not user.cur_show_cursor:
-      user.writer.write("\x1b[?25h")
-      user.cur_show_cursor = True
+    if hidden:
+      await ansi_show_cursor(user)
     try:
       await user.writer.drain()
     except Exception:
@@ -223,12 +225,14 @@ async def stars_loop(user):
     user._stars_active = []  # list of stars (see the tuple layout above)
   active = user._stars_active
   user._post_cls_hook = _repaint_after_cls
+  showing = False
   try:
     while True:
-      await asyncio.sleep(_POLL_MS / 1000.0)
+      await asyncio.sleep((_POLL_MS if showing else _IDLE_POLL_MS) / 1000.0)
       enabled, fg, fg_br, interval_ms, probability = _settings(user)
+      showing = _showing(user, enabled)
 
-      if not _showing(user, enabled):
+      if not showing:
         if active:
           if user.in_door or not user.screen:
             active.clear()  # the door owns the screen (and clears it when it starts)
@@ -251,6 +255,24 @@ async def stars_loop(user):
         await asyncio.sleep(1.0)
   except asyncio.CancelledError:
     pass
+
+
+def _chosen_cells(n, p):
+  """Yield, in increasing order, the indices in range(n) that a Bernoulli(p)
+  trial per index would pick, without drawing a random number per index:
+  the gap to the next pick is geometrically distributed."""
+  if p <= 0:
+    return
+  if p >= 1:
+    yield from range(n)
+    return
+  log_q = math.log1p(-p)
+  i = -1
+  while True:
+    i += 1 + int(math.log(1.0 - random.random()) / log_q)  # 1 - random() is in (0, 1]
+    if i >= n:
+      return
+    yield i
 
 
 def _first_advance_time(now, frame_interval_ms):
@@ -302,22 +324,20 @@ async def _tick(user, active, fg, fg_br, spawn_p, frame_interval_ms):
         survivors.append((r, c, next_idx, _next_advance_time(now, frame_interval_ms),
                           star_fg, star_fg_br))
 
-    # --- 2) Spawn new stars in eligible cells ---
+    # --- 2) Spawn new stars: every eligible cell independently with spawn_p ---
     first_char = _FRAMES[0]
-    for r in range(1, height + 1):
-      row_cells = user.screen[r-1]
-      for c in range(1, width + 1):
-        # Skip the bottom-right cell (writing there can scroll on autowrap)
-        if r == height and c == width:
-          continue
-        # Skip the user's current cursor cell
-        if r == cur_row and c == cur_col:
-          continue
-        if not _is_default_cell(row_cells[c-1]):
-          continue
-        if random.random() < spawn_p:
-          await _draw(user, r, c, first_char, fg, fg_br)
-          survivors.append((r, c, 0, _first_advance_time(now, frame_interval_ms), fg, fg_br))
+    for i in _chosen_cells(height * width, spawn_p):
+      r, c = divmod(i, width)
+      r += 1
+      c += 1
+      # Skip the bottom-right cell (writing there can scroll on autowrap)
+      # and the user's current cursor cell
+      if (r == height and c == width) or (r == cur_row and c == cur_col):
+        continue
+      if not _is_default_cell(user.screen[r-1][c-1]):
+        continue
+      await _draw(user, r, c, first_char, fg, fg_br)
+      survivors.append((r, c, 0, _first_advance_time(now, frame_interval_ms), fg, fg_br))
 
     # Replace active list in place so the caller's reference stays valid
     active[:] = survivors

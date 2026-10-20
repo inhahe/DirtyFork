@@ -6,7 +6,8 @@
 # Session variables (always from live data, cannot be overridden here):
 #   {node}, {baud}, {handle}, {first_name}, {last_name}, {location},
 #   {rows}, {cols}, {time_limit}, {mins_remaining}, {secs_remaining},
-#   {bbs_name}, {sysop_name}, {node_dir}
+#   {bbs_name}, {sysop_name}, {node_dir} (host path),
+#   {door_node_dir} (the dropfile directory as the door sees it: C:\ in DOSBox)
 
 baud_rate: "{baud}"
 security_level: "{security_level}"
@@ -30,7 +31,7 @@ downloads: "0"
 daily_dl_k: "999999"   # daily download K limit (line 31)
 dl_k_today: "0"        # K downloaded today (line 30)
 birthday: ""
-user_db_path: ""
+user_db_path: "{door_node_dir}"   # line 33, the BBS's main directory
 event_time: "00:00"
 error_correcting: "Y"
 ansi_in_ng_mode: "N"
