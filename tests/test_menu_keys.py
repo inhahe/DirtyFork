@@ -78,7 +78,7 @@ class JumpByName(unittest.TestCase):
 
     def jump(self, links, name, *refused):
         import common
-        with mock.patch.object(menu, "_jump_nodes", tree(links)), \
+        with mock.patch.object(menu, "_menu_nodes", tree(links)), \
              mock.patch.object(common, "check_menu_keys", refusing(*refused)):
             dest, item, parent, err, route = menu.resolve_jump(name, user())
             self.assertEqual((dest, err), (name, None))

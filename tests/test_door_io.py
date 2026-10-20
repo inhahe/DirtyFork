@@ -127,6 +127,21 @@ class Pumps(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, door.ENDED_BY_DOOR)
         self.assertEqual(user.writer.text(), "final screen")
 
+    async def test_cancelling_the_session_stops_the_bridge(self):
+        started, stopped = asyncio.Event(), []
+        async def forever(name):
+            try:
+                started.set()
+                await asyncio.sleep(3600)
+            finally:
+                stopped.append(name)
+        session = asyncio.create_task(door._run_until_first_done(forever("in"), forever("out")))
+        await started.wait()
+        session.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await session
+        self.assertEqual(sorted(stopped), ["in", "out"])
+
     async def test_first_result_wins(self):
         async def a():
             return "A"

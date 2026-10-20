@@ -72,6 +72,19 @@ class DailyMark(unittest.TestCase):
             self.assertTrue(door._daily_commands_due("x", conf))
             self.assertFalse(door._daily_commands_due("x", Config({})))
 
+    def test_mark_kept_only_when_the_commands_finished(self):
+        root, node_dir = (_setup.tempfile.mkdtemp(dir=_setup.DATA) for _ in range(2))
+        conf = Config({"daily_commands": ["MAINT"]})
+        with mock.patch.object(door, "_node_root", lambda d: root):
+            self.assertTrue(door._daily_commands_due("x", conf))
+            with self.assertLogs(door.log, "WARNING"):
+                door._settle_daily_mark("x", node_dir, "Door")       # cut off: no flag
+            self.assertTrue(door._daily_commands_due("x", conf))     # so they run again
+            with open(os.path.join(node_dir, door.DAILY_DONE_FLAG), "w") as f:
+                f.write("done\n")
+            door._settle_daily_mark("x", node_dir, "Door")           # ran to the end
+            self.assertFalse(door._daily_commands_due("x", conf))
+
     def test_unmark_leaves_another_days_mark(self):
         tmp = _setup.tempfile.mkdtemp(dir=_setup.DATA)
         with open(os.path.join(tmp, "daily.stamp"), "w") as f:

@@ -33,17 +33,15 @@ class MenuNode:
     self.options_info = {}      # option_name → OptionInfo (for leaf options)
 
 _menu_nodes = None  # {menu_name: MenuNode}
-# Keep _jump_nodes as alias for backward compat in resolve functions
-_jump_nodes = None
 
 def _ensure_menu_tree():
-  global _menu_nodes, _jump_nodes
+  global _menu_nodes
   if _menu_nodes is not None:
     return
   from config import get_config
   cfg = get_config()
   if not cfg.menu_system:
-    _menu_nodes = _jump_nodes = {}
+    _menu_nodes = {}
     return
 
   from config import Config
@@ -141,17 +139,13 @@ def _ensure_menu_tree():
       child.prefixes = _compute_min_prefixes(child.option_names)
       node.children[opt_name] = child
 
-  _menu_nodes = _jump_nodes = nodes
+  _menu_nodes = nodes
 
 
 def get_menu_node(name):
   """Get a MenuNode by name. Builds the tree if needed."""
   _ensure_menu_tree()
   return _menu_nodes.get(name)
-
-
-# Keep old name as alias
-_ensure_jump_tree = _ensure_menu_tree
 
 
 def _resolve_greedy(node, path_str, path_so_far=(), route=()):
@@ -238,7 +232,7 @@ def _route_to(target, admits=None):
   to a menu): a menu can be listed in several menus, and options can link
   back up, e.g. to main.
   """
-  nodes = list(_jump_nodes.values()) if _jump_nodes else []
+  nodes = list(_menu_nodes.values()) if _menu_nodes else []
   linked = {id(child) for node in nodes for child in node.children.values()}
   starts = [node for node in nodes if node.name == "main" or id(node) not in linked]
   if any(start is target for start in starts):
@@ -261,6 +255,14 @@ def _route_to(target, admits=None):
   return None
 
 
+def take_route(user, route):
+  """Record that *user* goes where *route* (from resolve_jump / resolve_dotted,
+  its keys checked) leads: the module there finds the option in the route's
+  last menu, just as for an option picked in that menu (user._option_menu;
+  see door._find_door_conf)."""
+  user._option_menu = route[-1] if route else None
+
+
 def route_denied(user, route):
   """The access-denied message for the first menu in *route* (from
   resolve_jump / resolve_dotted) that *user* may not enter, or None."""
@@ -279,23 +281,23 @@ def resolve_jump(path_str, user=None):
   A path that is just a menu's name has no menus of its own to go through:
   its route is one through menus that admit *user* if there is one, else a
   shortest one (where route_denied then finds a menu that refuses them)."""
-  _ensure_jump_tree()
+  _ensure_menu_tree()
   _no_match = f'"{path_str}" doesn\'t match any destination. Usage: /j option or menu.option'
-  if not _jump_nodes:
+  if not _menu_nodes:
     return (None, None, None, _no_match, ())
   path_str = path_str.strip()
   if not path_str:
     return (None, None, None, "Usage: /j option or menu.option", ())
-  root = _jump_nodes.get("main")
+  root = _menu_nodes.get("main")
   result = _resolve_greedy(root, path_str) if root is not None else None
   if result is not None and result[3] is None:
     return result
   # Single component: try matching a menu name directly (e.g. /j main)
   if "." not in path_str:
     p = path_str.lower()
-    matches = [mn for mn in _jump_nodes if mn.lower().startswith(p)]
+    matches = [mn for mn in _menu_nodes if mn.lower().startswith(p)]
     if len(matches) == 1:
-      target = _jump_nodes[matches[0]]
+      target = _menu_nodes[matches[0]]
       route = None
       if user is not None:
         from common import check_menu_keys
@@ -313,8 +315,8 @@ def resolve_dotted(menu_name, path_str):
   """Resolve a dotted path relative to the given menu (for inline dotted input).
   Uses greedy longest-match to support option names containing dots.
   Returns (dest_name, menu_item, parent_menu, error, route); see _resolve_greedy."""
-  _ensure_jump_tree()
-  node = _jump_nodes.get(menu_name) if _jump_nodes else None
+  _ensure_menu_tree()
+  node = _menu_nodes.get(menu_name) if _menu_nodes else None
   if node is None:
     return (None, None, None, None, ())  # no tree for this menu, let normal matching handle it
   path_str = path_str.strip()
@@ -1019,7 +1021,7 @@ async def do_menu(user, menu_name_or_node):
           else: error_msg = err
           continue
         user._source_menu = node  # return to the menu they were viewing
-        user._option_menu = route[-1] if route else None
+        take_route(user, route)
         return RetVals(status=success,
                        next_destination=_resolve_destination(dest_name, parent_name),
                        next_menu_item=menu_item_name)
@@ -1088,7 +1090,7 @@ async def do_menu(user, menu_name_or_node):
           else: error_msg = denied
           continue
         if dest_name:
-          user._option_menu = route[-1] if route else None
+          take_route(user, route)
           # Set source menu: walk from the parent menu node through the path
           parent_node = _menu_nodes.get(parent_name, node) if parent_name else node
           if isinstance(menu_item_name, tuple) and len(menu_item_name) > 1:

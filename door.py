@@ -624,6 +624,19 @@ def _daily_commands_due(door_dir, door_conf):
     return True
 
 
+def _settle_daily_mark(door_dir, node_dir, door_name):
+    """After the session that was to run the daily commands, while its node
+    directory still exists: keep today's mark if they ran to the end (the
+    autoexec then wrote DAILY_DONE_FLAG there), else take it back so the
+    next session runs them, and warn the sysop, since they may have been cut
+    off part-way and will run again over whatever they left."""
+    if os.path.exists(os.path.join(node_dir, DAILY_DONE_FLAG)):
+        return
+    _unmark_daily(door_dir)
+    log.warning("%s: the daily commands did not run to the end (cut off, or the door "
+                "never started); the next session runs them again", door_name)
+
+
 def _unmark_daily(door_dir):
     """Take back today's mark: the session that was to run the daily commands
     didn't run them to the end (the door never started, or the caller left
@@ -1036,20 +1049,18 @@ async def _run_until_first_done(*coros, output=None):
     door's last output.  Returns the result of the task that finished first.
     """
     tasks = [asyncio.create_task(c) for c in coros]
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    first = next(t for t in tasks if t in done)
-    if (output is not None and tasks[output] in pending and not first.exception()
-            and first.result() == ENDED_BY_DOOR):
-        await asyncio.wait([tasks[output]], timeout=OUTPUT_DRAIN_SECS)
-        pending = [t for t in pending if not t.done()]
-    for t in pending:
-        t.cancel()
-    for t in pending:
-        try:
-            await t
-        except asyncio.CancelledError:
-            pass
-    return first.result()
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        first = next(t for t in tasks if t in done)
+        if (output is not None and not tasks[output].done() and not first.exception()
+                and first.result() == ENDED_BY_DOOR):
+            await asyncio.wait([tasks[output]], timeout=OUTPUT_DRAIN_SECS)
+        return first.result()
+    finally:
+        # (also when this task is cancelled: the bridge must not outlive it)
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _bridge_socket(user, reader_or_host, writer_or_port, process, door_conf,
@@ -1529,8 +1540,8 @@ async def run(user, destination, menu_item=None):
                     pass
             if in_dosbox and not dosbox_log_read:
                 _log_dosbox_output(node_dir, door_name, node_num)
-            if daily_marked and not os.path.exists(os.path.join(node_dir, DAILY_DONE_FLAG)):
-                _unmark_daily(door_dir)
+            if daily_marked:
+                _settle_daily_mark(door_dir, node_dir, door_name)  # (before node_dir goes)
             # Remove the node directory (the next session on the node empties
             # it again if something in it was still held open)
             shutil.rmtree(node_dir, ignore_errors=True)
