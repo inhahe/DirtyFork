@@ -3,7 +3,7 @@
 # Shared variables: {security_level}, {user_record}
 # Session variables: {baud}, {node}, {handle}, {mins_remaining}
 
-comm_type: "2"    # 2 = telnet socket
+# comm_type is chosen automatically: 1 (serial COM1) for DOSBox doors, 2 (telnet socket) for native doors
 baud_rate: "{baud}"
 security_level: "{security_level}"
 emulation: "1"    # 1 = ANSI

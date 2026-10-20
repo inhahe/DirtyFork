@@ -128,6 +128,8 @@ destinations:
     black_keys: [banned]   # must NOT have "banned" key
 ```
 
+The rules apply however the destination is reached — including menus entered as a submenu of another menu (e.g. a door category, or the Sysop menu from Main). Door entries can additionally carry their own `white_keys`/`black_keys`, which the door module enforces for that door only.
+
 New users receive default keys from `user_defaults.keys` in the config (e.g., `[doors]`).
 
 ### Key Groups
@@ -187,31 +189,76 @@ Users can set a `start_destination` in their settings (using `/jump` syntax). Af
 
 ### Door Games
 
-Door games run in DOSBox-X instances with full node management. Each door gets its own node directory with auto-generated dropfiles.
+Door games run in DOSBox-X instances with full node management. Each session gets its own node directory with auto-generated dropfiles.
 
-**Configuration:**
+**Configuration.** A door is any menu option whose target is the `door` module, so doors can be grouped into category submenus. The `doors` menu lists the categories; each category is its own menu (with its own `destinations` entry, `type: menu`) and an optional `title` used in the breadcrumb (`Main > Doors > Most Popular`). The same door can be listed in several categories with a YAML alias; entries that share a `dir` share one set of nodes. After a door exits, the user returns to the menu it was launched from.
+
 ```yaml
+destinations:
+  door:
+    type: module
+    white_keys: [doors]
+    dosbox_path: C:\dosbox-x\dosbox-x.exe
+    base_path: doors          # door dirs are relative to this (under the project dir)
+    tools_path: tools         # mounted as E: in every door session
+    fossil_command: X00.EXE   # run from E:\ for doors with fossil: true
+  doors_popular: {type: menu, white_keys: [doors]}
+  doors_space:   {type: menu, white_keys: [doors]}
+
 menu_system:
   doors:
-    option_defaults:
+    options:
+      Most Popular: {target: doors_popular}
+      Space:        {target: doors_space}
+  doors_popular:
+    title: Most Popular
+    option_defaults: &door_defaults
       target: door
       dosbox_conf: doors/dosbox.conf
     options:
-      Trade Wars 2002:
+      Trade Wars 2002: &door_tw2002
         max_nodes: 4
-        communication_type: COM
-        dropfile_type: DOOR.SYS
         command: 'TW2002.EXE TWNODE={node}'
         dir: 'tw2002'
+  doors_space:
+    title: Space
+    option_defaults: *door_defaults
+    options:
+      Trade Wars 2002: *door_tw2002
 ```
 
-**Supported dropfile formats:** DOOR.SYS, DORINFO1.DEF, CHAIN.TXT, CALLINFO.BBS, DOOR32.SYS, SFDOORS.DAT. Field defaults are in `doors/dropfiles/*.yaml` and can be overridden per door.
+**Per-door options** (besides `command`, `dir`, `max_nodes`):
+
+| Option | Meaning |
+|--------|---------|
+| `fossil: true` | Load the FOSSIL driver (`fossil_command`, from `E:\`) before the door. Doors with their own serial routines don't need it. |
+| `pre_commands: [...]` | DOS commands run from `D:\` before the door (e.g. a dropfile converter, or deleting a stale lock file of a one-node door). |
+| `dosbox_settings: {cpu: {cycles: 20000}}` | Per-door DOSBox-X settings, layered over `dosbox_conf`. |
+| `date_shift_years: 28` | Run the door's clock N years in the past, for doors with Y2K bugs. Multiples of 28 keep the weekdays and leap years of the real calendar, and the date still advances daily. |
+| `daily_commands: [...]` | DOS commands run before the door on the first session of each day only (e.g. the door's maintenance program). Entries that share a `dir` share the once-a-day mark (`doors/_nodes/<dir>/daily.stamp`). |
+| `key_translation: doorway` | Translate the caller's ANSI/VT cursor, Home/End, PgUp/PgDn, Ins/Del and F1–F12 key sequences into DOORWAY's NUL + scan code, so arrow-key driven DOS programs run through DOORWAY work from any terminal. A lone ESC still reaches the program. |
+| `screen_rows: 24` | For doors written for 24-line screens: the terminal's scroll region is limited to that many rows during the door (and reset afterwards), and the dropfiles report that page length. |
+| `input_pace_ms: 30` | Send the caller's keys one at a time, this many ms apart, for doors that throw away typed-ahead input. |
+| `white_keys` / `black_keys` | Restrict this door only (e.g. sysop-only tools, adult doors), on top of the door module's keys. |
+| `door_sys: {...}`, `dorinfo: {...}`, ... | Override individual dropfile fields (see `doors/dropfiles/*.yaml`). |
+
+Variables available in `command` and `pre_commands`: `{node}`, `{dropfile_path}` (`C:\DOOR.SYS` by default, see `dropfile_type`), `{dropfile_dir}` (`C:\`), `{handle}`, `{baud}`, `{com}`, `{mins_remaining}`, `{secs_remaining}`, `{rows}`, `{cols}`, plus any scalar from the door's config.
+
+**Supported dropfile formats** (all written for every session): `DOOR.SYS` (52-line GAP/PCBoard/Wildcat), `DOOR<node>.SYS`, `DORINFO1.DEF` and `DORINFO<node>.DEF` (line 13 is `-1` only when `fossil: true`), `CHAIN.TXT` (32-line WWIV), `DOOR32.SYS` (11 lines; comm type 1/COM1 for DOSBox doors, 2/telnet socket for native doors), `CALLINFO.BBS`, `SFDOORS.DAT`. Field defaults are in `doors/dropfiles/*.yaml` and can be overridden per door.
 
 **DOSBox drive mapping:**
-- `C:\` — the node directory (`doors/<game>/node<N>`), where dropfiles are written
-- `D:\` — the door's game directory (`doors/<game>`), where the game EXE lives
+- `C:\` — the node directory (`doors/_nodes/<dir>/node<N>`), where the dropfiles are written. It is removed when the session ends.
+- `D:\` — the door's game directory (`doors/<dir>`), where the game EXE lives. The command runs from here.
+- `E:\` — `tools_path` (`doors/tools`): the FOSSIL driver and DOORWAY.
+- COM1 — the caller, through DOSBox-X's null-modem serial port.
 
-The door command runs from `D:\`. To access the dropfile from within the game, use `C:\DOOR.SYS` (or whichever format the game expects). Dropfiles are copied from C: to D: automatically for formats the game needs.
+Configure doors to read their dropfile from `C:\` (e.g. `C:\DOOR.SYS`) and their data from `D:\`; never put host paths in a door's own config files. If `dropfile_dir` is set, the dropfiles are also copied there before the door starts.
+
+**Sysop DOS shell.** The *Sysop Tools* category has a sysop-only **DOS Shell** door: a remote DOS prompt (through DOORWAY, which mirrors the DOSBox screen to your terminal and feeds your keys in) with `D:\` = `doors/`. Use it to run door installers and config programs (TEDIT, LORDCFG, ...) from your terminal, since DOSBox runs hidden. A config program that stores paths should be run with the same drive mapping the door has during play: give it its own sysop entry with `dir:` set to the door's directory, e.g. `command: 'E:\DOORWAY\DOORWAY.EXE COM1 /V:D /O:T /M:999 /G:ON /P:CONFIG.EXE'` (or `/C:DOS` for a prompt). DOORWAY feeds keys through the 15-key BIOS keyboard buffer, so pasting long text into it can drop characters.
+
+**Screen handling**: the screen is cleared before a door starts. DOS doors were written for ANSI.SYS, where `ESC[2J` (and a form feed) clears the screen *and homes the cursor*; BBS terminals do the same, but VT100-style clients (PuTTY, xterm) don't, so door output has both rewritten to `ESC[2J ESC[H`, which means the same on every terminal.
+
+**Session log**: the raw output of the most recent session on each node is kept in `doors/_nodes/<dir>/session<N>.log`, which helps when a door misbehaves.
 
 **Cross-platform**: DOSBox/DOSBox-X runs on Linux and macOS too. The BBS generates DOSBox configs with OS-native paths, so doors work identically on all platforms. Just set `dosbox_path` to the correct binary (e.g., `/usr/bin/dosbox-x` on Linux).
 
@@ -219,7 +266,7 @@ The door command runs from `D:\`. To access the dropfile from within the game, u
 
 **Batch files**: Door commands that invoke `.BAT` files use `CALL` in the DOSBox autoexec so that control returns and DOSBox can exit cleanly.
 
-**Escape**: Press **Ctrl+X three times** within 2 seconds to exit a door session.
+**Escape**: Press **Ctrl+X three times** within 2 seconds to exit a door session. When the caller hangs up or aborts, the connection to DOSBox is closed so the door sees its carrier drop, and it gets up to 10 seconds to save the player and exit before DOSBox is terminated (a door that exits by itself is waited for 1 second). Doors that allow only one player at a time and keep a lock file (e.g. BRE's `INUSE.FLG`) can be left locked by an aborted session; with `max_nodes: 1` it is safe to delete the lock in `pre_commands`.
 
 **Popups during doors**: The ANSI emulator tracks the door's screen state in `user.screen`. Popups save/restore this screen. Users can disable door popups via the `allow_door_popups` setting.
 

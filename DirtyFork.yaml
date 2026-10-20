@@ -119,6 +119,8 @@ destinations:
     # Path to your DOSBox-X executable:
     dosbox_path: C:\dosbox-x\dosbox-x.exe
     base_path: doors  # relative paths in door configs are relative to this directory
+    tools_path: tools  # mounted as E: in every DOSBox door session (FOSSIL driver, DOORWAY)
+    fossil_command: X00.EXE  # run from E:\ before doors that have fossil: true
     max_nodes: 20
   teleconference:
     type: module
@@ -164,6 +166,19 @@ destinations:
   doors:
     type: menu
     white_keys: [doors]
+  # Door categories: each is a submenu of the doors menu
+  doors_popular:
+    type: menu
+    white_keys: [doors]
+  doors_rpg:
+    type: menu
+    white_keys: [doors]
+  doors_space:
+    type: menu
+    white_keys: [doors]
+  doors_sysop:
+    type: menu
+    white_keys: [sysop]
 
 forum_list: &forum_list
   General: null
@@ -243,8 +258,35 @@ menu_system:
       Search:
         target: forum
         menu_item: ["*", search]
+  # Door games.  The doors menu lists categories; each category is a menu of
+  # its own (with a destinations entry and an optional breadcrumb title) whose
+  # options launch the door module.  List a door in several categories with a
+  # YAML alias; entries that share a dir share their nodes.
+  #
+  # Inside DOSBox: C:\ = per-node dir with all dropfiles (DOOR.SYS, DORINFO1.DEF,
+  # CHAIN.TXT, DOOR32.SYS, CALLINFO.BBS, SFDOORS.DAT), D:\ = the door's dir
+  # (doors/<dir>), E:\ = doors/tools.  Commands run from D:\.  Point the door's
+  # own config at C:\ for its dropfile.
+  #   fossil: true          load the FOSSIL driver (fossil_command) first
+  #   pre_commands: [...]   DOS commands run before the door
+  #   dosbox_settings:      per-door DOSBox-X overrides, e.g. {cpu: {cycles: 20000}}
+  #   date_shift_years: 28  run the door's clock 28 years back (Y2K-buggy doors)
+  #   white_keys/black_keys on a door restrict that door only
+  # Native 32-bit doors (no DOSBox): native: true, communication_type: SOCKET
+  # (default) or STDIO, e.g. command: 'mydoor.exe -socket {socket_port} -node {node}'
   doors:
-    option_defaults:
+    options:
+      Most Popular:
+        target: doors_popular
+      Role-Playing:
+        target: doors_rpg
+      Space:
+        target: doors_space
+      Sysop Tools:
+        target: doors_sysop
+  doors_popular:
+    title: Most Popular
+    option_defaults: &door_defaults
       target: door
       dosbox_conf: doors/dosbox.conf  # default DOSBox-X base config; override per door
       # Shared values — any scalar here becomes a {variable} in dropfile sections.
@@ -261,48 +303,43 @@ menu_system:
       door32_sys:  !include doors/dropfiles/door32_sys.yaml
       sfdoors_dat: !include doors/dropfiles/sfdoors_dat.yaml
     options:
-      # Example door entries — edit paths and commands to match your installation.
-      # DOSBox drive mapping: C:\ = node dir (dropfiles), D:\ = game dir (EXE).
-      # Game commands run from D:\. Dropfile path for game config: C:\DOOR.SYS
-      # --- DOS 16-bit doors (via DOSBox-X) ---
-      # communication_type: COM (default) — uses DOSBox FOSSIL/serial emulation
-      # Trade Wars 2002:
-      #   max_nodes: 4
-      #   white_keys: [doors]
-      #   black_keys: [banned]
-      #   communication_type: COM
-      #   command: 'TW2002.EXE TWNODE={node}'
-      #   dir: 'tw2002'
-      # Legend of the Red Dragon:
-      #   max_nodes: 10
-      #   white_keys: [doors]
-      #   black_keys: [banned]
-      #   communication_type: COM
-      #   command: 'START.BAT {node}'
-      #   dir: 'lord'
-      Legend of the Red Dragon:
+      # Example entries — edit paths and commands to match your installation.
+      Legend of the Red Dragon: &door_lord
+        # NODE<n>.DAT in the LORD dir: BBSTYPE QBBS, BBSDROP C:\
         max_nodes: 10
-        white_keys: [doors]
-        black_keys: [banned]
-        communication_type: COM
-        dropfile_type: DOOR.SYS
         command: 'START.BAT {node}'
-        dir: 'lord_demo'
-      # --- Native 32-bit doors (no DOSBox) ---
-      # native: true — runs directly, uses SOCKET (TCP) or STDIO
-      # My 32-bit Door:
-      #   native: true
-      #   communication_type: SOCKET  # or STDIO; default is SOCKET when native=true
-      #   command: 'mydoor.exe -socket {socket_port} -node {node}'
-      #   dir: 'mydoor'
-      1 - Test Door (FOSSIL):
-        max_nodes: 10
-        communication_type: COM
+        dir: 'lord'
+      Trade Wars 2002: &door_tw2002
+        # nodes set up in TEDIT: DOOR drop file type, path C:\, COM1
+        max_nodes: 4
+        command: 'TW2002.EXE TWNODE={node}'
+        dir: 'tw2002'
+  doors_rpg:
+    title: Role-Playing
+    option_defaults: *door_defaults
+    options:
+      Legend of the Red Dragon: *door_lord
+  doors_space:
+    title: Space
+    option_defaults: *door_defaults
+    options:
+      Trade Wars 2002: *door_tw2002
+  doors_sysop:
+    title: Sysop Tools
+    option_defaults: *door_defaults
+    options:
+      DOS Shell (doors directory):
+        # Remote DOS prompt (via DOORWAY in doors/tools/doorway) with D:\ = doors/,
+        # for running door installers and config programs from your terminal.
+        white_keys: [sysop]
+        max_nodes: 1
+        command: 'E:\DOORWAY\DOORWAY.EXE COM1 /V:D /O:T /M:999 /G:ON /C:DOS'
+        dir: '.'
+      Test Door (FOSSIL):
+        fossil: true
         command: 'TESTDOOR.EXE /FOSSIL /PORT:0'
         dir: 'testdoor'
-      2 - Test Door (BIOS):
-        max_nodes: 10
-        communication_type: COM
+      Test Door (BIOS):
         command: 'TESTDOOR.EXE /BIOS /PORT:0'
         dir: 'testdoor'
 

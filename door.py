@@ -15,7 +15,7 @@ import time
 import paths
 
 from definitions import *
-from input_output import send
+from input_output import send, ansi_cls, ansi_set_region
 from config import get_config
 from ansi_emulator import AnsiEmulator
 from logger import log
@@ -35,7 +35,7 @@ class Node:
             setattr(self, k, v)
 
 
-# key = door name, value = list of active Node instances
+# key = node key (see _node_key: the door's directory), value = list of active Node instances
 nodes = {}
 
 
@@ -44,22 +44,22 @@ def _total_active_nodes():
     return sum(len(v) for v in nodes.values())
 
 
-def _allocate_node_number(door_name):
-    """Find the lowest available node number for *door_name*."""
-    if door_name not in nodes:
-        nodes[door_name] = []
-    used = {n.node_num for n in nodes[door_name]}
+def _allocate_node_number(node_key):
+    """Find the lowest available node number for the door identified by *node_key*."""
+    if node_key not in nodes:
+        nodes[node_key] = []
+    used = {n.node_num for n in nodes[node_key]}
     num = 1
     while num in used:
         num += 1
     return num
 
 
-def _release_node(door_name, node):
-    """Remove *node* from the active list for *door_name*."""
-    if door_name in nodes:
+def _release_node(node_key, node):
+    """Remove *node* from the active list for *node_key*."""
+    if node_key in nodes:
         try:
-            nodes[door_name].remove(node)
+            nodes[node_key].remove(node)
         except ValueError:
             pass
 
@@ -134,6 +134,18 @@ def _screen_rows(user):
     return getattr(user, "screen_height", None) or 25
 
 
+def _door_rows(user, door_conf):
+    """Rows the door gets: the caller's screen, or fewer if the door wants
+    (screen_rows: 24 for doors written for 24-line screens)."""
+    rows = _screen_rows(user)
+    if door_conf and door_conf.screen_rows:
+        try:
+            rows = max(1, min(rows, int(door_conf.screen_rows)))
+        except (TypeError, ValueError):
+            log.warning("Ignoring invalid screen_rows: %s", door_conf.screen_rows)
+    return rows
+
+
 def _screen_cols(user):
     return getattr(user, "screen_width", None) or 80
 
@@ -147,86 +159,88 @@ def _time_remaining_mins():
 
 
 def _generate_door_sys(user, node_num, node_dir, door_conf, variables):
-    """Generate DOOR.SYS (PCBoard format)."""
+    """Generate DOOR.SYS (the 52-line GAP/PCBoard/Wildcat format)."""
     df = door_conf.door_sys if door_conf else null
     gdf = lambda key, default: _get_df(df, key, default, variables)
 
     lines = [
-        "COM1:",                                   # COM port (always COM1 in DOSBox)
-        gdf("baud_rate", "115200"),                # baud rate
-        "8",                                       # data bits (always 8)
-        variables["node"],                         # node number
-        gdf("screen_display", "Y"),                # screen display locked
-        gdf("printer_toggle", "N"),                # printer toggle
-        gdf("page_bell", "Y"),                     # page bell
-        gdf("caller_alarm", "Y"),                  # caller alarm
-        variables["handle"],                       # user name
-        variables["location"],                     # user location
-        gdf("home_phone", ""),                     # home phone
-        gdf("work_phone", ""),                     # work phone
-        gdf("password", ""),                       # password placeholder
-        gdf("security_level", "0"),                # security level
-        gdf("times_called", "0"),                  # total calls
-        gdf("last_call_date", "01/01/00"),         # last call date
-        variables["secs_remaining"],               # seconds remaining
-        variables["mins_remaining"],               # minutes remaining
-        "GR",                                      # graphics mode (GR = ANSI, always)
-        variables["rows"],                         # screen height
-        gdf("expert_mode", "N"),                   # expert mode
-        gdf("conferences", ""),                    # conferences registered in
-        gdf("conf_joined", ""),                    # conference last access
-        gdf("expiration_date", ""),                # expiration date
-        gdf("user_record", "1"),                   # user record number
-        gdf("protocol", "Z"),                      # default protocol
-        gdf("uploads", "0"),                       # total uploads
-        gdf("downloads", "0"),                     # total downloads
-        gdf("daily_dl_k", "0"),                    # daily download k limit
-        gdf("dl_k_today", "0"),                    # daily download k so far
-        gdf("birthday", ""),                       # birthday
-        gdf("user_db_path", ""),                   # path to user database
-        node_dir,                                  # path to door directory
-        variables["bbs_name"],                     # BBS name
-        variables["sysop_name"],                   # sysop name
-        gdf("event_time", "00:00"),                # event time
-        gdf("error_correcting", "Y"),              # error correcting connection
-        gdf("ansi_in_transfer", "N"),              # ANSI in file transfers
-        gdf("default_color", ""),                  # default BBS color
-        gdf("time_credits", "0"),                  # time credits in minutes
-        gdf("last_new_scan", "01/01/00"),          # last new file scan
-        gdf("time_of_call", "00:00:00"),           # time of call
-        gdf("last_time_on", "00:00:00"),           # last time on
-        gdf("max_daily_files", "999"),             # max daily files
-        gdf("files_today", "0"),                   # files downloaded today
-        gdf("total_ul_k", "0"),                    # total uploads k
-        gdf("total_dl_k", "0"),                    # total downloads k
-        gdf("comment", ""),                        # comment
-        gdf("total_doors", "0"),                   # total doors opened
-        gdf("messages_left", "0"),                 # messages left
+        gdf("com_port", "COM1:"),                  #  1 COM port (COM1 in DOSBox; COM0: = local mode)
+        gdf("baud_rate", "115200"),                #  2 baud rate
+        "8",                                       #  3 parity / data bits (always 8)
+        variables["node"],                         #  4 node number
+        gdf("dte_rate", "{baud}"),                 #  5 DTE rate (locked port speed)
+        gdf("screen_display", "Y"),                #  6 screen display
+        gdf("printer_toggle", "N"),                #  7 printer toggle
+        gdf("page_bell", "Y"),                     #  8 page bell
+        gdf("caller_alarm", "Y"),                  #  9 caller alarm
+        variables["handle"],                       # 10 user full name
+        variables["location"],                     # 11 calling from
+        gdf("home_phone", ""),                     # 12 home phone
+        gdf("work_phone", ""),                     # 13 work / data phone
+        gdf("password", ""),                       # 14 password placeholder
+        gdf("security_level", "0"),                # 15 security level
+        gdf("times_called", "1"),                  # 16 total times on
+        gdf("last_call_date", "01/01/00"),         # 17 last date called
+        variables["secs_remaining"],               # 18 seconds remaining this call
+        variables["mins_remaining"],               # 19 minutes remaining this call
+        "GR",                                      # 20 graphics mode (GR = ANSI, always)
+        gdf("page_length", "{rows}"),              # 21 page length (screen rows unless overridden)
+        gdf("expert_mode", "N"),                   # 22 user mode (Y = expert)
+        gdf("conferences", ""),                    # 23 conferences registered in
+        gdf("conf_joined", ""),                    # 24 conference exited to door from
+        gdf("expiration_date", ""),                # 25 user expiration date
+        gdf("user_record", "1"),                   # 26 user record number
+        gdf("protocol", "Z"),                      # 27 default protocol
+        gdf("uploads", "0"),                       # 28 total uploads
+        gdf("downloads", "0"),                     # 29 total downloads
+        gdf("dl_k_today", "0"),                    # 30 daily download K total (today)
+        gdf("daily_dl_k", "999999"),               # 31 daily download max K limit
+        gdf("birthday", ""),                       # 32 birthday
+        gdf("user_db_path", variables["door_node_dir"]),  # 33 path to the MAIN directory
+        variables["door_node_dir"],                # 34 path to the GEN directory (dropfiles)
+        variables["sysop_name"],                   # 35 sysop name
+        variables["handle"],                       # 36 user alias
+        gdf("event_time", "00:00"),                # 37 event time
+        gdf("error_correcting", "Y"),              # 38 error correcting connection
+        gdf("ansi_in_ng_mode", "N"),               # 39 ANSI supported & caller using NG mode
+        gdf("record_locking", "Y"),                # 40 use record locking
+        gdf("default_color", "7"),                 # 41 default colour
+        gdf("time_credits", "0"),                  # 42 time credits in minutes
+        gdf("last_new_scan", "01/01/00"),          # 43 last new files scan date
+        gdf("time_of_call", "00:00"),              # 44 time of this call
+        gdf("last_time_on", "00:00"),              # 45 time of last call
+        gdf("max_daily_files", "999"),             # 46 maximum daily files available
+        gdf("files_today", "0"),                   # 47 files downloaded so far today
+        gdf("total_ul_k", "0"),                    # 48 total K uploaded
+        gdf("total_dl_k", "0"),                    # 49 total K downloaded
+        gdf("comment", ""),                        # 50 user comment
+        gdf("total_doors", "0"),                   # 51 total doors opened
+        gdf("messages_left", "0"),                 # 52 total messages left
     ]
     return "\r\n".join(lines) + "\r\n"
 
 
 def _generate_dorinfo(user, node_num, door_conf, variables):
-    """Generate DORINFO1.DEF format."""
+    """Generate DORINFO1.DEF (RBBS / QuickBBS format)."""
     df = door_conf.dorinfo if door_conf else null
     gdf = lambda key, default: _get_df(df, key, default, variables)
 
     sysop_first, sysop_last = _sysop_first_last()
 
     lines = [
-        variables["bbs_name"],                     # BBS name
-        sysop_first,                               # sysop first name
-        sysop_last,                                # sysop last name
-        gdf("com_port", "COM1"),                   # COM port
-        gdf("baud_parity", "115200 BAUD,N,8,1"),   # baud/parity/data/stop
-        gdf("network_type", "0"),                  # network type (0 = none)
-        variables["first_name"],                   # user first name
-        variables["last_name"],                    # user last name
-        variables["location"],                     # location
-        gdf("ansi", "1"),                          # ANSI (0=no, 1=yes, 2=RIP)
-        gdf("security_level", "0"),                # security level
-        variables["mins_remaining"],               # minutes remaining
-        "-1",                                      # fossil flag (-1 = fossil, always)
+        variables["bbs_name"],                     #  1 BBS name
+        sysop_first,                               #  2 sysop first name
+        sysop_last,                                #  3 sysop last name
+        gdf("com_port", "COM1"),                   #  4 COM port
+        gdf("baud_parity", "115200 BAUD,N,8,1"),   #  5 baud/parity/data/stop
+        gdf("network_type", "0"),                  #  6 network type (0 = none)
+        variables["first_name"],                   #  7 user first name
+        variables["last_name"],                    #  8 user last name
+        variables["location"],                     #  9 location
+        gdf("ansi", "1"),                          # 10 graphics (0=no, 1=ANSI)
+        gdf("security_level", "0"),                # 11 security level
+        variables["mins_remaining"],               # 12 minutes remaining
+        "-1" if variables["fossil"] == "1" else "0",  # 13 -1 = FOSSIL loaded, 0 = use the UART
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -236,60 +250,70 @@ def _generate_chain_txt(user, node_num, node_dir, door_conf, variables):
     df = door_conf.chain_txt if door_conf else null
     gdf = lambda key, default: _get_df(df, key, default, variables)
 
-    # CHAIN.TXT expects the node directory with a trailing backslash
-    nd = node_dir.replace("/", "\\")
+    # CHAIN.TXT directories end with a backslash
+    nd = variables["door_node_dir"].replace("/", "\\")
     if not nd.endswith("\\"):
         nd += "\\"
 
     lines = [
-        gdf("user_record", "1"),                   # user record number
-        variables["handle"],                       # user handle
-        variables["handle"],                       # real name (same as handle)
-        "",                                        # callsign (not used)
-        variables["age"],                          # age
-        variables["sex"],                          # sex
-        gdf("gold", "0"),                          # gold/credits
-        gdf("last_login", "01/01/00"),             # last login date
-        variables["cols"],                         # screen width
-        variables["rows"],                         # screen rows
-        gdf("security_level", "0"),                # security level
-        gdf("co_sysop", "0"),                      # co-sysop flag
-        gdf("ansi", "1"),                          # ANSI (1=yes)
-        gdf("remote", "0"),                        # remote flag
-        variables["secs_remaining"],               # seconds remaining
-        nd,                                        # node directory with trailing backslash
-        "",                                        # (reserved)
-        "",                                        # (reserved)
-        variables["sysop_name"],                   # sysop name
-        variables["bbs_name"],                     # BBS name
-        "",                                        # (reserved)
-        "COM1",                                    # COM port (always COM1)
-        "0000000",                                 # (reserved)
-        variables["baud"],                         # baud rate
-        "",                                        # (reserved)
-        variables["node"],                         # node number
+        gdf("user_record", "1"),                   #  1 user number
+        variables["handle"],                       #  2 user alias
+        variables["handle"],                       #  3 user real name
+        "",                                        #  4 callsign (HAM radio)
+        variables["age"],                          #  5 age
+        variables["sex"],                          #  6 sex
+        gdf("gold", "0"),                          #  7 gold
+        gdf("last_login", "01/01/00"),             #  8 last logon date
+        variables["cols"],                         #  9 screen columns
+        variables["rows"],                         # 10 screen lines
+        gdf("security_level", "0"),                # 11 security level (0-255)
+        gdf("co_sysop", "0"),                      # 12 1 if co-sysop
+        gdf("sysop", "0"),                         # 13 1 if sysop
+        gdf("ansi", "1"),                          # 14 1 if ANSI
+        gdf("remote", "1"),                        # 15 1 if remote caller (0 = local console)
+        variables["secs_remaining"],               # 16 seconds left until logoff
+        nd,                                        # 17 GFILES directory
+        nd,                                        # 18 DATA directory
+        gdf("sysop_log", ""),                      # 19 system log of the day
+        variables["baud"],                         # 20 user baud rate
+        variables["com"],                          # 21 COM port number
+        variables["bbs_name"],                     # 22 system name
+        variables["sysop_name"],                   # 23 sysop name
+        gdf("logon_time", "0"),                    # 24 time user logged on (secs since midnight)
+        gdf("secs_on_today", "0"),                 # 25 seconds on system so far today
+        gdf("uploaded_k", "0"),                    # 26 uploaded K
+        gdf("uploads", "0"),                       # 27 number of uploads
+        gdf("downloaded_k", "0"),                  # 28 downloaded K
+        gdf("downloads", "0"),                     # 29 number of downloads
+        "8N1",                                     # 30 parity
+        variables["baud"],                         # 31 COM port baud rate
+        variables["node"],                         # 32 node number
     ]
     return "\r\n".join(lines) + "\r\n"
 
 
 def _generate_door32_sys(user, node_num, socket_handle, door_conf, variables):
-    """Generate DOOR32.SYS (modern 32-bit format)."""
+    """Generate DOOR32.SYS (11 lines).
+
+    Native doors get the telnet socket (comm type 2); DOSBox doors are on a
+    serial port, so they get comm type 1 and COM port 1.
+    """
     df = door_conf.door32_sys if door_conf else null
     gdf = lambda key, default: _get_df(df, key, default, variables)
+    in_dosbox = variables["door_node_dir"] == DOS_NODE_DRIVE + "\\"
 
     lines = [
-        gdf("comm_type", "2"),                     # comm type (2 = telnet)
-        str(socket_handle),                        # socket/comm handle (always dynamic)
-        gdf("baud_rate", "115200"),                # baud rate
-        variables["bbs_name"],                     # BBS software name
-        "1",                                       # user record number
-        variables["handle"],                       # user display name
-        variables["handle"],                       # real name
-        variables["handle"],                       # handle
-        gdf("security_level", "0"),                # security level
-        variables["mins_remaining"],               # time remaining minutes
-        gdf("emulation", "1"),                     # emulation (1 = ANSI)
-        variables["node"],                         # current node number
+        gdf("comm_type", "1" if in_dosbox else "2"),  #  1 comm type (0=local, 1=serial, 2=telnet)
+        variables["com"] if in_dosbox else str(socket_handle),  # 2 comm or socket handle
+        gdf("baud_rate", "115200"),                #  3 baud rate
+        variables["bbs_software"],                 #  4 BBS software name and version
+        gdf("user_record", "1"),                   #  5 user record number (1-based)
+        variables["handle"],                       #  6 user real name
+        variables["handle"],                       #  7 user handle / alias
+        gdf("security_level", "0"),                #  8 security level
+        variables["mins_remaining"],               #  9 time remaining (minutes)
+        gdf("emulation", "1"),                     # 10 emulation (0=ASCII, 1=ANSI)
+        variables["node"],                         # 11 current node number
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -372,14 +396,19 @@ def _write_all_dropfiles(user, node_num, node_dir, door_conf, variables, socket_
 # Command-line variable substitution
 # ---------------------------------------------------------------------------
 
-def _build_vars(user, node_num, node_dir, door_conf, socket_port, config_path=""):
-    """Build the dict used for {variable} substitution in the door command."""
+def _build_vars(user, node_num, node_dir, door_conf, socket_port, config_path="", in_dosbox=False):
+    """Build the dict used for {variable} substitution in the door command.
+
+    For DOSBox doors the node directory is mounted as C:, so every path the
+    door sees ({dropfile_dir}, {dropfile_path}, {door_node_dir}) is the DOS
+    path, not the host path.  {node_dir} is always the host path.
+    """
     handle = getattr(user, "handle", None) or "Unknown"
-    base_path = paths.resolve_project(str(conf.base_path)) if conf.base_path else paths.resolve_project("doors")
-    door_dir = _resolve_door_dir(door_conf, base_path)
+    door_dir = _resolve_door_dir(door_conf, _base_path())
 
     dropfile_type = str(door_conf.dropfile_type) if door_conf.dropfile_type else "DOOR.SYS"
-    dropfile_path = os.path.join(node_dir, dropfile_type)
+    door_node_dir = DOS_NODE_DRIVE + "\\" if in_dosbox else node_dir
+    dropfile_path = (DOS_NODE_DRIVE + "\\" + dropfile_type) if in_dosbox else os.path.join(node_dir, dropfile_type)
 
     user_first, user_last = _user_first_last(user)
 
@@ -388,7 +417,8 @@ def _build_vars(user, node_num, node_dir, door_conf, socket_port, config_path=""
         "com": "1",
         "baud": "115200",
         "dropfile_path": dropfile_path,
-        "dropfile_dir": node_dir,
+        "dropfile_dir": door_node_dir,
+        "door_node_dir": door_node_dir,
         "dropfile_type": dropfile_type,
         "config_path": config_path,
         "time_limit": str(_time_remaining_mins()),
@@ -402,11 +432,12 @@ def _build_vars(user, node_num, node_dir, door_conf, socket_port, config_path=""
         "sex": _user_sex(user),
         "socket_handle": str(socket_port),
         "graphics_mode": "ANSI",
+        "fossil": "1" if door_conf.fossil else "0",
         "bbs_software": "DirtyFork",
         "bbs_name": _bbs_name(),
         "sysop_name": _sysop_name(),
-        "data_path": door_dir,
-        "rows": str(_screen_rows(user)),
+        "data_path": (DOS_DOOR_DRIVE + "\\") if in_dosbox else door_dir,
+        "rows": str(_door_rows(user, door_conf)),
         "cols": str(_screen_cols(user)),
         "irq": "4",
         "io_port": "3F8",
@@ -460,6 +491,23 @@ def _get_df(section, key, default, variables):
 # Door directory resolution
 # ---------------------------------------------------------------------------
 
+# Seconds to wait for a door to exit by itself before terminating it: after
+# the door closed its side, and after the caller hung up / aborted.
+DOOR_EXIT_GRACE = 1.0
+HANGUP_EXIT_GRACE = 10.0
+
+# Drive letters inside DOSBox: C: = node (dropfile) dir, D: = door dir,
+# E: = shared tools dir (FOSSIL driver etc.), when one is configured.
+DOS_NODE_DRIVE = "C:"
+DOS_DOOR_DRIVE = "D:"
+DOS_TOOLS_DRIVE = "E:"
+
+
+def _base_path():
+    """Directory that relative door paths are resolved against."""
+    return paths.resolve_project(str(conf.base_path)) if conf.base_path else paths.resolve_project("doors")
+
+
 def _resolve_door_dir(door_conf, base_path):
     """Resolve the door's directory.  Relative paths are relative to *base_path*."""
     door_dir_raw = str(door_conf.dir) if door_conf.dir else ""
@@ -470,11 +518,90 @@ def _resolve_door_dir(door_conf, base_path):
     return os.path.join(base_path, door_dir_raw)
 
 
+def _resolve_under_base(path):
+    """Resolve a sysop-configured path: absolute as-is, else relative to base_path."""
+    path = str(path)
+    return path if os.path.isabs(path) else os.path.join(_base_path(), path)
+
+
+def _node_key(door_dir):
+    """Key for node allocation.  Two menu entries that share a door directory
+    (e.g. the same door listed in two categories) share one set of nodes, so
+    they can never be handed the same node number."""
+    return os.path.normcase(os.path.abspath(door_dir))
+
+
+def _node_root(door_dir):
+    """Host directory holding this door's per-node dropfile directories.
+
+    Kept outside the door's own directory so that removing a finished node
+    can never touch the door's data files (some doors keep their own NODEn
+    files or directories)."""
+    rel = os.path.relpath(os.path.abspath(door_dir), os.path.abspath(_base_path()))
+    if rel.startswith(".."):
+        rel = os.path.basename(os.path.abspath(door_dir))
+    elif rel == ".":
+        rel = "_base"  # a door whose dir is base_path itself (e.g. the sysop DOS shell)
+    safe = rel.replace("\\", "_").replace("/", "_").replace(":", "_")
+    return os.path.join(_base_path(), "_nodes", safe)
+
+
+def _is_door_option(option_conf):
+    return bool(option_conf) and option_conf is not null and str(option_conf.target or "") == "door"
+
+
+def _find_door_conf(user, door_name):
+    """Find the config for the door the user picked.
+
+    Doors can live in any menu (e.g. category submenus of the doors menu), so
+    look first in the menu the user chose from, then in every menu.
+    """
+    source = getattr(user, "_source_menu", None)
+    info = getattr(source, "options_info", {}).get(door_name) if source is not None else None
+    if info is not None and _is_door_option(info.conf):
+        return info.conf
+    menus = config.menu_system
+    if not menus:
+        return null
+    for menu_name in menus.keys():
+        mc = menus[menu_name]
+        if not mc or not mc.options or door_name not in mc.options:
+            continue
+        oc = mc.options[door_name]
+        if _is_door_option(oc):
+            return oc
+    return null
+
+
 # ---------------------------------------------------------------------------
 # DOSBox config generation
 # ---------------------------------------------------------------------------
 
-def _generate_dosbox_config(node_dir, door_dir, door_conf, variables, socket_port):
+def _daily_commands_due(door_dir, door_conf):
+    """True if the door has daily_commands and they haven't run yet today.
+
+    Marks today as done, so only the first session of the day runs them.
+    Doors that share a directory share the mark.  Called on the event loop
+    with no await in between check and mark, so two sessions starting at once
+    can't both run them.
+    """
+    if not door_conf.daily_commands:
+        return False
+    stamp = os.path.join(_node_root(door_dir), "daily.stamp")
+    today = time.strftime("%Y-%m-%d")
+    try:
+        with open(stamp) as f:
+            if f.read().strip() == today:
+                return False
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(stamp), exist_ok=True)
+    with open(stamp, "w") as f:
+        f.write(today + "\n")
+    return True
+
+
+def _generate_dosbox_config(node_dir, door_dir, door_conf, variables, socket_port, run_daily=False):
     """Generate the DOSBox .conf file content."""
     command = str(door_conf.command) if door_conf.command else ""
     resolved_command = _safe_format(command, variables)
@@ -493,17 +620,77 @@ def _generate_dosbox_config(node_dir, door_dir, door_conf, variables, socket_por
         copy_cmds += f'xcopy c:\\*.BBS "{dest_resolved}" /Y\n'
         copy_cmds += f'xcopy c:\\*.DAT "{dest_resolved}" /Y\n'
 
+    # Per-door DOSBox-X overrides, e.g.  dosbox_settings: {cpu: {cycles: 20000}}
+    # These are written before [serial]/[autoexec] and override doors/dosbox.conf.
+    settings_text = ""
+    settings = door_conf.dosbox_settings
+    if settings and hasattr(settings, "items"):
+        for section, values in settings.items():
+            if section in ("serial", "autoexec") or not hasattr(values, "items"):
+                log.warning("Ignoring dosbox_settings section '%s'", section)
+                continue
+            settings_text += f"[{section}]\n"
+            for key, value in values.items():
+                settings_text += f"{key}={value}\n"
+            settings_text += "\n"
+
+    # Shared tools directory (FOSSIL driver etc.), mounted as E:.
+    tools_mount = ""
+    tools_path = door_conf.tools_path or conf.tools_path
+    if tools_path:
+        tools_dir = _resolve_under_base(tools_path)
+        if os.path.isdir(tools_dir):
+            tools_mount = f'mount {DOS_TOOLS_DRIVE[0].lower()} "{tools_dir}"\n'
+        else:
+            log.warning("tools_path not found: %s", tools_dir)
+
+    # Commands run before the door, from the door directory: the FOSSIL
+    # driver for doors that need one (fossil: true), then any pre_commands.
+    pre = []
+    # Y2K-buggy doors: run the emulated clock N years in the past.  A multiple
+    # of 28 keeps the weekdays (and leap years) the same as today's calendar,
+    # and the date still advances daily, so the door's daily maintenance works.
+    if door_conf.date_shift_years:
+        try:
+            shift = int(door_conf.date_shift_years)
+            today = time.localtime()
+            year = today.tm_year - shift
+            day = today.tm_mday
+            if today.tm_mon == 2 and day == 29 and not (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
+                day = 28
+            pre.append(f"DATE {today.tm_mon:02d}/{day:02d}/{year:04d}")
+        except (TypeError, ValueError):
+            log.warning("Ignoring invalid date_shift_years: %s", door_conf.date_shift_years)
+    if door_conf.fossil:
+        fossil_cmd = str(door_conf.fossil_command or conf.fossil_command or "")
+        if not fossil_cmd:
+            log.warning("Door wants a FOSSIL driver but no fossil_command is configured")
+        elif not tools_mount:
+            log.warning("Door wants a FOSSIL driver but tools_path is not mounted")
+        else:
+            pre.append(f"{DOS_TOOLS_DRIVE}\\{_safe_format(fossil_cmd, variables)}")
+    # daily_commands (e.g. the door's maintenance program) on the first session
+    # of each day, then pre_commands on every session.
+    for key, wanted in (("daily_commands", run_daily), ("pre_commands", True)):
+        commands = door_conf[key]
+        if not commands or not wanted:
+            continue
+        if isinstance(commands, str):
+            commands = [commands]
+        pre += [_safe_format(str(c), variables) for c in commands]
+    pre_text = "".join(c + "\n" for c in pre)
+
     # Only [serial] and [autoexec] go here; everything else lives in the
     # sysop-editable doors/dosbox.conf which is loaded first by DOSBox-X.
-    config_content = f"""[serial]
+    config_content = f"""{settings_text}[serial]
 serial1=nullmodem server:127.0.0.1 port:{socket_port} transparent:1 baudrate:115200
 
 [autoexec]
 mount c "{node_dir}"
 mount d "{door_dir}"
-c:
+{tools_mount}c:
 {copy_cmds}d:
-CALL {resolved_command}
+{pre_text}CALL {resolved_command}
 exit
 """
     return config_content
@@ -513,7 +700,234 @@ exit
 # Data bridging
 # ---------------------------------------------------------------------------
 
-async def _bridge_socket(user, reader_or_host, writer_or_port, process, emulator=None, session_log=None):
+async def _show_queued_popups(user):
+    """Show all of *user*'s queued popups over the door, then clear the popup event."""
+    from input_fields import show_message_box
+    user._in_popup = True
+    try:
+        while user.popup_queue:
+            kwargs = user.popup_queue.pop(0)
+            r = await show_message_box(user, queued_count=len(user.popup_queue), **kwargs)
+            if r == "abort":
+                user.popup_queue.clear()
+                break
+    finally:
+        user._in_popup = False
+        user.popup_event.clear()
+
+
+class _DoorInput:
+    """What the caller types, on its way to the door.
+
+    * Ctrl+X three times within 2 seconds aborts the session.
+    * key_translation: doorway -- ANSI/VT cursor and function key sequences
+      (ESC[A, ESC[11~, ESC OP, ...) become DOORWAY's NUL + scan code, so
+      arrow-key driven DOS programs run through DOORWAY work from an
+      ordinary terminal.
+    * input_pace_ms -- send keys one at a time, this far apart, for doors that
+      throw away typed-ahead input.
+    """
+    ESCAPE_CHAR = 0x18
+    ESCAPE_COUNT = 3
+    ESCAPE_WINDOW = 2.0
+
+    # sequence after ESC -> PC scan code
+    DOORWAY_KEYS = {
+        b"[A": 0x48, b"OA": 0x48, b"[B": 0x50, b"OB": 0x50,
+        b"[C": 0x4D, b"OC": 0x4D, b"[D": 0x4B, b"OD": 0x4B,
+        b"[H": 0x47, b"OH": 0x47, b"[1~": 0x47, b"[7~": 0x47,
+        b"[F": 0x4F, b"OF": 0x4F, b"[4~": 0x4F, b"[8~": 0x4F, b"[K": 0x4F,
+        b"[2~": 0x52, b"[@": 0x52, b"[3~": 0x53,
+        b"[5~": 0x49, b"[V": 0x49, b"[6~": 0x51, b"[U": 0x51,
+        b"OP": 0x3B, b"OQ": 0x3C, b"OR": 0x3D, b"OS": 0x3E, b"Ot": 0x3F,
+        b"[11~": 0x3B, b"[12~": 0x3C, b"[13~": 0x3D, b"[14~": 0x3E, b"[15~": 0x3F,
+        b"[17~": 0x40, b"[18~": 0x41, b"[19~": 0x42, b"[20~": 0x43, b"[21~": 0x44,
+        b"[23~": 0x85, b"[24~": 0x86,
+    }
+
+    def __init__(self, door_conf):
+        self.translate = str(door_conf.key_translation or "").lower() == "doorway"
+        if door_conf.key_translation and not self.translate:
+            log.warning("Unknown key_translation '%s' (supported: doorway)", door_conf.key_translation)
+        try:
+            self.pace = max(0.0, float(door_conf.input_pace_ms or 0) / 1000.0)
+        except (TypeError, ValueError):
+            log.warning("Ignoring invalid input_pace_ms: %s", door_conf.input_pace_ms)
+            self.pace = 0.0
+        self.pending = b""      # an ESC sequence that may still turn into a key
+        self._escape_hits = 0
+        self._escape_last = 0.0
+
+    def aborted(self, data, now):
+        """Track Ctrl+X presses; True once the caller has asked to abort."""
+        for byte in data:
+            if byte == self.ESCAPE_CHAR:
+                if now - self._escape_last > self.ESCAPE_WINDOW:
+                    self._escape_hits = 0
+                self._escape_hits += 1
+                self._escape_last = now
+                if self._escape_hits >= self.ESCAPE_COUNT:
+                    return True
+            else:
+                self._escape_hits = 0
+        return False
+
+    def keys(self, data):
+        """Translate *data*; returns the list of byte strings to send, each one key."""
+        if not self.translate:
+            return [bytes([b]) for b in data] if self.pace else [data]
+        out = []
+        for byte in data:
+            if self.pending:
+                seq = self.pending[1:] + bytes([byte])
+                if seq in self.DOORWAY_KEYS:
+                    out.append(b"\x00" + bytes([self.DOORWAY_KEYS[seq]]))
+                    self.pending = b""
+                    continue
+                if any(k.startswith(seq) for k in self.DOORWAY_KEYS):
+                    self.pending += bytes([byte])
+                    continue
+                out.extend(bytes([b]) for b in self.pending)  # not a key after all
+                self.pending = b""
+            if byte == 0x1B:
+                self.pending = b"\x1b"
+            else:
+                out.append(bytes([byte]))
+        return out if self.pace else ([b"".join(out)] if out else [])
+
+    def flush(self):
+        """Keys held back waiting for the rest of an ESC sequence (none came: a plain ESC)."""
+        held, self.pending = self.pending, b""
+        if not held:
+            return []
+        return [bytes([b]) for b in held] if self.pace else [held]
+
+    async def send(self, keys, write, drain):
+        for i, key in enumerate(keys):
+            write(key)
+            await drain()
+            if self.pace and i < len(keys) - 1:
+                await asyncio.sleep(self.pace)
+        if self.pace and keys:
+            await asyncio.sleep(self.pace)
+
+
+class _DoorOutput:
+    """Door output on its way to the caller.
+
+    DOS doors were written for ANSI.SYS, where ESC[2J (and a form feed) clears
+    the screen *and homes the cursor*.  BBS terminals do the same, but
+    VT100-style clients (PuTTY, xterm, ...) leave the cursor where it was and
+    treat a form feed as a line feed, which scrambles every screen the door
+    draws afterwards.  So both become ESC[2J ESC[H, which means the same thing
+    on every terminal.
+    """
+    CLEAR = "\x1b[2J"
+
+    def __init__(self):
+        self.held = ""   # a possible start of ESC[2J at the end of the last chunk
+
+    def feed(self, text):
+        text = self.held + text
+        self.held = ""
+        for n in range(len(self.CLEAR) - 1, 0, -1):
+            if text.endswith(self.CLEAR[:n]):
+                self.held = text[-n:]
+                text = text[:-n]
+                break
+        return text.replace(self.CLEAR, self.CLEAR + "\x1b[H").replace("\x0c", self.CLEAR + "\x1b[H")
+
+    def flush(self):
+        held, self.held = self.held, ""
+        return held
+
+
+async def _pump_user_to_door(user, door_input, write, drain, still_running=lambda: True):
+    """Caller -> door.  Pauses while a popup is shown; returns when the caller aborts or hangs up."""
+    try:
+        while still_running():
+            if user.popup_event and user.popup_event.is_set():
+                await _show_queued_popups(user)
+                continue
+            try:
+                data = await asyncio.wait_for(user.reader.read(4096), timeout=0.1)
+            except asyncio.TimeoutError:
+                await door_input.send(door_input.flush(), write, drain)
+                continue
+            if not data:
+                break
+            if isinstance(data, str):
+                data = data.encode("cp437", errors="replace")
+            if door_input.aborted(data, asyncio.get_event_loop().time()):
+                log.info("User aborted door session via escape sequence")
+                return
+            await door_input.send(door_input.keys(data), write, drain)
+    except (ConnectionError, Disconnected, asyncio.CancelledError):
+        pass
+    except Exception as e:
+        log.error("user_to_door error: %s", e)
+
+
+async def _pump_door_to_user(user, read, emulator=None, session_log=None):
+    """Door -> caller, keeping the ANSI emulator's copy of the screen in step."""
+    door_output = _DoorOutput()
+
+    async def deliver(text):
+        if not text:
+            return
+        if emulator:
+            emulator.feed(text)
+        if session_log:
+            session_log.write(text)
+        user.writer.write(text)
+        await user.writer.drain()
+
+    try:
+        while True:
+            if door_output.held:
+                try:
+                    data = await asyncio.wait_for(read(4096), timeout=0.05)
+                except asyncio.TimeoutError:
+                    await deliver(door_output.flush())
+                    continue
+            else:
+                data = await read(4096)
+            if not data:
+                break
+            if isinstance(data, bytes):
+                data = data.decode("cp437", errors="replace")
+            await deliver(door_output.feed(data))
+        await deliver(door_output.flush())
+    except (ConnectionError, Disconnected, asyncio.CancelledError):
+        pass
+    except Exception as e:
+        log.error("door_to_user error: %s", e)
+
+
+# Why a door session ended (returned by the bridges)
+ENDED_BY_DOOR = "door"      # the door exited or closed its side
+ENDED_BY_CALLER = "caller"  # the caller hung up or aborted with Ctrl+X
+
+
+async def _run_until_first_done(*coros):
+    """Run the bridge tasks; when any finishes, cancel the rest.
+
+    Returns the index of the task that finished first."""
+    tasks = [asyncio.create_task(c) for c in coros]
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    first = next(i for i, t in enumerate(tasks) if t in done)
+    for t in pending:
+        t.cancel()
+    for t in pending:
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+    return first
+
+
+async def _bridge_socket(user, reader_or_host, writer_or_port, process, door_conf,
+                         emulator=None, session_log=None):
     """Bridge data between the user's telnet connection and a TCP socket.
 
     For DOSBox (COM/FOSSIL) doors, pass an already-connected (reader, writer).
@@ -543,108 +957,18 @@ async def _bridge_socket(user, reader_or_host, writer_or_port, process, emulator
         # DOSBox door: connection already established, reader/writer passed directly
         reader, writer = reader_or_host, writer_or_port
 
-    # Three Ctrl+X (0x18) presses within 2 seconds aborts the door session.
-    ESCAPE_CHAR = b'\x18'
-    ESCAPE_COUNT = 3
-    ESCAPE_WINDOW = 2.0
-    _escape_hits = 0
-    _escape_last = 0.0
-
-    async def _show_queued_popups():
-        """Show all queued popups, then clear the popup event."""
-        from input_fields import show_message_box as _show_mb
-        user._in_popup = True
-        try:
-            while user.popup_queue:
-                kwargs = user.popup_queue.pop(0)
-                r = await _show_mb(user, queued_count=len(user.popup_queue), **kwargs)
-                if r == "abort":
-                    user.popup_queue.clear()
-                    break
-        finally:
-            user._in_popup = False
-            user.popup_event.clear()
-
-    async def user_to_door():
-        """Read from user's telnet reader, write to door socket.
-        Pauses when a popup is active (popup_event is set).
-        Three Ctrl+] within 2 seconds abort the session."""
-        nonlocal _escape_hits, _escape_last
-        try:
-            while True:
-                if user.popup_event and user.popup_event.is_set():
-                    await _show_queued_popups()
-                    continue
-                try:
-                    data = await asyncio.wait_for(user.reader.read(4096), timeout=0.1)
-                except asyncio.TimeoutError:
-                    continue
-                if not data:
-                    break
-                if isinstance(data, str):
-                    data = data.encode("cp437", errors="replace")
-
-                # Check for escape sequence
-                now = asyncio.get_event_loop().time()
-                for byte in data:
-                    if bytes([byte]) == ESCAPE_CHAR:
-                        if now - _escape_last > ESCAPE_WINDOW:
-                            _escape_hits = 0
-                        _escape_hits += 1
-                        _escape_last = now
-                        if _escape_hits >= ESCAPE_COUNT:
-                            log.info("User aborted door session via escape sequence")
-                            return
-                    else:
-                        _escape_hits = 0
-
-                writer.write(data)
-                await writer.drain()
-        except (ConnectionError, Disconnected, asyncio.CancelledError):
-            pass
-        except Exception as e:
-            log.error("user_to_door error: %s", e)
-
-    async def door_to_user():
-        """Read from door socket, write to user's telnet writer."""
-        try:
-            while True:
-                data = await reader.read(4096)
-                if not data:
-                    break
-                if isinstance(data, bytes):
-                    data = data.decode("cp437", errors="replace")
-                if emulator:
-                    emulator.feed(data)
-                if session_log:
-                    session_log.write(data)
-                user.writer.write(data)
-                await user.writer.drain()
-        except (ConnectionError, Disconnected, asyncio.CancelledError):
-            pass
-        except Exception as e:
-            log.error("door_to_user error: %s", e)
-
     async def watch_process():
         """Wait for the door subprocess to exit."""
         while process.returncode is None:
             await asyncio.sleep(0.25)
 
     try:
-        tasks = [
-            asyncio.create_task(user_to_door()),
-            asyncio.create_task(door_to_user()),
-            asyncio.create_task(watch_process()),
-        ]
-        # When any task finishes, cancel the others
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in pending:
-            t.cancel()
-        for t in pending:
-            try:
-                await t
-            except asyncio.CancelledError:
-                pass
+        first = await _run_until_first_done(
+            _pump_user_to_door(user, _DoorInput(door_conf), writer.write, writer.drain),
+            _pump_door_to_user(user, reader.read, emulator, session_log),
+            watch_process(),
+        )
+        return ENDED_BY_CALLER if first == 0 else ENDED_BY_DOOR
     finally:
         try:
             writer.close()
@@ -653,89 +977,14 @@ async def _bridge_socket(user, reader_or_host, writer_or_port, process, emulator
             pass
 
 
-async def _bridge_stdio(user, process, emulator=None, session_log=None):
+async def _bridge_stdio(user, process, door_conf, emulator=None, session_log=None):
     """Bridge data between the user's telnet connection and a subprocess's stdin/stdout."""
-
-    ESCAPE_CHAR = b'\x18'
-    ESCAPE_COUNT = 3
-    ESCAPE_WINDOW = 2.0
-    _escape_hits = 0
-    _escape_last = 0.0
-
-    async def user_to_door():
-        """Read from user's telnet reader, write to process stdin.
-        Pauses when a popup is active (popup_event is set).
-        Three Ctrl+] within 2 seconds abort the session."""
-        nonlocal _escape_hits, _escape_last
-        try:
-            while process.returncode is None:
-                if user.popup_event and user.popup_event.is_set():
-                    await _show_queued_popups()
-                    continue
-                try:
-                    data = await asyncio.wait_for(user.reader.read(4096), timeout=0.1)
-                except asyncio.TimeoutError:
-                    continue
-                if not data:
-                    break
-                if isinstance(data, str):
-                    data = data.encode("cp437", errors="replace")
-
-                now = asyncio.get_event_loop().time()
-                for byte in data:
-                    if bytes([byte]) == ESCAPE_CHAR:
-                        if now - _escape_last > ESCAPE_WINDOW:
-                            _escape_hits = 0
-                        _escape_hits += 1
-                        _escape_last = now
-                        if _escape_hits >= ESCAPE_COUNT:
-                            log.info("User aborted door session via escape sequence")
-                            return
-                    else:
-                        _escape_hits = 0
-
-                process.stdin.write(data)
-                await process.stdin.drain()
-        except (ConnectionError, Disconnected, asyncio.CancelledError):
-            pass
-        except Exception as e:
-            log.error("user_to_door (stdio) error: %s", e)
-
-    async def door_to_user():
-        """Read from process stdout, write to user's telnet writer."""
-        try:
-            while True:
-                data = await process.stdout.read(4096)
-                if not data:
-                    break
-                if isinstance(data, bytes):
-                    data = data.decode("cp437", errors="replace")
-                if emulator:
-                    emulator.feed(data)
-                if session_log:
-                    session_log.write(data)
-                user.writer.write(data)
-                await user.writer.drain()
-        except (ConnectionError, Disconnected, asyncio.CancelledError):
-            pass
-        except Exception as e:
-            log.error("door_to_user (stdio) error: %s", e)
-
-    try:
-        tasks = [
-            asyncio.create_task(user_to_door()),
-            asyncio.create_task(door_to_user()),
-        ]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in pending:
-            t.cancel()
-        for t in pending:
-            try:
-                await t
-            except asyncio.CancelledError:
-                pass
-    finally:
-        pass
+    first = await _run_until_first_done(
+        _pump_user_to_door(user, _DoorInput(door_conf), process.stdin.write, process.stdin.drain,
+                           still_running=lambda: process.returncode is None),
+        _pump_door_to_user(user, process.stdout.read, emulator, session_log),
+    )
+    return ENDED_BY_CALLER if first == 0 else ENDED_BY_DOOR
 
 
 # ---------------------------------------------------------------------------
@@ -756,77 +1005,84 @@ async def run(user, destination, menu_item=None):
         When called from the menu system this is the menu option name
         (e.g. ``"Trade Wars 2002"``).
     """
-    from common import Destinations
 
     # ---- resolve door-specific configuration --------------------------------
     # menu_item may be a string (door name) or a config object.
-    # If it's a string, look it up under menu_system.doors.options.
+    # If it's a string, look it up in the menu it was chosen from (any menu
+    # whose option targets the door module).
     door_name = None
     door_conf = null
 
     if menu_item is not None and menu_item is not null:
         # menu_item is a tuple: (door_name,)
         if isinstance(menu_item, tuple):
-            door_name = str(menu_item[0])
+            door_name = str(menu_item[-1])
         elif isinstance(menu_item, str):
             door_name = menu_item
         else:
             door_conf = menu_item
             door_name = getattr(menu_item, "name", None) or "unknown_door"
         if door_conf is null and door_name:
-            menu_doors = config.menu_system.doors if config.menu_system else null
-            if menu_doors and menu_doors.options:
-                door_conf = menu_doors.options[door_name]
-                if door_conf is null or not door_conf:
-                    door_conf = null
+            door_conf = _find_door_conf(user, door_name)
+            if door_conf is null or not door_conf:
+                door_conf = null
 
     if door_conf is null or not door_conf:
         log.warning("No door configuration found for menu_item=%s", menu_item)
-        await send(user, cr + lf + "Door not found or not configured." + cr + lf, drain=True)
-        return RetVals(status=fail, err_msg="Door not configured",
-                       next_destination=Destinations.main, next_menu_item=null)
+        return RetVals(status=fail, err_msg="Door not found or not configured.",
+                       next_destination=null, next_menu_item=null)
 
     if door_name is None:
         door_name = "unknown_door"
 
+    # Per-door access: white_keys/black_keys on the door's own entry (e.g. an
+    # adult door, or a sysop-only config tool) on top of the door module's keys.
+    from common import check_keys, access_denied_message
+    access = check_keys(user, door_conf)
+    if access.status == fail:
+        return RetVals(status=fail, err_msg=access_denied_message(door_name, access),
+                       next_destination=null, next_menu_item=null)
+
+    # ---- resolve paths -------------------------------------------------------
+    door_dir = _resolve_door_dir(door_conf, _base_path())
+    if not os.path.isdir(door_dir):
+        msg = f"{door_name} is not installed (missing directory {door_dir})."
+        log.error(msg)
+        return RetVals(status=fail, err_msg=msg, next_destination=null, next_menu_item=null)
+    node_key = _node_key(door_dir)
+
     # ---- check node limits ---------------------------------------------------
+    # A null next_destination returns the user to the menu they chose the door from.
     global_max = int(conf.max_nodes) if conf.max_nodes else 20
     door_max = int(door_conf.max_nodes) if door_conf.max_nodes else global_max
 
-    if door_name not in nodes:
-        nodes[door_name] = []
+    if node_key not in nodes:
+        nodes[node_key] = []
 
-    if len(nodes[door_name]) >= door_max:
+    if len(nodes[node_key]) >= door_max:
         msg = f"All {door_max} node(s) for {door_name} are in use. Please try again later."
         log.warning("Node limit reached for %s (%s)", door_name, door_max)
-        await send(user, cr + lf + msg + cr + lf, drain=True)
-        return RetVals(status=fail, err_msg=msg,
-                       next_destination=Destinations.main, next_menu_item=null)
+        return RetVals(status=fail, err_msg=msg, next_destination=null, next_menu_item=null)
 
     if _total_active_nodes() >= global_max:
         msg = f"All {global_max} system door node(s) are in use. Please try again later."
         log.warning("Global node limit reached (%s)", global_max)
-        await send(user, cr + lf + msg + cr + lf, drain=True)
-        return RetVals(status=fail, err_msg=msg,
-                       next_destination=Destinations.main, next_menu_item=null)
+        return RetVals(status=fail, err_msg=msg, next_destination=null, next_menu_item=null)
 
     # ---- allocate node -------------------------------------------------------
-    node_num = _allocate_node_number(door_name)
+    node_num = _allocate_node_number(node_key)
 
     # Enforce door_max on node number (some doors require node <= max_nodes)
     if node_num > door_max:
         msg = f"No available node slot for {door_name}."
         log.warning("Allocated node %s exceeds door max %s", node_num, door_max)
-        await send(user, cr + lf + msg + cr + lf, drain=True)
-        return RetVals(status=fail, err_msg=msg,
-                       next_destination=Destinations.main, next_menu_item=null)
+        return RetVals(status=fail, err_msg=msg, next_destination=null, next_menu_item=null)
 
-    # ---- resolve paths -------------------------------------------------------
-    base_path = paths.resolve_project(str(conf.base_path)) if conf.base_path else paths.resolve_project("doors")
-    door_dir = _resolve_door_dir(door_conf, base_path)
-
-    # Create node directory under the door's own directory
-    node_dir = os.path.join(door_dir, f"node{node_num}")
+    # Per-node dropfile directory (mounted as C: for DOSBox doors)
+    node_root = _node_root(door_dir)
+    node_dir = os.path.join(node_root, f"node{node_num}")
+    if os.path.exists(node_dir):
+        shutil.rmtree(node_dir, ignore_errors=True)  # leftover from a crashed session
     os.makedirs(node_dir, exist_ok=True)
 
     # Determine if native (32-bit) or DOS (16-bit via DOSBox)
@@ -848,8 +1104,12 @@ async def run(user, destination, menu_item=None):
                    "Treating as native.", door_name, comm_type)
       is_native = True
 
-    # Find a free socket port
-    socket_port = _find_free_port(5000 + node_num)
+    in_dosbox = comm_type in ("COM", "FOSSIL")
+    # A native socket door listens on a port we choose and pass to it.  For
+    # DOSBox doors we listen and DOSBox connects; that port is assigned by the
+    # OS when the listener is bound (choosing a "free" one first would race
+    # with other sessions and other BBS instances).
+    socket_port = None if in_dosbox else _find_free_port(5000 + node_num)
 
     # ---- create node object --------------------------------------------------
     node = Node(
@@ -861,16 +1121,19 @@ async def run(user, destination, menu_item=None):
         socket_port=socket_port,
         door_name=door_name,
     )
-    nodes[door_name].append(node)
+    nodes[node_key].append(node)
 
-    log.info("Starting %s on node %s for user %s (comm=%s, port=%s)",
-             door_name, node_num, getattr(user, 'handle', '?'), comm_type, socket_port)
+    log.info("Starting %s on node %s for user %s (comm=%s)",
+             door_name, node_num, getattr(user, 'handle', '?'), comm_type)
 
     # Create ANSI emulator to track screen state during door session
     emulator = AnsiEmulator(user)
     user.in_door = True
     user.popup_event = asyncio.Event()
     dosbox_log_file = None
+    dosbox_tcp_server = None
+    region_set = False
+    ended_by = ENDED_BY_DOOR
 
     try:
         # ---- notify user of escape sequence ----------------------------------
@@ -880,21 +1143,19 @@ async def run(user, destination, menu_item=None):
             text=f"Launching {door_name}.\n\nPress Ctrl+X three times to exit if the door hangs.",
             title="Door",
         )
+        # Start the door on a clean screen (and in the emulator's copy of it)
+        await ansi_cls(user)
+        # A door written for a 24-line screen (screen_rows: 24) gets a scroll
+        # region of that height, so it scrolls where it expects to.
+        door_rows = _door_rows(user, door_conf)
+        if door_rows < _screen_rows(user):
+            await ansi_set_region(user, 1, door_rows, drain=True)
+            emulator.scroll_bottom = door_rows
+            region_set = True
 
-        # ---- build variable dict (must come before dropfiles) ----------------
-        config_path = os.path.join(node_dir, "dosbox_door.conf")
-        variables = _build_vars(user, node_num, node_dir, door_conf, socket_port, config_path)
-
-        # ---- generate dropfiles ----------------------------------------------
-        _write_all_dropfiles(user, node_num, node_dir, door_conf, variables, socket_handle=socket_port)
-
-        # ---- launch door -----------------------------------------------------
-        command_template = str(door_conf.command) if door_conf.command else ""
-
-        if comm_type in ("COM", "FOSSIL"):
-            # Start the TCP listener *before* writing the DOSBox config and launching
-            # DOSBox, so the port is already bound when DOSBox finishes booting and
-            # tries to connect.
+        if in_dosbox:
+            # Listen *before* writing the DOSBox config and launching DOSBox, so
+            # the port is already bound when DOSBox finishes booting and connects.
             dosbox_conn_future = asyncio.get_event_loop().create_future()
 
             def _on_dosbox_connect(r, w):
@@ -903,20 +1164,35 @@ async def run(user, destination, menu_item=None):
                 else:
                     w.close()
 
-            dosbox_tcp_server = await asyncio.start_server(
-                _on_dosbox_connect, "127.0.0.1", socket_port
-            )
+            dosbox_tcp_server = await asyncio.start_server(_on_dosbox_connect, "127.0.0.1", 0)
+            socket_port = dosbox_tcp_server.sockets[0].getsockname()[1]
+            node.socket_port = socket_port
             log.debug("Listening for DOSBox on 127.0.0.1:%s", socket_port)
 
+        # ---- build variable dict (must come before dropfiles) ----------------
+        config_path = os.path.join(node_dir, "dosbox_door.conf")
+        # Raw door output of the most recent session on this node (kept after exit, for debugging)
+        session_log_path = os.path.join(node_root, f"session{node_num}.log")
+        variables = _build_vars(user, node_num, node_dir, door_conf, socket_port, config_path,
+                                in_dosbox=in_dosbox)
+
+        # ---- generate dropfiles ----------------------------------------------
+        _write_all_dropfiles(user, node_num, node_dir, door_conf, variables, socket_handle=socket_port)
+
+        # ---- launch door -----------------------------------------------------
+        command_template = str(door_conf.command) if door_conf.command else ""
+
+        if in_dosbox:
             dosbox_config = _generate_dosbox_config(
-                node_dir, door_dir, door_conf, variables, socket_port
+                node_dir, door_dir, door_conf, variables, socket_port,
+                run_daily=_daily_commands_due(door_dir, door_conf),
             )
             with open(config_path, "w") as f:
                 f.write(dosbox_config)
             node.config_path = config_path
 
             dosbox_exe = str(conf.dosbox_path) if conf.dosbox_path else "dosbox"
-            dosbox_base_conf = str(door_conf.dosbox_conf) if door_conf.dosbox_conf else ""
+            dosbox_base_conf = paths.resolve_project(str(door_conf.dosbox_conf)) if door_conf.dosbox_conf else ""
             dosbox_log_path = os.path.join(node_dir, "dosbox.log")
             dosbox_log_file = open(dosbox_log_path, "w")
             log.debug("Launching DOSBox (%s) with config %s, log %s", dosbox_exe, config_path, dosbox_log_path)
@@ -941,17 +1217,14 @@ async def run(user, destination, menu_item=None):
                 )
             except asyncio.TimeoutError:
                 log.error("DOSBox did not connect on port %s within 60 s", socket_port)
-                await send(user, cr + lf + "Door timed out (DOSBox did not connect)." + cr + lf,
-                           drain=True)
-                return RetVals(status=fail, err_msg="DOSBox connection timeout",
-                               next_destination=Destinations.main, next_menu_item=null)
+                return RetVals(status=fail, err_msg="Door timed out (DOSBox did not connect).",
+                               next_destination=null, next_menu_item=null)
             finally:
                 dosbox_tcp_server.close()  # stop accepting new connections
 
             log.debug("DOSBox connected on port %s", socket_port)
-            session_log_path = os.path.join(door_dir, "session.log")
             with open(session_log_path, "w", encoding="utf-8", errors="replace") as session_log:
-                await _bridge_socket(user, door_reader, door_writer, process, emulator, session_log=session_log)
+                ended_by = await _bridge_socket(user, door_reader, door_writer, process, door_conf, emulator, session_log=session_log)
 
         elif comm_type == "SOCKET":
             # Native socket door (DOOR32 style): launch process, bridge via TCP socket
@@ -968,9 +1241,8 @@ async def run(user, destination, menu_item=None):
             )
             node.process = process
 
-            session_log_path = os.path.join(door_dir, "session.log")
             with open(session_log_path, "w", encoding="utf-8", errors="replace") as session_log:
-                await _bridge_socket(user, "127.0.0.1", socket_port, process, emulator, session_log=session_log)
+                ended_by = await _bridge_socket(user, "127.0.0.1", socket_port, process, door_conf, emulator, session_log=session_log)
 
         elif comm_type == "STDIO":
             # Native stdio door: launch process, bridge via stdin/stdout pipes
@@ -988,19 +1260,29 @@ async def run(user, destination, menu_item=None):
             )
             node.process = process
 
-            session_log_path = os.path.join(door_dir, "session.log")
             with open(session_log_path, "w", encoding="utf-8", errors="replace") as session_log:
-                await _bridge_stdio(user, process, emulator, session_log=session_log)
+                ended_by = await _bridge_stdio(user, process, door_conf, emulator, session_log=session_log)
 
         else:
             log.error("Unknown communication type: %s", comm_type)
-            await send(user, cr + lf + f"Unknown door communication type: {comm_type}" + cr + lf,
-                       drain=True)
-            return RetVals(status=fail, err_msg=f"Unknown comm type: {comm_type}",
-                           next_destination=Destinations.main, next_menu_item=null)
+            return RetVals(status=fail, err_msg=f"Unknown door communication type: {comm_type}",
+                           next_destination=null, next_menu_item=null)
 
-        # Terminate DOSBox promptly — it won't self-exit when the serial connection closes
+        # Give the door time to finish, then terminate it.  When the door exits
+        # by itself, DOSBox runs the autoexec 'exit' right after closing the
+        # serial connection.  When the caller hung up or aborted, the door sees
+        # its carrier drop (the connection to DOSBox is closed by now) and needs
+        # a few seconds to save the player and clear its "online" records --
+        # killing it at once leaves those behind.
+        terminated = False
+        grace = DOOR_EXIT_GRACE if ended_by == ENDED_BY_DOOR else HANGUP_EXIT_GRACE
         if node.process and node.process.returncode is None:
+            try:
+                await asyncio.wait_for(node.process.wait(), timeout=grace)
+            except asyncio.TimeoutError:
+                pass
+        if node.process and node.process.returncode is None:
+            terminated = True
             try:
                 node.process.terminate()
                 await asyncio.wait_for(node.process.wait(), timeout=5.0)
@@ -1031,9 +1313,13 @@ async def run(user, destination, menu_item=None):
                     log.debug("DOSBox log for %s node %s:\n%s", door_name, node_num, dosbox_log_contents)
             except Exception as _e:
                 log.warning("Could not read dosbox.log: %s", _e)
-        if rc and dosbox_log_contents:
+        # DOSBox itself failed: show its log, but only to users with the debug
+        # key -- it is internal detail, not something an ordinary caller needs.
+        if rc and not terminated and dosbox_log_contents and "debug" in getattr(user, "keys", ()):
             await send(user, cr + lf + "--- DOSBox log ---" + cr + lf, drain=True)
             for _line in dosbox_log_contents.splitlines()[-40:]:
+                # the log can contain characters the caller's encoding (CP437) lacks
+                _line = _line.encode("cp437", errors="replace").decode("cp437")
                 await send(user, _line + cr + lf)
             await send(user, "--- end ---" + cr + lf, drain=True)
 
@@ -1055,15 +1341,21 @@ async def run(user, destination, menu_item=None):
                 node.process.terminate()
             except Exception:
                 pass
-        await send(user, cr + lf + f"Door error: {e}" + cr + lf, drain=True)
-        return RetVals(status=fail, err_msg=str(e),
-                       next_destination=Destinations.main, next_menu_item=null)
+        return RetVals(status=fail, err_msg=f"Door error: {e}",
+                       next_destination=null, next_menu_item=null)
 
     finally:
         # ---- cleanup ---------------------------------------------------------
         user.in_door = False
         user.popup_event = None
-        _release_node(door_name, node)
+        _release_node(node_key, node)
+        if dosbox_tcp_server is not None:
+            dosbox_tcp_server.close()  # no-op if already closed after DOSBox connected
+        if region_set:
+            try:
+                await ansi_set_region(user, drain=True)  # back to the full screen
+            except Exception:
+                pass  # caller already gone
 
         if dosbox_log_file:
             try:
@@ -1088,6 +1380,5 @@ async def run(user, destination, menu_item=None):
         log.debug("Cleaned up %s node %s", door_name, node_num)
 
     await send(user, cr + lf + "Returning to BBS..." + cr + lf, drain=True)
-    from common import _find_fallback_destination
-    prev = _find_fallback_destination(user, avoid=Destinations.door)
-    return RetVals(status=success, next_destination=prev, next_menu_item=null)
+    # null: back to the menu the door was chosen from (see common.do_destination)
+    return RetVals(status=success, next_destination=null, next_menu_item=null)

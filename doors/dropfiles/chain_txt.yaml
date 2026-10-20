@@ -10,4 +10,4 @@ last_login: "01/01/00"
 security_level: "{security_level}"
 co_sysop: "0"
 ansi: "{ansi}"
-remote: "0"
+remote: "1"      # 1 = remote caller (0 would tell the door the caller is on the local console)

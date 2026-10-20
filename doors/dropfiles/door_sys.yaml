@@ -1,4 +1,4 @@
-# DOOR.SYS field defaults (PCBoard format).
+# DOOR.SYS field defaults (52-line GAP/PCBoard/Wildcat format).
 #
 # Shared variables (defined in DirtyFork.yaml option_defaults.variables):
 #   {security_level}, {ansi}, {home_phone}, {expiration_date}, {user_record}
@@ -17,7 +17,7 @@ caller_alarm: "Y"
 home_phone: "{home_phone}"
 work_phone: ""
 password: ""
-times_called: "0"
+times_called: "1"
 last_call_date: "01/01/00"
 expert_mode: "N"
 conferences: ""
@@ -27,18 +27,19 @@ user_record: "{user_record}"
 protocol: "Z"
 uploads: "0"
 downloads: "0"
-daily_dl_k: "0"
-dl_k_today: "0"
+daily_dl_k: "999999"   # daily download K limit (line 31)
+dl_k_today: "0"        # K downloaded today (line 30)
 birthday: ""
 user_db_path: ""
 event_time: "00:00"
 error_correcting: "Y"
-ansi_in_transfer: "N"
-default_color: ""
+ansi_in_ng_mode: "N"
+default_color: "7"
+record_locking: "Y"
 time_credits: "0"
 last_new_scan: "01/01/00"
-time_of_call: "00:00:00"
-last_time_on: "00:00:00"
+time_of_call: "00:00"
+last_time_on: "00:00"
 max_daily_files: "999"
 files_today: "0"
 total_ul_k: "0"
@@ -46,3 +47,5 @@ total_dl_k: "0"
 comment: ""
 total_doors: "0"
 messages_left: "0"
+page_length: "{rows}"       # line 21; e.g. "24" if a door pauses one line too late
+com_port: "COM1:"           # line 1; "COM0:" makes a door run locally (e.g. wrapped in DOORWAY)

@@ -518,12 +518,18 @@ def _build_breadcrumb(node_or_name, _Destinations=None):
       return node_or_name.title()
   else:
     node = node_or_name
+
+  def label(n):
+    # A menu's optional 'title' overrides its config key (e.g. doors_popular → "Most Popular")
+    title = n.config.title if n.config and n.config is not null else None
+    return str(title) if title else n.name.title()
+
   if node.name == "main":
     return "Main"
-  path = [node.name.title()]
+  path = [label(node)]
   current = node.parent
   while current:
-    path.append("Main" if current.name == "main" else current.name.title())
+    path.append("Main" if current.name == "main" else label(current))
     current = current.parent
   if path[-1] != "Main":
     path.append("Main")

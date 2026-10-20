@@ -517,7 +517,10 @@ class AnsiEmulator:
       for col in range(0, c + 1):
         u.screen[r][col] = Char()
     elif mode == 2 or mode == 3:  # Erase all
+      # ANSI.SYS / ANSI-BBS semantics (what SyncTERM, NetRunner etc. do): ESC[2J
+      # also homes the cursor.  Doors rely on it (VT100 would leave it in place).
       self._clear_screen()
+      self._home_cursor()
 
   def _csi_el(self):
     """Erase in Line"""

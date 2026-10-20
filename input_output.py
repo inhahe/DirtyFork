@@ -412,7 +412,7 @@ async def ansi_set_region(user, top_row=None, bottom_row=None, drain=False):
         if top_row is None:
           user.writer.write("\x1b[r")
         else:
-          user.writer.write(f"\x1b{top_row}r")
+          user.writer.write(f"\x1b[{top_row}r")
       else:
         user.writer.write(f"\x1b[{top_row};{bottom_row}r")
       user.scroll_region_top = top_row

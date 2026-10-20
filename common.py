@@ -617,6 +617,17 @@ def check_keys(user, destination, menu_item=None):
   bad_keys = black_set & user.keys
   return RetVals(status=fail if (lacking_keys or bad_keys) else success, lacking_keys=lacking_keys, bad_keys=bad_keys)
 
+def access_denied_message(what, result):
+  """Error text for a failed check_keys() result."""
+  lacking = getattr(result, 'lacking_keys', set())
+  bad = getattr(result, 'bad_keys', set())
+  parts = []
+  if lacking:
+    parts.append(f"Missing keys: {', '.join(sorted(lacking))}")
+  if bad:
+    parts.append(f"Restricted keys: {', '.join(sorted(bad))}")
+  return f"Access denied to {what}. " + "; ".join(parts)
+
 # CGA color index (low 3 bits) → ANSI/BBS internal color
 _CGA_TO_ANSI = [0, 4, 2, 6, 1, 5, 3, 7]
 
@@ -1026,6 +1037,19 @@ async def user_director(user, next_destination, menu_item=null):
   # If destination is a MenuNode (sub-menu), render it directly
   from menu import MenuNode
   if isinstance(next_destination, MenuNode):
+    # A menu option that links to a submenu arrives here as a MenuNode, so the
+    # destination key check below never sees it: enforce the submenu's own
+    # destination keys (destinations.<menu>.white_keys/black_keys) here.
+    menu_dest_conf = config.destinations[next_destination.name] if config.destinations else null
+    result = check_keys(user, menu_dest_conf)
+    if result.status == fail:
+      title = next_destination.config.title if next_destination.config else None
+      err_msg = access_denied_message(str(title) if title else next_destination.name, result)
+      user.pending_menu_error = err_msg
+      parent = next_destination.parent
+      return RetVals(status=fail, err_msg=err_msg,
+                     next_destination=parent if parent is not None else Destinations.main,
+                     next_menu_item=null)
     user._source_menu = next_destination  # remember where we are
     r = await _menu.do_menu(user, next_destination)
     if not hasattr(r, 'next_destination'):
@@ -1040,14 +1064,7 @@ async def user_director(user, next_destination, menu_item=null):
   if dest_name and dest_name not in ('login', 'logout', 'setup_terminal', 'main'):
     result = check_keys(user, next_destination)
     if result.status == fail:
-      lacking = getattr(result, 'lacking_keys', set())
-      bad = getattr(result, 'bad_keys', set())
-      parts = []
-      if lacking:
-        parts.append(f"Missing keys: {', '.join(lacking)}")
-      if bad:
-        parts.append(f"Restricted keys: {', '.join(bad)}")
-      err_msg = f"Access denied to {dest_name}. " + "; ".join(parts)
+      err_msg = access_denied_message(dest_name, result)
 
       parent_menu = getattr(next_destination, 'parent_menu', None)
       if parent_menu:

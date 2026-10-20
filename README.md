@@ -73,30 +73,36 @@ Top-level config values (like `bbs_name` and `sysop_name`) are available as `{bb
 
 ### Adding Door Games
 
-Add entries under `menu_system.doors.options` in `DirtyFork.yaml`:
+Put each door in its own directory under `doors/` and add a menu option whose target is the `door` module. Doors can be grouped into category submenus of the Doors menu (each category is a menu with its own `destinations` entry); see `DOCS.md` for the full set of door options (FOSSIL loading, pre-commands, per-door DOSBox settings, Y2K date shifting, per-door keys):
 
 ```yaml
 menu_system:
   doors:
     options:
+      Space: {target: doors_space}
+  doors_space:
+    title: Space
+    option_defaults:
+      target: door
+      dosbox_conf: doors/dosbox.conf
+    options:
       Trade Wars 2002:
         max_nodes: 4
-        communication_type: COM
         command: 'TW2002.EXE TWNODE={node}'
         dir: 'tw2002'
 ```
 
-Each door runs in its own node directory. The BBS writes all supported dropfile formats automatically.
+Inside DOSBox, `C:\` holds the dropfiles for the session, `D:\` is the door's directory and `E:\` is `doors/tools` (FOSSIL driver, DOORWAY); point the door's own configuration at `C:\` for its dropfile. Each session gets its own node directory and the BBS writes all supported dropfile formats automatically. A sysop-only DOS shell door lets you run door installers and config programs from your terminal.
 
 ### Supported Dropfile Formats
 
 | File | Format |
 |------|--------|
-| `DOOR.SYS` | PCBoard |
-| `DORINFO1.DEF` | RBBS-PC |
-| `CHAIN.TXT` | WWIV extended (26-field) |
+| `DOOR.SYS` | GAP/PCBoard/Wildcat (52 lines) |
+| `DORINFO1.DEF` | RBBS-PC / QuickBBS |
+| `CHAIN.TXT` | WWIV (32 lines) |
 | `CALLINFO.BBS` | Wildcat! |
-| `DOOR32.SYS` | Modern 32-bit telnet |
+| `DOOR32.SYS` | Modern 32-bit (11 lines) |
 | `SFDOORS.DAT` | Spitfire |
 
 Field defaults for each format are in `doors/dropfiles/*.yaml` and can be overridden per door in `DirtyFork.yaml`.
@@ -117,6 +123,8 @@ files/meta.yaml       # file metadata (keys, descriptions)
 doors/                # door game directories
 doors/dosbox.conf     # shared DOSBox-X base config
 doors/dropfiles/      # dropfile format defaults
+doors/tools/          # mounted as E: in door sessions (FOSSIL driver, DOORWAY)
+doors/_nodes/         # per-session node dirs (dropfiles) and last session logs
 input_fields.yaml     # input field definitions
 register.yaml         # registration form config
 ```
