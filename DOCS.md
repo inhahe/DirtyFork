@@ -1,68 +1,10 @@
 # DirtyFork BBS — Documentation
 
-## Architecture Overview
-
-DirtyFork is an async Python BBS supporting both telnet (via `telnetlib3`) and dial-up modem (via `pyserial-asyncio`) connections. Each client connection spawns an async `user_loop` that detects the terminal, handles login/registration, then enters the main routing loop.
-
-```
-DirtyFork.py: main()
-  ├─ telnetlib3.create_server(shell=user_loop)    — telnet listener
-  ├─ modem_listener(port, baudrate, init_string)   — one per serial port (if configured)
-  │
-  └─ user_loop(reader, writer, connection_type) per connection:
-      ├─ _IdleMonitor wraps reader for timeout/warning
-      ├─ setup_terminal  — detect encoding, screen size
-      ├─ login           — login or inline registration
-      └─ while True:
-          r = user_director(user, destination, menu_item)
-          destination = r.next_destination
-          menu_item   = r.next_menu_item
-```
-
-### Destination System
-
-Every screen/feature is a **destination** — an async callable returning `RetVals(status, next_destination, next_menu_item, ...)`. Destinations are defined in `DirtyFork.yaml` under `destinations:` and auto-registered via `_DestinationRegistry.__getattr__`:
-
-| Type | Behavior |
-|------|----------|
-| `menu` | Renders a menu via `menu.do_menu()` |
-| `module` | Calls `modulename.run(user, dest_conf, menu_item)` |
-| `func` | Calls a built-in function (login, logout, user_director) |
-
-### Menu-to-Module Pattern
-
-Features that have both a selection menu and a handler module follow a naming convention:
-
-| Feature | Menu destination (plural) | Module destination (singular) | Python file |
-|---------|--------------------------|------------------------------|-------------|
-| Doors | `doors` (type: menu) | `door` (type: module) | `door.py` |
-| Forums | `forums` (type: menu) | `forum` (type: module) | `forum.py` |
-| Files | `files` (type: menu) | `file` (type: module) | `file.py` |
-| Sysop | `sysop` (type: menu) | `sysop_module` (type: module) | `sysop_module.py` |
-
-Menu options specify `option_defaults: {target: <module_dest>}`. When the user selects an option, the menu returns `next_destination` pointing to the module, and `next_menu_item` set to the option name (a string). The module looks up the option's config to determine the action.
-
-### user_director (Central Routing)
-
-All destination transitions go through `user_director`, which:
-1. Resets mouse reporting and colors
-2. Checks access keys (`check_keys`)
-3. On denied: shows a popup and finds a fallback destination
-4. On allowed: calls the destination
-5. On exception: logs the error, shows a popup, finds a fallback
-6. Records the visit in `user.destination_history`
+Setting up and configuring the BBS: its config, keys, menus, modules and doors. How it works inside (architecture, door sessions, ANSI state tracking, tests, the file manifest) is in [design.md](design.md).
 
 ---
 
 ## Configuration
-
-### Config System
-
-- **System config**: `DirtyFork.yaml`, loaded at startup via `get_config(path=..., main=True)`
-- **Per-user config**: `user_configs/{handle}.yaml`, loaded on login into `user.conf`
-- **Config** objects are defaultdict-based with lazy `{variable}` interpolation and environment variable expansion
-- **ConfigView**: read-only overlay of multiple Config layers (user settings > defaults > null sentinel)
-- The **`null`** sentinel (from `definitions.py`) is falsy and returns itself on attribute access, replacing None throughout the codebase
 
 ### Key Settings
 
@@ -177,7 +119,7 @@ The `/jump` (or `/j`) command navigates directly to any destination using dotted
 /j files.search          → opens the file search
 ```
 
-`resolve_jump()` walks the menu tree, matching each segment by prefix, and returns the menus it passed through; `route_denied()` checks each one's keys (those of its entry under `destinations`). A single segment that matches no option of Main but names a menu (`/j doors_sysop`) is a jump to that menu, routed through every menu that links to it, not just one: it is allowed when some chain of options from Main (or from a menu nothing links to) through menus that admit the user leads there. Errors show which segment failed and what options are available, or which menu refused the user and the keys missing.
+Each segment matches an option by prefix (option names may themselves contain dots), and a single word may also name a menu (`/j doors_sysop`). Every menu a path passes through must admit the user, and a menu named directly must be one they could reach from Main (see [Keys](#keys)). Errors show which segment failed and what options are available, or which menu refused the user and the keys missing.
 
 ### Start Destination
 
@@ -272,7 +214,7 @@ Configure doors to read their dropfile from `C:\` (e.g. `C:\DOOR.SYS`) and their
 
 ### Forums
 
-Threaded discussion forums with quoting, search, and editing. Forum posts store body text as JSON-serialized Block objects (text + quote level). Forums are defined in the config under `forum_list`.
+Threaded discussion forums with quoting, search, and editing. Forums are defined in the config under `forum_list`.
 
 ### Private Messages
 
@@ -363,52 +305,17 @@ During connection setup, the BBS detects the terminal type via telnet TTYPE nego
 - Unknown terminals default to CP437
 - User's saved encoding preference overrides auto-detection after login
 
-### ANSI State Tracking
-
-The BBS tracks cursor position and color state precisely:
-
-- `cur_*` properties reflect the actual terminal state (updated only by the `input_output.py` functions that write the sequences: `send()`, `ansi_move()`, `ansi_move_2()`, `ansi_cls()`, `ansi_set_region()`, `_ansi_color_write()`, `ansi_hide_cursor()`/`ansi_show_cursor()`)
-- `new_*` properties stage pending changes (set by `ansi_move_deferred()`, `ansi_color()`)
-- `send()` compares new vs cur and emits minimal escape codes; `ansi_clear_line_end()` applies pending changes the same way before clearing the rest of the row
-- Mouse reporting is switched with `ansi_mouse_reporting()`, which tracks it in `user.mouse_reporting`; `user_director` forces it off before each destination, since a door's output reaches the terminal untracked
-- Raw ANSI writes and manual `cur_*` assignments are never used directly (the one exception, the screen-size probe in `setup_terminal`, runs before there is a screen to track)
-
-### Screen Buffer
-
-An ANSI emulator (`ansi_emulator.py`) maintains `user.screen` — a character-by-character copy of what the terminal displays. This is used for:
-- Saving/restoring screen around popups
-- Tracking door game output
-- Ambient stars (below): a star only appears in a cell the copy shows as an empty, default-colour space
-
 ### Ambient Stars
 
-`stars.py` runs a background task per connection that twinkles dim stars in the empty parts of the screen, from the login screen on. They are off unless the `stars:` block in the main config sets `enabled: true` (see the commented example in `DirtyFork.yaml`, which also sets the animation speed, density and colour). Once logged in, a user can turn them off with `show_stars: false` in their user YAML (but not on, if the sysop has them off), and override the colour with `stars_fg` / `stars_fg_br`. Stars never appear inside doors. Whether they show is checked on every animation tick, and stars still on screen are erased when they switch off; drawing takes `user.write_lock`, so it never interleaves with other output, and a screen clear repaints the stars that are still active.
+`stars.py` runs a background task per connection that twinkles dim stars in the empty parts of the screen, from the login screen on. They are off unless the `stars:` block in the main config sets `enabled: true` (see the commented example in `DirtyFork.yaml`, which also sets the animation speed, density and colour). Once logged in, a user can turn them off with `show_stars: false` in their user YAML (but not on, if the sysop has them off), and override the colour with `stars_fg` / `stars_fg_br`. Stars appear only in empty, default-coloured cells, so they never cover text, and never inside doors; stars still on screen are erased when they switch off.
 
 ---
 
 ## Modem Support (Experimental)
 
-Modem/serial connections are supported via `pyserial-asyncio`. The BBS listens for incoming calls using standard AT commands. Multiple serial ports can be configured for multi-line setups.
+Modem/serial connections are supported via `pyserial-asyncio`. The BBS answers incoming calls itself with standard AT commands (it turns the modem's auto-answer off, answers on `RING` with `ATA`, and hangs up with `+++` / `ATH`). Multiple serial ports can be configured for multi-line setups; modem callers are treated as `ansi-bbs` terminals (CP437).
 
 **Note:** Modem support is currently untested — the developer does not have a modem.
-
-### How It Works
-
-1. `modem_listener()` opens the serial port and sends the init string (default `ATZ`)
-2. Disables auto-answer (`ATS0=0`) so calls are answered manually
-3. Waits for `RING`
-4. Answers with `ATA` and waits for `CONNECT`
-5. On connect, wraps the serial reader/writer in adapter classes (`SerialReader`/`SerialWriter`) that match the telnetlib3 interface
-6. Spawns a `user_loop` with `connection_type="modem"`
-7. On disconnect, sends `+++` pause then `ATH` to hang up
-8. Returns to waiting for the next `RING`
-
-### Adapter Classes
-
-`SerialReader` and `SerialWriter` in `modem.py` provide the same interface as telnetlib3's reader/writer:
-- `write(data)`, `drain()`, `close()`, `get_extra_info()` on the writer
-- `read(n)` on the reader
-- Modem terminals auto-detect as `ansi-bbs` (CP437 encoding)
 
 ### Configuration
 
@@ -426,7 +333,7 @@ modem:
       init_string: ATZ&F  # per-port override
 ```
 
-Each port gets its own `modem_listener` async task. Per-port `baudrate` and `init_string` override the defaults. The legacy single-port format (`modem.port: COM1`) is also supported.
+Each port answers calls independently. Per-port `baudrate` and `init_string` override the defaults. The legacy single-port format (`modem.port: COM1`) is also supported.
 
 ---
 
@@ -436,7 +343,7 @@ Configurable inactivity timeout with an optional "are you still there?" warning 
 
 ### How It Works
 
-The `_IdleMonitor` class wraps the reader's `read()` method — the single entry point for all user input (menus, input fields, doors, teleconference, file transfers). This means timeouts work everywhere without any per-module code.
+The timeout covers every kind of input: menus, forms, doors, teleconference and file transfers.
 
 1. User is idle for `idle_timeout - idle_warning` seconds
 2. A popup appears: "Are you still there? You will be disconnected in N seconds."
@@ -444,9 +351,7 @@ The `_IdleMonitor` class wraps the reader's `read()` method — the single entry
 4. If the user presses any key, the timer resets and they continue normally
 5. If no response during the warning period, the user is disconnected with a message
 
-The popup's internal input loop calls `read()` recursively. The monitor detects this via an `_in_warning` flag and does a plain timed wait without showing another popup.
-
-If the user has no screen yet (before terminal detection), the warning falls back to raw text.
+Before the terminal has been detected, the warning is plain text.
 
 ### Configuration
 
@@ -466,36 +371,15 @@ Popups are modal message boxes with scrolling, word wrap, and mouse support.
 
 ### Queueing
 
-When a popup arrives while another is already showing, it's queued in `user.popup_queue`. After the current popup is dismissed, the next one shows automatically. If multiple popups are queued, the user can press **A** ("Abort All") to clear the queue.
+When a popup arrives while another is already showing, it waits; after the current popup is dismissed, the next one shows automatically. If multiple popups are queued, the user can press **A** ("Abort All") to clear the queue.
 
 ### Permissions
 
-Before delivering a popup, `check_can_page()` verifies:
+A popup is delivered only if:
 - User has a screen and is fully connected
 - `allow_pages` and `allow_bbs_messages` settings are enabled
 - If in a door, `allow_door_popups` must be true
 - Sender is not in the target's `blocked_users` list
-
----
-
-## Input Field System
-
-The `InputFields` system provides form-based input:
-
-- **InputField**: text input with optional outline, fill character, word wrap, and quote margins
-- **InputFields**: form container managing multiple fields and named buttons
-- **Buttons**: non-editable fields that return immediately on arrow keys
-- **Block**: structured quoted content with text and quote level (level 0 = user text, 1+ = quoted)
-- **Mouse support**: click-to-focus fields and buttons, scrollbar interaction
-
-### show_message_box
-
-Modal popup with:
-- Vertical and horizontal scrollbars
-- Word wrapping (configurable, can be disabled for code/tracebacks)
-- Screen save/restore
-- Mouse click support (close button, scrollbars)
-- Queue-aware "Abort All" option
 
 ---
 
@@ -506,46 +390,3 @@ Rotating file logger with configurable:
 - `split_at`: max size before rotation
 - `max_length`: total size including rotated files
 - `max_age`: retention period
-
----
-
-## Tests
-
-Plain `unittest`, in `tests/`. Run from the project directory, with the BBS's Python environment:
-
-```
-python -m unittest discover -s tests
-```
-
-They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data directory that is removed afterwards, and need no network, DOSBox or door files. Covered: door node directories, the generated autoexec and dropfiles, the daily mark, the door I/O pumps and process handling, menu keys on `/jump`, dotted paths and jumps to a menu by name, the text menu's prompt line, and the ambient stars.
-
----
-
-## File Manifest
-
-| File | Purpose |
-|------|---------|
-| `DirtyFork.py` | Main entry point, event loop |
-| `common.py` | User class, Destinations registry, user_director, login, expand_keys |
-| `config.py` | Config/ConfigView, get_config() |
-| `definitions.py` | Constants, RetVals, Estr/Eint, Char, Null, Disconnected |
-| `input_output.py` | ANSI I/O, state tracking, send/ansi_move/ansi_color |
-| `input_fields.py` | InputField/InputFields, show_message_box, Block |
-| `keyboard_codes.py` | Key code mapping, mouse/position parsing |
-| `menu.py` | Menu rendering, prefix matching, resolve_jump, multi-column layout |
-| `door.py` | Door games, node management, dropfiles, I/O bridge |
-| `teleconference.py` | Multi-channel chat, split-screen |
-| `forum.py` | Forum module |
-| `file.py` | File library, search/browse/upload/download |
-| `register.py` | New user registration |
-| `settings.py` | User settings page (shared with sysop) |
-| `sysop_module.py` | Sysop panel: user keys, key groups, user settings |
-| `bbs_msg.py` | Popup messages, permission checks, queueing |
-| `ansi_emulator.py` | ANSI parser for door output, screen buffer |
-| `file_transfer.py` | ZMODEM/YMODEM async wrappers |
-| `logger.py` | Rotating file logging |
-| `modem.py` | Serial/modem adapter classes and AT command handling |
-| `modules.py` | Dynamic module loader |
-| `paths.py` | Path resolution (project vs data directory) |
-| `stars.py` | Ambient star animation |
-| `tests/` | Unit tests (`python -m unittest discover -s tests`) |

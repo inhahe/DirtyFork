@@ -212,7 +212,7 @@ idle_warning: 30          # seconds before timeout to show warning (0 = no warni
 
 ## Documentation
 
-See [DOCS.md](DOCS.md) for detailed documentation covering architecture, configuration, all modules, the input field system, ANSI state tracking, and more.
+See [DOCS.md](DOCS.md) for setting up and configuring the BBS: the config file, keys, menus, every module and the door options. [design.md](design.md) describes how it works inside: the architecture, routing and key checks, door sessions, ANSI state tracking, the tests and the file manifest.
 
 ## License
 
