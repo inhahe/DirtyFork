@@ -35,7 +35,6 @@ backup[0-9]*/
 .claude/
 CLAUDE.md
 DirtyFork.pyproj
-lib/
 *.log
 
 # Present in this project directory but never published from the staging

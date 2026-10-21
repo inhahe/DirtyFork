@@ -212,7 +212,8 @@ They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data
 | `sysop_module.py` | Sysop panel: user keys, key groups, user settings |
 | `bbs_msg.py` | Popup messages, permission checks, queueing |
 | `ansi_emulator.py` | ANSI parser for door output, screen buffer |
-| `file_transfer.py` | ZMODEM/YMODEM async wrappers (the protocol libraries live in `lib/`, which is kept out of the repository) |
+| `file_transfer.py` | ZMODEM/YMODEM async wrappers |
+| `lib/` | The vendored protocol libraries: `modem` (ZMODEM) and `ymodem` (YMODEM-G); where they came from is in `lib/README.md` |
 | `logger.py` | Rotating file logging |
 | `modem.py` | Serial/modem adapter classes and AT command handling |
 | `modules.py` | Dynamic module loader |
