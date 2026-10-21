@@ -1,9 +1,10 @@
 """input_output.py: helpers that write escape sequences, and the state they track."""
 import unittest
+from unittest import mock
 
 import _setup
 import input_output as io
-from definitions import blue, black
+from definitions import blue, black, cyan, green
 
 
 def row_text(user, row):
@@ -48,6 +49,50 @@ class ClearLineEnd(unittest.IsolatedAsyncioTestCase):
         await io.ansi_clear_line_end(user)
         self.assertNotIn("\x1b[K", user.writer.text())
         self.assertEqual(row_text(user, 3), "y" * user.screen_width)
+
+
+class Popup(unittest.IsolatedAsyncioTestCase):
+    async def test_popup_leaves_the_interrupted_output_as_it_was(self):
+        import input_fields
+        user = _setup.make_user()
+        await io.ansi_move(user, 10, 5)
+        io.ansi_color(user, fg=cyan, fg_br=True)
+        await io.ansi_color_2(user)                        # on the terminal: bright cyan
+        io.ansi_color(user, fg=green)                      # staged, not sent
+        await io.ansi_move_deferred(user, row=12, col=3)   # staged, not sent
+        staged = (user.new_fg, user.new_fg_br, user.new_bg, user.new_row, user.new_col)
+        self.assertEqual(staged[0::3], (green, 12))
+
+        async def any_key(user, *args, **kwargs):
+            return " "
+
+        with mock.patch.object(input_fields, "get_input_key", any_key):
+            await input_fields.show_message_box(user, "Hello there")
+        self.assertEqual((user.cur_row, user.cur_col), (10, 5))
+        self.assertEqual((user.cur_fg, user.cur_fg_br), (cyan, True))
+        self.assertEqual((user.new_fg, user.new_fg_br, user.new_bg, user.new_row, user.new_col), staged)
+        self.assertTrue(user.cur_show_cursor)
+
+    async def test_clicking_the_close_button_closes_it(self):
+        import input_fields
+        from definitions import Eint
+        from keyboard_codes import click, left
+        user = _setup.make_user()
+        button = "[" + bytes([254]).decode("cp437") + "]"
+        keys_read = []
+
+        async def click_the_button(user, *args, **kwargs):
+            keys_read.append(1)
+            if len(keys_read) > 1:
+                return " "                                 # (the click didn't close it)
+            row = next(r for r in range(1, user.screen_height + 1) if button in row_text(user, r))
+            col = row_text(user, row).index(button) + 2    # the middle of [■], 1-based
+            return Eint(click, button=left, row=row, col=col, motion=False,
+                        shift=False, alt=False, ctrl=False, wheel=None)
+
+        with mock.patch.object(input_fields, "get_input_key", click_the_button):
+            await input_fields.show_message_box(user, "Hello there")
+        self.assertEqual(len(keys_read), 1)
 
 
 if __name__ == "__main__":

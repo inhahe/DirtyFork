@@ -231,11 +231,8 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
   abort_col_end = 0
   abort_row = 0
 
-  # Save cursor position before the popup
-  saved_cur_row = user.cur_row
-  saved_cur_col = user.cur_col
-  saved_new_row = user.new_row
-  saved_new_col = user.new_col
+  # The cursor, colours and staged output of whatever the popup interrupts
+  saved_cursor = save_cursor(user)
 
   # Save the screen area (1-based coords, outline adds 1 on each side)
   save_top = row - 1
@@ -270,7 +267,7 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     _h_prompt = ""
 
   async def _draw_box():
-    nonlocal _h_prompt
+    nonlocal _h_prompt, close_btn_col, abort_col_start, abort_col_end, abort_row  # (read by the click handling)
     if need_nowrap:
       ansi_wrap(user, False)
 
@@ -564,9 +561,8 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
         result = None
       break
 
-  # Restore mouse reporting state, show cursor again
+  # Restore mouse reporting state (the cursor's visibility comes back below)
   await ansi_mouse_reporting(user, saved_mouse)
-  await ansi_show_cursor(user)
 
   # Restore the screen area from saved data
   if need_nowrap:
@@ -579,11 +575,8 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
         ansi_color(user, fg=ch.fg, fg_br=ch.fg_br, bg=ch.bg, bg_br=ch.bg_br)
         await send(user, ch.char, drain=False)
 
-  # Restore cursor to where it was before the popup
-  user.new_row = saved_cur_row
-  user.new_col = saved_cur_col
-  await ansi_move_2(user)
-  await user.writer.drain()
+  # Back to where the interrupted output was: cursor, colours, staged output
+  await restore_cursor(user, saved_cursor)
   if need_nowrap:
     ansi_wrap(user, True)
 

@@ -1,6 +1,7 @@
 # todo: change fg, bg, fg_br, bg_br to fg, fg_br, bg, bg_br
 
 import asyncio as _asyncio_for_lock
+import contextlib
 import time
 
 from definitions import *
@@ -245,6 +246,54 @@ async def ansi_mouse_reporting(user, on=True, drain=False, force=False):
       user.mouse_reporting = on
     if drain:
       await user.writer.drain()
+
+def save_cursor(user):
+  """Record, for restore_cursor, what output in progress depends on besides
+  the screen's contents: the terminal's cursor position, colour and cursor
+  visibility, and what has been staged but not sent yet (the pending colour
+  from ansi_color and move from ansi_move_deferred)."""
+  return (user.cur_row, user.cur_col, user.new_row, user.new_col,
+          (user.cur_fg, user.cur_bg, user.cur_fg_br, user.cur_bg_br),
+          (user.new_fg, user.new_bg, user.new_fg_br, user.new_bg_br),
+          getattr(user, '_wrap_ambiguous', False), getattr(user, 'cur_show_cursor', True))
+
+async def restore_cursor(user, saved, drain=True):
+  """Put back what save_cursor(user) returned as *saved*: the terminal's colour,
+  cursor position and visibility, then the pending colour and move, so the
+  output that was interrupted (by a popup, a star) carries on undisturbed.
+  With *drain*, flushes (and ignores a caller who has gone)."""
+  cur_row, cur_col, new_row, new_col, cur_colour, new_colour, wrap_ambiguous, shown = saved
+  async with user.write_lock:
+    fg, bg, fg_br, bg_br = cur_colour
+    ansi_color(user, fg=fg, bg=bg, fg_br=fg_br, bg_br=bg_br)
+    await ansi_color_2(user)
+    await ansi_move(user, cur_row or 1, cur_col or 1)
+    fg, bg, fg_br, bg_br = new_colour
+    ansi_color(user, fg=fg, bg=bg, fg_br=fg_br, bg_br=bg_br)
+    await ansi_move_deferred(user, row=new_row, col=new_col)
+    user._wrap_ambiguous = wrap_ambiguous
+    if shown:
+      await ansi_show_cursor(user)
+    else:
+      await ansi_hide_cursor(user)
+    if drain:
+      try:
+        await user.writer.drain()
+      except Exception:
+        pass
+
+@contextlib.asynccontextmanager
+async def cursor_preserved(user, hide_cursor=False):
+  """Draw something inside this block (save_cursor on entry, restore_cursor on
+  exit).  With *hide_cursor*, the cursor is hidden while drawing, so it
+  doesn't flicker around."""
+  saved = save_cursor(user)
+  if hide_cursor:
+    await ansi_hide_cursor(user)
+  try:
+    yield
+  finally:
+    await restore_cursor(user, saved)
 
 async def ansi_left(user, val=1, drain=False):
   assert val >= 0

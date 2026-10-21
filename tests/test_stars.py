@@ -62,7 +62,7 @@ class Drawing(unittest.IsolatedAsyncioTestCase):
         user = _setup.make_user()
         input_output.ansi_color(user, fg=cyan, fg_br=True)          # staged by the BBS, not sent yet
         await input_output.ansi_move_deferred(user, row=10, col=5)
-        async with stars._cursor_preserved(user, hide_cursor=True):
+        async with input_output.cursor_preserved(user, hide_cursor=True):
             await stars._draw(user, 3, 3, "*", 4, False)
         self.assertEqual((user.new_fg, user.new_fg_br, user.new_row, user.new_col), (cyan, True, 10, 5))
         self.assertEqual((user.cur_fg, user.cur_row, user.cur_col), (white, 1, 1))

@@ -17,13 +17,11 @@ its writes don't interleave with the main coroutine's renders.
 """
 
 import asyncio
-import contextlib
 import math
 import random
 
 from definitions import white, black, blue
-from input_output import (ansi_move, ansi_move_deferred, ansi_color, ansi_color_2, send,
-                          ansi_hide_cursor, ansi_show_cursor)
+from input_output import ansi_move, ansi_color, send, cursor_preserved
 from logger import log
 from config import get_config
 
@@ -134,40 +132,6 @@ def _showing(user, enabled):
   return bool(enabled and not user.in_door and user.screen and user.screen_width)
 
 
-@contextlib.asynccontextmanager
-async def _cursor_preserved(user, hide_cursor=False):
-  """Draw stars inside this block.  On exit the terminal's colour and cursor
-  position are back to what they were on entry, and so is what the main
-  coroutine has staged but not sent yet (its pending colour and move, which a
-  tick can land between), and the output is flushed.  With hide_cursor, the
-  terminal cursor is hidden while drawing so it doesn't flicker around."""
-  save_cur_row, save_cur_col = user.cur_row, user.cur_col
-  save_new_row, save_new_col = user.new_row, user.new_col
-  save_cur_colour = (user.cur_fg, user.cur_bg, user.cur_fg_br, user.cur_bg_br)
-  save_new_colour = (user.new_fg, user.new_bg, user.new_fg_br, user.new_bg_br)
-  save_wrap_ambiguous = getattr(user, '_wrap_ambiguous', False)
-  hidden = hide_cursor and getattr(user, 'cur_show_cursor', True)
-  if hidden:
-    await ansi_hide_cursor(user)
-  try:
-    yield
-  finally:
-    fg, bg, fg_br, bg_br = save_cur_colour
-    ansi_color(user, fg=fg, bg=bg, fg_br=fg_br, bg_br=bg_br)
-    await ansi_color_2(user)
-    await ansi_move(user, save_cur_row or 1, save_cur_col or 1)
-    fg, bg, fg_br, bg_br = save_new_colour
-    ansi_color(user, fg=fg, bg=bg, fg_br=fg_br, bg_br=bg_br)
-    await ansi_move_deferred(user, row=save_new_row, col=save_new_col)
-    user._wrap_ambiguous = save_wrap_ambiguous
-    if hidden:
-      await ansi_show_cursor(user)
-    try:
-      await user.writer.drain()
-    except Exception:
-      pass
-
-
 async def _draw(user, r, c, char, fg, fg_br):
   """Write *char* at (r, c) in fg on black.  Caller holds the write lock."""
   await ansi_move(user, r, c, drain=False)
@@ -196,7 +160,7 @@ async def _repaint_after_cls(user):
   height = len(user.screen)
   width = len(user.screen[0]) if height else 0
   surviving = []
-  async with _cursor_preserved(user):
+  async with cursor_preserved(user):
     for star in active:
       r, c, idx, next_at, star_fg, star_fg_br = star
       if not _in_bounds(user, r, c) or (r == height and c == width) or idx >= len(_FRAMES):
@@ -210,7 +174,7 @@ async def _erase(user, active):
   """Erase the stars in *active* that are still on screen, then forget them all.
   A cell that no longer shows its star's frame was overwritten by something
   else and is left alone.  Caller holds the write lock."""
-  async with _cursor_preserved(user, hide_cursor=True):
+  async with cursor_preserved(user, hide_cursor=True):
     for r, c, idx, next_at, star_fg, star_fg_br in active:
       if (_in_bounds(user, r, c) and idx < len(_FRAMES)
           and _matches_star(user.screen[r-1][c-1], _FRAMES[idx], star_fg, star_fg_br)):
@@ -305,7 +269,7 @@ async def _tick(user, active, fg, fg_br, spawn_p, frame_interval_ms):
   now = asyncio.get_event_loop().time()
   cur_row, cur_col = user.cur_row, user.cur_col
 
-  async with _cursor_preserved(user, hide_cursor=True):
+  async with cursor_preserved(user, hide_cursor=True):
     # --- 1) Advance stars whose time has come ---
     survivors = []
     for star in active:

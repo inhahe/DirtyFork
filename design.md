@@ -141,7 +141,7 @@ An ANSI emulator (`ansi_emulator.py`) maintains `user.screen` — a character-by
 
 ### Ambient Stars
 
-`stars.stars_loop` runs per connection. It reads the settings on every tick: the system's `stars.enabled` is the master switch, and a user's `show_stars` can only turn stars off. Stars still on screen are erased when they switch off. Each tick draws under `user.write_lock`, in `_cursor_preserved`, which saves and restores the tracked cursor, the colours (both current and pending) and the wrap state, so the BBS's own output is undisturbed. New stars are sampled with geometric gaps (`_chosen_cells`) rather than with a random number per cell. `ansi_cls` calls a hook that repaints the stars still active, and nothing is drawn while the caller is in a door.
+`stars.stars_loop` runs per connection. It reads the settings on every tick: the system's `stars.enabled` is the master switch, and a user's `show_stars` can only turn stars off. Stars still on screen are erased when they switch off. Each tick draws under `user.write_lock`, inside `input_output.cursor_preserved`, which saves and restores the tracked cursor, the colours (both current and pending), a staged move, the wrap state and the cursor's visibility, so the BBS's own output is undisturbed; popups (`show_message_box`) restore the same state with `save_cursor`/`restore_cursor`. New stars are sampled with geometric gaps (`_chosen_cells`) rather than with a random number per cell. `ansi_cls` calls a hook that repaints the stars still active, and nothing is drawn while the caller is in a door.
 
 ## Modem connections
 
