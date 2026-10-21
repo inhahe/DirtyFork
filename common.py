@@ -247,7 +247,6 @@ class User:
     self.new_col = 1
     self.scroll_region_top = None
     self.scroll_region_bottom = None
-    self.scroll_region_strict = False
     self.terminal = SyncTERM  # default terminal type
     self.cur_show_cursor = True
     self.encoding = "cp437"   # default encoding, updated by detect_terminal

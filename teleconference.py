@@ -8,15 +8,15 @@ import time
 from collections import deque
 
 from definitions import (
-    RetVals, Disconnected, Char, Estr,
-    cr, lf, success, fail, null,
-    white, black, red, green, blue, magenta, cyan, yellow, brown,
+    RetVals, Disconnected,
+    cr, lf, success,
+    white, black, red, green, magenta, cyan, yellow,
 )
 from input_output import (
     send, ansi_move_deferred, ansi_color, ansi_wrap, ansi_cls, get_input_key,
-    ansi_set_region, ansi_set_region_strict, ansi_clear_line_end,
+    ansi_set_region, ansi_clear_line_end,
 )
-from keyboard_codes import left, right, home, end, back, delete, up, down, pgup, pgdn
+from keyboard_codes import left, right, home, end, back, delete
 
 
 # ---------------------------------------------------------------------------

@@ -502,17 +502,6 @@ async def ansi_set_region(user, top_row=None, bottom_row=None, drain=False):
       if drain:
         await user.writer.drain()
 
-async def ansi_set_region_strict(user, value=True, drain=False):
-  async with user.write_lock:
-    if value != user.scroll_region_strict:
-      user.scroll_region_strict = value
-      if value:
-        user.writer.write(f"\x1b[?6h")
-      else:
-        user.writer.write(f"\x1b[?7h")
-      if drain:
-        await user.writer.drain()
-
 # ---------------------------------------------------------------------------
 # Screen save/restore stack — used for overlay activities (e.g. /chat) that
 # take over the screen and need to restore the underlying activity afterward.
@@ -566,7 +555,6 @@ async def pop_screen(user):
     user._stars_active.clear()
 
   await ansi_cls(user)
-  prev_wrap = getattr(user, 'cur_wrap', True)
   ansi_wrap(user, False)
 
   if snap['screen']:

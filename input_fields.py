@@ -1,4 +1,3 @@
-from copy import deepcopy
 import asyncio
 import re
 
@@ -1892,11 +1891,11 @@ class InputField:
     if self.word_wrap and self.line_char_to_grid:
       char_to_grid = self.line_char_to_grid[self.cursor_line]
       if 0 <= self.cursor_col < len(char_to_grid) and char_to_grid[self.cursor_col] is not None:
-        gr, gc = char_to_grid[self.cursor_col]
+        _, gc = char_to_grid[self.cursor_col]
       elif char_to_grid and char_to_grid[-1] is not None:
-        gr, gc = char_to_grid[-1]
+        _, gc = char_to_grid[-1]
       else:
-        gr, gc = 0, 0
+        gc = 0
       mw = len(self._margin_prefix(self.lines[self.cursor_line].level))
       self._updown_col = max(0, gc - mw)
       return
@@ -2271,7 +2270,6 @@ class InputField:
     new_snapshot = self._snapshot_display_rows()
     new_len = len(new_snapshot)
     old_len = len(old_snapshot)
-    visible_start = self.scroll_offset
     visible_end_new = min(self.scroll_offset + self.height, new_len)
 
     if self.word_wrap:
@@ -2698,7 +2696,6 @@ class InputField:
       # Enter on empty quoted line: decrease level
       if line.level > 0 and not line.text:
         old_snapshot = self._snapshot_display_rows() if self.word_wrap else None
-        saved_scroll_offset = self.scroll_offset
         line.level -= 1
         self._compute_display_rows()
         self._ensure_cursor_visible()
@@ -2717,7 +2714,6 @@ class InputField:
       split_col = self.cursor_col  # save for potential undo
       new_level = line.level
       old_snapshot = self._snapshot_display_rows() if self.word_wrap else None
-      saved_scroll_offset = self.scroll_offset
       after_text = line.split_at(self.cursor_col)
       self.lines.insert(self.cursor_line + 1, Line(after_text, new_level))
 
@@ -3161,18 +3157,8 @@ class InputField:
 
     self.cursor_col += 1
 
-    saved_lines = deepcopy(self.lines) if (self.word_wrap and self.max_lines) else None
-
     self._compute_display_rows()
     self._set_updown_col()
-
-    # Check max_lines (word wrap reflow might push over)
-    if self.max_lines and len(self.display_rows) > 0:
-      # Count actual logical lines that have display rows
-      if self.word_wrap:
-        max_dri = len(self.display_rows)
-        # max_lines applies to logical lines, not display rows
-        pass
 
     self._ensure_cursor_visible()
     self._ensure_h_scroll()
