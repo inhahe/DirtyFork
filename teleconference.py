@@ -35,6 +35,9 @@ class Channel:
 channels = {"general": Channel("General")}
 user_channels = {}  # user -> channel-key (lowercase)
 user_typing = {}    # user -> time.time() of last input edit
+# user -> the lines (parts lists) shown in their chat area, newest last: what
+# a redraw puts back, channel lines and the member's own (PMs, errors, /help)
+member_lines = {}
 
 TYPING_TIMEOUT = 6  # seconds before a user is no longer considered "typing"
 
@@ -80,36 +83,61 @@ def _timestamp():
     return time.strftime("%H:%M")
 
 
-async def _draw_on(target, draw):
+async def _draw_on(target, draw, needed=None):
     """Run *draw()*, which draws on *target*'s teleconference screen, from any
     member's task (most of it runs in someone else's): in one piece under
     target's write lock, leaving target's own output (cursor, colours, a
     staged move) as it was.  While a popup or an overlay (/chat) covers
     target's screen, nothing is drawn; the screen is marked stale instead and
-    redrawn in full when it is uncovered (see run's _redraw)."""
+    redrawn in full when it is uncovered (see run's _redraw).  *needed()*,
+    if given, is asked under the lock, once the screen is known to be
+    uncovered, whether there is anything to draw."""
     async with target.write_lock:
         if screen_covered(target):
             target.screen_stale = True
+            return
+        if needed is not None and not needed():
             return
         async with cursor_preserved(target, hide_cursor=True):
             await draw()
 
 
+async def _draw_line(target, parts, chat_bottom):
+    """Draw one line at the bottom of target's chat area, scrolling it up."""
+    await ansi_move_deferred(target, row=chat_bottom, col=1)
+    await send(target, cr + lf)  # (scrolls the chat area)
+    for fg, fg_br, text in parts:
+        ansi_color(target, fg=fg, fg_br=fg_br, bg=black)
+        await send(target, text)
+    await ansi_clear_line_end(target)  # (in case the line there was longer)
+
+
 async def _display_message(target, parts, chat_bottom):
-    """Write a single formatted line into the target user's chat scroll region.
+    """Add a line to the chat area of *target*, a member: to their log
+    (member_lines, what a redraw puts back) and, unless a popup or overlay
+    covers it, their screen.  Both under target's write lock, so a redraw in
+    progress can't draw the line twice or out of order.
 
     *parts* is a list of (fg, fg_br, text) tuples that together form one line.
     The scroll region must already be set so that a cr+lf at *chat_bottom*
     scrolls only the chat area.
     """
-    async def draw():
-        await ansi_move_deferred(target, row=chat_bottom, col=1)
-        await send(target, cr + lf)  # (scrolls the chat area)
-        for fg, fg_br, text in parts:
-            ansi_color(target, fg=fg, fg_br=fg_br, bg=black)
-            await send(target, text)
-        await ansi_clear_line_end(target)  # (in case the line there was longer)
-    await _draw_on(target, draw)
+    async with target.write_lock:
+        lines = member_lines.get(target)
+        if lines is not None:
+            lines.append(parts)
+        await _draw_on(target, functools.partial(_draw_line, target, parts, chat_bottom))
+
+
+async def _draw_chat_area(user):
+    """Draw the newest lines of user's log into their (cleared) chat area, as
+    many as it holds; the user's own task, holding the write lock."""
+    shown = _chat_bottom(user) - _chat_top() + 1
+    lines = list(member_lines.get(user) or ())[-shown:] if shown > 0 else []
+    if lines:
+        async with cursor_preserved(user):
+            for parts in lines:
+                await _draw_line(user, parts, _chat_bottom(user))
 
 
 def _chat_top():
@@ -234,21 +262,24 @@ def _typers(channel_key):
     return [u for u in (ch.users if ch else ()) if now - user_typing.get(u, 0) < TYPING_TIMEOUT]
 
 
-async def _draw_typing_indicator(user, typers):
-    """Show on row 2 which of *typers* (_typers) other than *user* are typing.
-    Nothing is drawn if row 2 already shows that (every keystroke in the
-    channel gets here); it is compared with user.screen rather than with a
-    note of what was drawn, which a popup, /clear or an overlay can outdate."""
-    others = [u.handle for u in typers if u is not user]
-    if not others:
-        text = ""
-    elif len(others) == 1:
-        text = f" {others[0]} is typing..."
-    else:
-        text = f" {', '.join(others)} are typing..."
-    text = text[:user.screen_width]
-    if user.screen and "".join(c.char for c in user.screen[1]).rstrip() == text.rstrip():
-        return
+async def _draw_typing_indicator(user, channel_key):
+    """Show on row 2 which other members of the channel are typing.  Worked out
+    under the lock, when drawing (a broadcast delayed behind a slow member
+    can't paint an older state), and drawn only if row 2 of user.screen
+    doesn't show it already: every keystroke in the channel gets here."""
+    text = ""
+
+    def needed():
+        nonlocal text
+        others = [u.handle for u in _typers(channel_key) if u is not user]
+        if not others:
+            text = ""
+        elif len(others) == 1:
+            text = f" {others[0]} is typing..."
+        else:
+            text = f" {', '.join(others)} are typing..."
+        text = text[:user.screen_width]
+        return not user.screen or "".join(c.char for c in user.screen[1]).rstrip() != text.rstrip()
 
     async def draw():
         await ansi_move_deferred(user, row=2, col=1)
@@ -256,7 +287,17 @@ async def _draw_typing_indicator(user, typers):
         if text:
             await send(user, text)
         await ansi_clear_line_end(user)  # the rest of the row
-    await _draw_on(user, draw)
+    await _draw_on(user, draw, needed)
+
+
+async def _broadcast_header(channel_key):
+    """Redraw the header (name, user count, topic) on every member's screen."""
+    ch = channels.get(channel_key)
+    for u in list(ch.users if ch else ()):
+        try:
+            await _draw_on(u, functools.partial(_draw_header, u, channel_key))
+        except Exception:
+            pass
 
 
 async def _broadcast_typing_indicator(channel_key):
@@ -264,10 +305,9 @@ async def _broadcast_typing_indicator(channel_key):
     ch = channels.get(channel_key)
     if not ch:
         return
-    typers = _typers(channel_key)  # (once, not once per member)
     for u in list(ch.users):
         try:
-            await _draw_typing_indicator(u, typers)
+            await _draw_typing_indicator(u, channel_key)
         except Exception:
             pass
 
@@ -287,7 +327,7 @@ async def _setup_screen(user, channel_key):
     ansi_wrap(user, False)
 
     await _draw_header(user, channel_key)
-    await _draw_typing_indicator(user, _typers(channel_key))
+    await _draw_typing_indicator(user, channel_key)
     await _draw_separator(user)
     await _draw_input_prompt(user)
 
@@ -317,7 +357,7 @@ async def _replay_history(user, channel_key):
     if not ch:
         return
     shown = _chat_bottom(user) - _chat_top() + 1  # (older lines would scroll away)
-    for ts, msg_type, sender, text in list(ch.history)[-shown:]:
+    for ts, msg_type, sender, text in (list(ch.history)[-shown:] if shown > 0 else []):
         if msg_type == "chat":
             parts = [
                 (white, False, f"[{ts}] "),
@@ -351,11 +391,7 @@ async def _join_channel(user, channel_key, display_name=None):
 
     await _send_system(channel_key, f"{user.handle} has joined")
     # Update header for all users in channel to reflect new user count
-    for u in list(ch.users):
-      try:
-        await _draw_on(u, functools.partial(_draw_header, u, channel_key))
-      except Exception:
-        pass
+    await _broadcast_header(channel_key)  # (the new user count)
     if others:
       await _send_to_user(user, [(green, False, f"Users here: {', '.join(others)}")])
     else:
@@ -372,11 +408,7 @@ async def _leave_channel(user, quiet=False):
         if not quiet:
             await _send_system(channel_key, f"{user.handle} has left")
             # Update header for remaining users
-            for u in list(ch.users):
-              try:
-                await _draw_on(u, functools.partial(_draw_header, u, channel_key))
-              except Exception:
-                pass
+            await _broadcast_header(channel_key)
         # Clean up empty non-default channels
         if not ch.users and channel_key != "general":
             del channels[channel_key]
@@ -433,10 +465,10 @@ async def _process_command(user, line):
             await _send_error(user, f"You are already in {channels[channel_key].name}.")
             return False
         await _leave_channel(user)
-        await _join_channel(user, new_key, new_display)
-        # Redraw screen for new channel
+        member_lines[user].clear()  # (a new chat area)
         await _setup_screen(user, new_key)
         await _replay_history(user, new_key)
+        await _join_channel(user, new_key, new_display)  # (after: its "Users here" line stays)
 
     elif cmd in ("/list", "/l"):
         if not channels:
@@ -459,6 +491,9 @@ async def _process_command(user, line):
         if not target:
             await _send_error(user, f"User '{target_handle}' not found.")
             return False
+        if target not in user_channels:
+            await _send_error(user, f"{target.handle} isn't in Teleconference. Use /page instead.")
+            return False
         await _send_pm(user, target, msg_text)
 
     elif cmd in ("/me", "/action"):
@@ -475,12 +510,7 @@ async def _process_command(user, line):
                 await _send_system(channel_key, f"{user.handle} set topic to: {ch.topic}")
             else:
                 await _send_system(channel_key, f"{user.handle} cleared the topic")
-            # Redraw header for all users in channel
-            for u in list(ch.users):
-                try:
-                    await _draw_on(u, functools.partial(_draw_header, u, channel_key))
-                except (Disconnected, Exception):
-                    pass
+            await _broadcast_header(channel_key)
 
     elif cmd == "/page":
         msg_parts = args.split(None, 1)
@@ -558,6 +588,8 @@ async def run(user, destination, menu_item=None):
     from common import Destinations
 
     channel_key = "general"
+    member_lines[user] = deque(maxlen=200)
+    expiry_task = None
 
     try:
         await _setup_screen(user, channel_key)
@@ -633,9 +665,10 @@ async def run(user, destination, menu_item=None):
             """The whole screen again: after a popup or overlay that covered it
             while others drew (see _draw_on)."""
             current_key = user_channels.get(user, channel_key)
-            await _setup_screen(user, current_key)
-            await _replay_history(user, current_key)
-            await _refresh_input()
+            async with user.write_lock:  # (nothing else drawn here meanwhile)
+                await _setup_screen(user, current_key)
+                await _draw_chat_area(user)
+                await _refresh_input()
 
         user.redraw_hook = _redraw
 
@@ -711,7 +744,9 @@ async def run(user, destination, menu_item=None):
     finally:
         user.redraw_hook = None
         user.screen_stale = False
-        expiry_task.cancel()
+        if expiry_task is not None:
+            expiry_task.cancel()
+        member_lines.pop(user, None)
         user_typing.pop(user, None)
         await _leave_channel(user)
         try:

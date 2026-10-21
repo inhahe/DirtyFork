@@ -30,7 +30,7 @@ class TypingIndicator(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(p.stop)
 
     async def draw(self):
-        await teleconference._draw_typing_indicator(self.user, teleconference._typers("test"))
+        await teleconference._draw_typing_indicator(self.user, "test")
 
     async def test_redrawn_only_when_row_2_shows_something_else(self):
         user = self.user
@@ -64,6 +64,48 @@ class TypingIndicator(unittest.IsolatedAsyncioTestCase):
         await io.screen_uncovered(user)
         self.assertEqual(redrawn, [1])
         self.assertFalse(user.screen_stale)
+
+
+class ChatArea(unittest.IsolatedAsyncioTestCase):
+    """What a member's chat area shows is logged, so a redraw can put it all back."""
+
+    def setUp(self):
+        from collections import deque
+        self.user = _setup.make_user()
+        self.channel = teleconference.Channel("Test")
+        self.channel.users.add(self.user)
+        patches = [mock.patch.dict(teleconference.channels, {"test": self.channel}),
+                   mock.patch.dict(teleconference.user_channels, {self.user: "test"}),
+                   mock.patch.dict(teleconference.member_lines, {self.user: deque(maxlen=200)})]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    async def test_a_private_line_sent_while_covered_comes_back_on_the_redraw(self):
+        user = self.user
+        await teleconference._setup_screen(user, "test")
+        user.popup_depth = 1
+        await teleconference._send_to_user(user, [(7, False, "[PM from Bob] hi")])
+        self.assertNotIn("PM from Bob", user.writer.text())
+        user.popup_depth = 0
+        await teleconference._setup_screen(user, "test")         # what run's _redraw does
+        await teleconference._draw_chat_area(user)
+        self.assertEqual(row_text(user, teleconference._chat_bottom(user)), "[PM from Bob] hi")
+
+    async def test_msg_only_to_members(self):
+        user, bob = self.user, Member()
+        import common
+        await teleconference._setup_screen(user, "test")
+        with mock.patch.dict(common.global_data.users, {"bob": bob}):
+            await teleconference._process_command(user, "/msg Bob hi")
+        self.assertIn("isn't in Teleconference", row_text(user, teleconference._chat_bottom(user)))
+
+    async def test_join_leaves_who_is_there_on_screen(self):
+        user = self.user
+        await teleconference._setup_screen(user, "test")
+        await teleconference._process_command(user, "/join games")
+        screen = [row_text(user, r) for r in range(1, user.screen_height + 1)]
+        self.assertIn("You are the only one here.", screen)
 
 
 class Invitation(unittest.IsolatedAsyncioTestCase):

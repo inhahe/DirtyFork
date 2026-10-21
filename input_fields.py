@@ -584,8 +584,9 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
       await restore_cursor(user, saved_cursor)
     finally:
       user.popup_depth -= 1
-    await screen_uncovered(user)  # (redraws what others couldn't draw meanwhile)
 
+  # (on a normal close only, not on the way out of a disconnect or cancel)
+  await screen_uncovered(user)  # redraws what others couldn't draw meanwhile
   return result
 
 

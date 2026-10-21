@@ -260,7 +260,6 @@ class User:
     self.popup_notify = asyncio.Event()  # set when a popup is queued, to interrupt reader.read()
     self.popup_event = None   # asyncio.Event set when a popup needs to interrupt the door bridge
     self.popup_queue = []     # queued popups waiting to show (list of kwarg dicts)
-    self._in_popup = False    # True while a popup is being displayed
     self._chat_invitation = None  # (from_user, asyncio.Future) when a chat invite is pending
     # What covers the screen, and redrawing what was missed under it (see input_output.screen_covered)
     self.popup_depth = 0          # popups (show_message_box) open now
@@ -711,7 +710,7 @@ async def show_screen(user, path):
                                   fg=fg_ansi, fg_br=fg_br, bg=bg_ansi, bg_br=bg_br)
   else:
     from ansi_emulator import AnsiEmulator
-    emu = AnsiEmulator(user)
+    emu = AnsiEmulator(user, live=False)  # (into user.screen only: no terminal modes)
     emu.feed(data.decode('cp437', errors='replace'))
   await _render_screen_to_terminal(user)
 

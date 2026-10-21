@@ -124,7 +124,7 @@ Native doors skip DOSBox-X. A socket door (`DOOR32.SYS`) is bridged over TCP, an
 
 The BBS tracks cursor position and color state precisely:
 
-- `cur_*` properties reflect the actual terminal state. The BBS's own output updates them only through the `input_output.py` functions that write the sequences: `send()`, `ansi_move()`, `ansi_move_2()`, `ansi_cls()`, `ansi_set_region()`, `_ansi_color_write()`, `ansi_hide_cursor()`/`ansi_show_cursor()`. During a door, the ANSI emulator (`ansi_emulator.py`) sets them as the door's output moves the real cursor, and records the door's scroll region in `user.scroll_region_*` and its cursor visibility in `cur_show_cursor`.
+- `cur_*` properties reflect the actual terminal state. The BBS's own output updates them only through the `input_output.py` functions that write the sequences: `send()`, `ansi_move()`, `ansi_move_2()`, `ansi_cls()`, `ansi_set_region()`, `_ansi_color_write()`, `ansi_hide_cursor()`/`ansi_show_cursor()`. During a door, the ANSI emulator (`ansi_emulator.py`) sets them as the door's output moves the real cursor, and records the door's scroll region in `user.scroll_region_*` and its cursor visibility in `cur_show_cursor` (also on a full reset, `ESC c`). Rendering a screen file into `user.screen` uses the emulator with `live=False`, which records none of the terminal's modes, since none of them reaches the terminal.
 - A line feed in `send()` follows the scroll region (`ansi_set_region`) as the terminal does: at the region's bottom the region scrolls and the cursor stays
 - `new_*` properties stage pending changes (set by `ansi_move_deferred()`, `ansi_color()`)
 - `send()` compares new vs cur and emits minimal escape codes; `ansi_clear_line_end()` applies pending changes the same way before clearing the rest of the row
@@ -150,13 +150,15 @@ An ANSI emulator (`ansi_emulator.py`) maintains `user.screen` — a character-by
 
 ## Drawing on other users' screens
 
-Some activities draw on a user's screen from other users' tasks. In the teleconference, a message, a header change or the typing indicator reaches every member's screen from the task of whoever caused it. That goes through `teleconference._draw_on(target, draw)`:
+Some activities draw on a user's screen from other users' tasks. In the teleconference, a message, a header change or the typing indicator reaches every member's screen from the task of whoever caused it. That goes through `teleconference._draw_on(target, draw, needed)`:
 
 - It draws in one piece, under the target's write lock and inside `cursor_preserved`, so the target's own half-done output (cursor, colours, a staged move) carries on undisturbed.
 - While a popup (`user.popup_depth`) or an overlay (`user.screen_stack`, from `push_screen`) covers the target's screen (`input_output.screen_covered`), it draws nothing. Drawing then would go over the popup, and be lost when the popup restores what it covered. It marks the screen stale (`user.screen_stale`) instead.
-- When the popup or overlay closes, `screen_uncovered` calls `user.redraw_hook`, if the screen went stale meanwhile. The teleconference's hook redraws its whole screen: the layout, as much recent history as the chat area shows, and the half-typed input.
+- `needed()`, if given, is asked under the lock, once the screen is known to be uncovered. The typing indicator uses it to work out who is typing at drawing time, and to draw only when row 2 of `user.screen` doesn't already show that. Every keystroke in a channel gets there, so it rarely draws.
 
-The typing indicator compares the text it wants with what row 2 of `user.screen` shows, and draws only when they differ, which is rarely: every keystroke in a channel gets there.
+Each member has a log of the lines in their chat area (`member_lines`): channel messages, and lines sent to them alone, such as private messages, errors and `/help` output. `_display_message` adds a line to the log and draws it in one step under the member's lock, or only logs it while the screen is covered.
+
+When the popup or overlay closes normally (not on the way out of a disconnect), `screen_uncovered` calls `user.redraw_hook` if the screen went stale meanwhile. The teleconference's hook redraws its whole screen under the lock: the layout, then the newest lines of the member's log (as many as the chat area holds), then the half-typed input. `pop_screen` skips repainting its outdated snapshot when such a redraw is coming. A screen counts as covered until the popup or overlay has finished restoring it.
 
 ## Modem connections
 

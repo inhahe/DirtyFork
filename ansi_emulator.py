@@ -8,8 +8,12 @@ STATE_ESC_INTERMEDIATE = 3
 
 
 class AnsiEmulator:
-  def __init__(self, user):
+  def __init__(self, user, live=True):
+    """*live*: the output really reaches the terminal (a door's), so the modes
+    it sets that the BBS tracks (scroll region, cursor visibility) are
+    recorded in *user* too.  False to render into user.screen only."""
     self.user = user
+    self.live = live
     self.state = STATE_NORMAL
     self.csi_params = ""
     self.csi_intermediate = ""
@@ -316,6 +320,9 @@ class AnsiEmulator:
     self.scroll_top = 1
     self.scroll_bottom = u.screen_height
     self.origin_mode = False
+    if self.live:  # (RIS resets these on the terminal too)
+      u.scroll_region_top = u.scroll_region_bottom = None
+      u.cur_show_cursor = True
     self._clear_screen()
     self._sync_cursor()
 
@@ -409,7 +416,8 @@ class AnsiEmulator:
       if code == 7:
         self.user.cur_wrap = True
       elif code == 25:
-        self.user.cur_show_cursor = True  # (the door's; tracked so it can be undone after)
+        if self.live:
+          self.user.cur_show_cursor = True  # (the door's; tracked so it can be undone after)
       elif code == 6:
         self.origin_mode = True
         # Home cursor to top of scroll region
@@ -420,7 +428,8 @@ class AnsiEmulator:
       if code == 7:
         self.user.cur_wrap = False
       elif code == 25:
-        self.user.cur_show_cursor = False
+        if self.live:
+          self.user.cur_show_cursor = False
       elif code == 6:
         self.origin_mode = False
         self.user.cur_row = 1
@@ -660,8 +669,9 @@ class AnsiEmulator:
       self.scroll_bottom = u.screen_height
     # The BBS's own tracking (send's line feeds, cursor moves) follows the
     # region too, until ansi_reset_modes after the door
-    full = self.scroll_top == 1 and self.scroll_bottom == u.screen_height
-    u.scroll_region_top, u.scroll_region_bottom = (None, None) if full else (self.scroll_top, self.scroll_bottom)
+    if self.live:
+      full = self.scroll_top == 1 and self.scroll_bottom == u.screen_height
+      u.scroll_region_top, u.scroll_region_bottom = (None, None) if full else (self.scroll_top, self.scroll_bottom)
     # CUP to home after setting scroll region
     if self.origin_mode:
       u.cur_row = self.scroll_top

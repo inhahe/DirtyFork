@@ -212,6 +212,61 @@ class AfterADoor(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(user.cur_show_cursor)
 
 
+class Emulator(unittest.IsolatedAsyncioTestCase):
+    async def test_rendering_a_screen_file_leaves_the_terminal_tracking_alone(self):
+        from ansi_emulator import AnsiEmulator
+        user = _setup.make_user()
+        AnsiEmulator(user, live=False).feed("\x1b[1;23r\x1b[?25l")
+        self.assertEqual((user.scroll_region_top, user.scroll_region_bottom), (None, None))
+        self.assertTrue(user.cur_show_cursor)
+
+    async def test_a_door_s_full_reset_resets_what_is_tracked(self):
+        from ansi_emulator import AnsiEmulator
+        user = _setup.make_user()
+        AnsiEmulator(user).feed("\x1b[5;20r\x1b[?25l\x1bc")
+        self.assertEqual((user.scroll_region_top, user.scroll_region_bottom), (None, None))
+        self.assertTrue(user.cur_show_cursor)
+
+
+class Uncovering(unittest.IsolatedAsyncioTestCase):
+    async def test_overlay_over_a_stale_screen_leaves_the_repaint_to_the_activity(self):
+        user = _setup.make_user()
+        await io.ansi_move(user, 5, 1)
+        await io.send(user, "old text")
+        redrawn = []
+
+        async def redraw():
+            redrawn.append(1)
+
+        user.redraw_hook = redraw
+        await io.push_screen(user)
+        await io.ansi_cls(user)                              # the overlay
+        user.screen_stale = True                             # something was missed meanwhile
+        await io.pop_screen(user)
+        self.assertEqual(redrawn, [1])
+        self.assertEqual(row_text(user, 5), "")              # (the outdated picture not repainted)
+        self.assertEqual(user.screen_stack, [])
+
+    async def test_no_redraw_when_a_popup_ends_in_a_disconnect(self):
+        import input_fields
+        from definitions import Disconnected
+        user = _setup.make_user()
+        redrawn = []
+
+        async def redraw():
+            redrawn.append(1)
+
+        async def gone(user, *args, **kwargs):
+            raise Disconnected()
+
+        user.redraw_hook, user.screen_stale = redraw, True
+        with mock.patch.object(input_fields, "get_input_key", gone):
+            with self.assertRaises(Disconnected):
+                await input_fields.show_message_box(user, "Hello there")
+        self.assertEqual(redrawn, [])
+        self.assertEqual(user.popup_depth, 0)
+
+
 class Moves(unittest.IsolatedAsyncioTestCase):
     async def test_moving_down_out_of_a_scroll_region(self):
         user = _setup.make_user()

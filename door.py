@@ -756,7 +756,6 @@ exit
 async def _show_queued_popups(user):
     """Show all of *user*'s queued popups over the door, then clear the popup event."""
     from input_fields import show_message_box
-    user._in_popup = True
     try:
         while user.popup_queue:
             kwargs = user.popup_queue.pop(0)
@@ -765,7 +764,6 @@ async def _show_queued_popups(user):
                 user.popup_queue.clear()
                 break
     finally:
-        user._in_popup = False
         user.popup_event.clear()
 
 

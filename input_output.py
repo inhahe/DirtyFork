@@ -594,15 +594,10 @@ async def push_screen(user):
   user.screen_stack.append(_snapshot_screen(user))
   await ansi_set_region(user)  # the overlay gets the whole screen (pop_screen puts it back)
 
-async def pop_screen(user):
-  """Restore the most recently push_screen'd screen state. Repaints every
-  cell from the snapshot, then restores the scroll region, mouse reporting
-  and what save_cursor records (cursor, colours, autowrap, staged output).
-  No-op if the stack is empty."""
-  if not user.screen_stack:
-    return
-  snap = user.screen_stack.pop()
-
+async def _repaint_snapshot(user, snap):
+  """Put back the screen push_screen recorded in *snap*: every cell, then the
+  scroll region, mouse reporting and what save_cursor records (cursor,
+  colours, autowrap, staged output)."""
   # Clear the live stars active list BEFORE ansi_cls fires the post-cls
   # hook. Otherwise the hook would repaint chat-session stars onto the
   # freshly-cleared screen, and the snapshot redraw below skips default
@@ -660,7 +655,29 @@ async def pop_screen(user):
   # the stars that were visible before the overlay.
   if hasattr(user, '_stars_active') and user._stars_active is not None:
     user._stars_active[:] = snap.get('stars_active', [])
-  await screen_uncovered(user)
+
+async def pop_screen(user):
+  """Restore the most recently push_screen'd screen (_repaint_snapshot). If
+  the activity underneath missed output meanwhile and redraws itself anyway
+  (see screen_uncovered), only the modes are put back, not the outdated
+  picture.  No-op if the stack is empty."""
+  if not user.screen_stack:
+    return
+  snap = user.screen_stack[-1]
+  redraws_itself = (user.screen_stale and user.redraw_hook is not None
+                    and len(user.screen_stack) == 1 and user.popup_depth == 0)
+  try:
+    if redraws_itself:
+      if getattr(user, '_stars_active', None) is not None:
+        user._stars_active.clear()  # (the redraw clears the screen)
+      await ansi_set_region(user, *snap['region'])
+      await ansi_mouse_reporting(user, snap['mouse_reporting'])
+      await restore_cursor(user, snap['cursor'])
+    else:
+      await _repaint_snapshot(user, snap)
+  finally:
+    user.screen_stack.pop()  # (only now: until it is restored, the screen counts as covered)
+  await screen_uncovered(user)  # (not on the way out of an exception)
 
 
 class _PopupInterrupt(Exception):
@@ -761,7 +778,7 @@ async def _drain_popup_queue(user):
   # Handle chat invitation if pending. In queue mode, suppress while another
   # popup is showing; in stack mode, always show (it stacks on top).
   inv = getattr(user, '_chat_invitation', None)
-  if inv and (POPUP_STACK or not user._in_popup):
+  if inv and (POPUP_STACK or user.popup_depth == 0):
     from oneonone import _handle_invitation, run_invitee_overlay
     # Snapshot the underlying activity's screen and cursor BEFORE the
     # invitation prompt overwrites the bottom row, so a later pop_screen
@@ -778,25 +795,19 @@ async def _drain_popup_queue(user):
 
   if not user.popup_queue:
     return
-  if not POPUP_STACK and user._in_popup:
-    return
+  if not POPUP_STACK and user.popup_depth > 0:
+    return  # (queue mode: one popup at a time)
 
-  if not POPUP_STACK:
-    user._in_popup = True
-  try:
-    from input_fields import show_message_box
-    while user.popup_queue:
-      kwargs = user.popup_queue.pop(0)
-      # In stack mode, queued popups become stacked popups, so the
-      # "Abort All (n)" hint is meaningless — suppress it.
-      qc = 0 if POPUP_STACK else len(user.popup_queue)
-      r = await show_message_box(user, queued_count=qc, **kwargs)
-      if r == "abort":
-        user.popup_queue.clear()
-        break
-  finally:
-    if not POPUP_STACK:
-      user._in_popup = False
+  from input_fields import show_message_box
+  while user.popup_queue:
+    kwargs = user.popup_queue.pop(0)
+    # In stack mode, queued popups become stacked popups, so the
+    # "Abort All (n)" hint is meaningless — suppress it.
+    qc = 0 if POPUP_STACK else len(user.popup_queue)
+    r = await show_message_box(user, queued_count=qc, **kwargs)
+    if r == "abort":
+      user.popup_queue.clear()
+      break
 
 async def get_input_key(user, window_size=0.02, char_threshold=2, batch_pause=0.03):
   while True:
