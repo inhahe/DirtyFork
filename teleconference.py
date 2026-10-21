@@ -14,7 +14,7 @@ from definitions import (
 )
 from input_output import (
     send, ansi_move_deferred, ansi_color, ansi_wrap, ansi_cls, get_input_key,
-    ansi_set_region, ansi_set_region_strict,
+    ansi_set_region, ansi_set_region_strict, ansi_clear_line_end,
 )
 from keyboard_codes import left, right, home, end, back, delete, up, down, pgup, pgdn
 
@@ -100,7 +100,7 @@ async def _display_message(target, parts, chat_bottom):
         await send(target, text)
 
     # Clear to end of line (in case previous content was longer)
-    target.writer.write("\x1b[K")
+    await ansi_clear_line_end(target)
 
     # Restore cursor back to the input area
     await ansi_move_deferred(target, row=saved_row, col=saved_col)
@@ -243,7 +243,7 @@ async def _draw_typing_indicator(user, channel_key):
         text = text[:user.screen_width]
         ansi_color(user, fg=white, fg_br=False, bg=black)
         await send(user, text)
-    user.writer.write("\x1b[K")  # clear rest of line
+    await ansi_clear_line_end(user)  # the rest of the row
     await ansi_move_deferred(user, row=saved_r, col=saved_c, drain=True)
 
 
@@ -533,7 +533,7 @@ async def _process_command(user, line):
         for row in range(chat_top, chat_bot + 1):
             await ansi_move_deferred(user, row=row, col=1)
             ansi_color(user, fg=white, bg=black)
-            user.writer.write("\x1b[K")
+            await ansi_clear_line_end(user)
         # Re-position cursor in input area
         await ansi_move_deferred(user, row=_input_row(user), col=3, drain=True)
 
@@ -618,7 +618,7 @@ async def run(user, destination, menu_item=None):
             await send(user, prompt)
             ansi_color(user, fg=white, fg_br=False, bg=black)
             await send(user, visible)
-            user.writer.write("\x1b[K")  # clear to end of line
+            await ansi_clear_line_end(user)  # clear to end of line
             display_col = len(prompt) + (cursor_pos - scroll_off) + 1
             await ansi_move_deferred(user, row=input_row, col=display_col, drain=True)
 

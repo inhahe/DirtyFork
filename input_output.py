@@ -232,6 +232,20 @@ async def ansi_show_cursor(user, drain=False):
       if drain:
         await user.writer.drain()
 
+async def ansi_mouse_reporting(user, on=True, drain=False, force=False):
+  """Turn the terminal's mouse reporting on or off: clicks (ESC[?1000h) and
+  drags (ESC[?1002h), which keyboard_codes parses into click keys.
+
+  user.mouse_reporting tracks the state, and nothing is sent when it is
+  already *on* -- unless *force*, for a terminal whose state isn't known
+  (a door's output reaches it untracked)."""
+  async with user.write_lock:
+    if force or user.mouse_reporting != on:
+      user.writer.write("\x1b[?1000h\x1b[?1002h" if on else "\x1b[?1002l\x1b[?1000l")
+      user.mouse_reporting = on
+    if drain:
+      await user.writer.drain()
+
 async def ansi_left(user, val=1, drain=False):
   assert val >= 0
   user.new_col = max(user.new_col-val, 1)
@@ -398,10 +412,24 @@ async def ansi_cls(user, fg=None, bg=None, fg_br=None, bg_br=None):
       except Exception:
         pass
 
-async def ansi_del_to_end(user, drain=False):
+async def ansi_clear_line_end(user, drain=False):
+  """Clear from the cursor to the end of its row (ESC[K), on the terminal
+  and in user.screen.
+
+  A pending move and colour (ansi_move_deferred, ansi_color) are applied
+  first, as send() applies them, so this clears where the next text would
+  go, in its background colour.  Right after text that filled its row to
+  the last column nothing is cleared: there is nothing to its right, and
+  the terminal's cursor may still be on that row (see _send_locked)."""
   async with user.write_lock:
-    user.writer.write("\x1b[J")
-    user.screen[user.cur_row] = user.screen[user.cur_row][:user.cur_col]
+    if not (user._wrap_ambiguous and (user.new_row, user.new_col) == (user.cur_row, user.cur_col)):
+      await _ansi_move_2_locked(user)
+      _ansi_color_write(user)
+      user.writer.write("\x1b[K")
+      if user.screen and 0 < user.cur_row <= len(user.screen):
+        row = user.screen[user.cur_row - 1]
+        for c in range(user.cur_col - 1, len(row)):
+          row[c] = _blank_cell(user)
     if drain:
       await user.writer.drain()
 
@@ -536,12 +564,7 @@ async def pop_screen(user):
   ansi_color(user, fg=snap['cur_fg'], fg_br=snap['cur_fg_br'],
              bg=snap['cur_bg'], bg_br=snap['cur_bg_br'])
 
-  if snap['mouse_reporting'] and not user.mouse_reporting:
-    user.writer.write("\x1b[?1000h\x1b[?1002h")
-    user.mouse_reporting = True
-  elif not snap['mouse_reporting'] and user.mouse_reporting:
-    user.writer.write("\x1b[?1000l\x1b[?1002l")
-    user.mouse_reporting = False
+  await ansi_mouse_reporting(user, snap['mouse_reporting'])
 
   await ansi_move(user, snap['cur_row'] or 1, snap['cur_col'] or 1, drain=True)
 

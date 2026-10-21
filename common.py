@@ -709,6 +709,9 @@ async def show_screen(user, path):
   await _render_screen_to_terminal(user)
 
 async def get_screen_size(user):
+   # Writes straight to the terminal: there is no screen to track yet (its
+   # size is what this finds out), and setup_terminal's ansi_cls afterwards
+   # sets the tracking.
    user.writer.write("Detecting screen size...")
    user.writer.write("\x1b[999;999H\x1b[6n")
    await user.writer.drain()
@@ -1099,8 +1102,7 @@ async def user_director(user, next_destination, menu_item=null):
 
   # Reset mouse reporting and colors before each destination (in case previous one didn't clean up)
   async with user.write_lock:
-    user.writer.write("\x1b[?1002l\x1b[?1000l")
-    user.mouse_reporting = False
+    await ansi_mouse_reporting(user, False, force=True)
     ansi_color(user, drain=True)
 
   # Access granted — run the destination

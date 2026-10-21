@@ -367,10 +367,11 @@ During connection setup, the BBS detects the terminal type via telnet TTYPE nego
 
 The BBS tracks cursor position and color state precisely:
 
-- `cur_*` properties reflect the actual terminal state (updated only by `send()`, `ansi_move_2()`, `_ansi_color_write()`)
-- `new_*` properties stage pending changes (set by `ansi_move()`, `ansi_color()`)
-- `send()` compares new vs cur and emits minimal escape codes
-- Raw ANSI writes and manual `cur_*` assignments are never used directly
+- `cur_*` properties reflect the actual terminal state (updated only by the `input_output.py` functions that write the sequences: `send()`, `ansi_move()`, `ansi_move_2()`, `ansi_cls()`, `ansi_set_region()`, `_ansi_color_write()`, `ansi_hide_cursor()`/`ansi_show_cursor()`)
+- `new_*` properties stage pending changes (set by `ansi_move_deferred()`, `ansi_color()`)
+- `send()` compares new vs cur and emits minimal escape codes; `ansi_clear_line_end()` applies pending changes the same way before clearing the rest of the row
+- Mouse reporting is switched with `ansi_mouse_reporting()`, which tracks it in `user.mouse_reporting`; `user_director` forces it off before each destination, since a door's output reaches the terminal untracked
+- Raw ANSI writes and manual `cur_*` assignments are never used directly (the one exception, the screen-size probe in `setup_terminal`, runs before there is a screen to track)
 
 ### Screen Buffer
 

@@ -437,9 +437,7 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
 
   # Enable mouse reporting for clickable elements, hide cursor
   saved_mouse = user.mouse_reporting
-  if not saved_mouse:
-    user.writer.write("\x1b[?1000h\x1b[?1002h")
-    user.mouse_reporting = True
+  await ansi_mouse_reporting(user, True)
   await ansi_hide_cursor(user, drain=True)
 
   # Initial draw
@@ -567,9 +565,7 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
       break
 
   # Restore mouse reporting state, show cursor again
-  if not saved_mouse:
-    user.writer.write("\x1b[?1002l\x1b[?1000l")
-    user.mouse_reporting = False
+  await ansi_mouse_reporting(user, saved_mouse)
   await ansi_show_cursor(user)
 
   # Restore the screen area from saved data
@@ -1211,10 +1207,7 @@ class InputFields:
   async def run(self, start_index=0):
     """Run the input fields form.
     start_index: which field to activate first (0-based index into self.fields)."""
-    # Enable mouse click reporting (normal tracking mode: ESC[?1000h)
-    self.user.writer.write("\x1b[?1000h\x1b[?1002h")
-    self.user.mouse_reporting = True
-    await self.user.writer.drain()
+    await ansi_mouse_reporting(self.user, True, drain=True)
 
     try:
       # Draw all fields and buttons in their initial (inactive) state
@@ -1273,10 +1266,7 @@ class InputFields:
         elif r.key == right or r.key == down:
           current_index = self._next_index(current_index)
     finally:
-      # Disable mouse click reporting
-      self.user.writer.write("\x1b[?1002l\x1b[?1000l")
-      self.user.mouse_reporting = False
-      await self.user.writer.drain()
+      await ansi_mouse_reporting(self.user, False, drain=True)
 
 
 class Line:

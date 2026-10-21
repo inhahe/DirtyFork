@@ -648,9 +648,7 @@ async def do_menu(user, menu_name_or_node):
     effective_prefixes = _compute_min_prefixes(effective_keys)
 
   # Enable mouse click reporting
-  user.writer.write("\x1b[?1000h\x1b[?1002h")
-  user.mouse_reporting = True
-  await user.writer.drain()
+  await ansi_mouse_reporting(user, True, drain=True)
 
   try:
     error_msg = None
@@ -1142,6 +1140,4 @@ async def do_menu(user, menu_name_or_node):
 
   finally:
     # Disable mouse click reporting
-    user.writer.write("\x1b[?1002l\x1b[?1000l")
-    user.mouse_reporting = False
-    await user.writer.drain()
+    await ansi_mouse_reporting(user, False, drain=True)
