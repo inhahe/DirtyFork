@@ -4,5 +4,6 @@ ruamel.yaml
 telnetlib3
 pyserial-asyncio
 bcrypt
-pandas
+# for lib/ymodem (YMODEM-G transfers; lib/ is kept out of the repo)
+ordered-set
 
