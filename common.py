@@ -253,12 +253,16 @@ class User:
     self.ttype = "unknown"    # terminal type string from TTYPE negotiation
     self.in_door = False      # True while user is in a door game
     self.mouse_reporting = False  # True when mouse button-event tracking (ESC[?1002h) is active
-    self._wrap_ambiguous = False  # True after writing to last column (deferred vs immediate wrap unknown)
+    self._pos_uncertain = False  # True when the terminal's cursor may not be where it is tracked
+                                 # (after writing the last column, or setting the scroll region):
+                                 # the next move is sent absolutely
+    self._row_full = False        # True while the last output filled its row through the last column
     self.popup_notify = asyncio.Event()  # set when a popup is queued, to interrupt reader.read()
     self.popup_event = None   # asyncio.Event set when a popup needs to interrupt the door bridge
     self.popup_queue = []     # queued popups waiting to show (list of kwarg dicts)
     self._in_popup = False    # True while a popup is being displayed
     self._chat_invitation = None  # (from_user, asyncio.Future) when a chat invite is pending
+    self._typing_shown = None     # teleconference: the typing indicator now on row 2 (None: unknown)
     self._chat_session_ready = None  # asyncio.Event set when the inviter has constructed a ChatSession for this user
     self._source_menu = None      # MenuNode the user was in when entering a module
     self._option_menu = None      # MenuNode whose option the user picked last (the menu it is listed in)
@@ -1099,9 +1103,11 @@ async def user_director(user, next_destination, menu_item=null):
       return RetVals(status=fail, err_msg=err_msg,
                      next_destination=fallback, next_menu_item=null)
 
-  # Reset mouse reporting and colors before each destination (in case previous one didn't clean up)
+  # Reset mouse reporting, the cursor's visibility and colors before each
+  # destination (in case the previous one didn't clean up)
   async with user.write_lock:
     await ansi_mouse_reporting(user, False, force=True)
+    await ansi_show_cursor(user)
     ansi_color(user, drain=True)
 
   # Access granted — run the destination

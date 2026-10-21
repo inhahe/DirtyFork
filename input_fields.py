@@ -260,6 +260,8 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     if scrollable:
       _h_parts.append("Up/Down")
     _h_parts.append("Left/Right")
+    if queued_count > 0:
+      _h_parts.append(f"A: Abort All ({queued_count})")  # (no bottom prompt in this layout)
     _h_parts.append("any key to close")
     _h_prompt = ", ".join(_h_parts)
   else:
@@ -276,7 +278,8 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     close_str = "[" + close_char + "]"
     close_btn_col = save_left + inner_width - 2  # 1-based screen col of '['
     await ansi_move_deferred(user, row=save_top, col=save_left, drain=False)
-    title_str = str(title)[:inner_width - 5] if title and title is not null else ""
+    # (the titled border is tl, horiz, space, title, space, fill, [■], tr: inner_width + 2 wide)
+    title_str = str(title)[:max(0, inner_width - 6)] if title and title is not null else ""
 
     if h_scrollable and _h_prompt:
       # tl + ─ + space + title + space + ─*fill + space + prompt + space + [■] + tr
@@ -415,12 +418,10 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
         await send(user, abort_suffix, drain=False)
       else:
         await send(user, prompt_text, drain=False)
-    # Track abort click region
-    if abort_text:
-      abort_offset = prompt_text.rfind(abort_text)
-      abort_col_start = prompt_col + abort_offset
-      abort_col_end = abort_col_start + len(abort_text) - 1
-      abort_row = prompt_row
+      if abort_text:  # its click region
+        abort_col_start = prompt_col + prompt_text.rfind(abort_text)
+        abort_col_end = abort_col_start + len(abort_text) - 1
+        abort_row = prompt_row
 
     # Position cursor: inside the box top-left if scrollable, otherwise hidden
     if scrollable:
@@ -433,151 +434,149 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
 
   # Enable mouse reporting for clickable elements, hide cursor
   saved_mouse = user.mouse_reporting
-  await ansi_mouse_reporting(user, True)
-  await ansi_hide_cursor(user, drain=True)
+  result = None
+  try:
+    await ansi_mouse_reporting(user, True)
+    await ansi_hide_cursor(user, drain=True)
 
-  # Initial draw
-  await _draw_box()
+    # Initial draw
+    await _draw_box()
 
-  # Input loop — scroll on up/down/left/right/pgup/pgdn, dismiss on anything else
-  while True:
-    key = await get_input_key(user)
-    handled = False
-    if key == up:
-      if scrollable and scroll_offset > 0:
-        scroll_offset -= 1
-        await _draw_box()
-        handled = True
-    elif key == down:
-      if scrollable and scroll_offset < total_lines - height:
-        scroll_offset += 1
-        await _draw_box()
-        handled = True
-    elif key == left:
-      if h_scrollable and h_scroll > 0:
-        h_scroll = max(0, h_scroll - h_step)
-        await _draw_box()
-        handled = True
-    elif key == right:
-      if h_scrollable:
-        max_h_off = max_line_width - inner_width
-        if h_scroll < max_h_off:
-          h_scroll = min(max_h_off, h_scroll + h_step)  # snaps to end on last step
+    # Input loop — scroll on up/down/left/right/pgup/pgdn, dismiss on anything else
+    while True:
+      key = await get_input_key(user)
+      handled = False
+      if key == up:
+        if scrollable and scroll_offset > 0:
+          scroll_offset -= 1
           await _draw_box()
           handled = True
-    elif key == pgup:
-      if scrollable:
-        scroll_offset = max(0, scroll_offset - height)
-        await _draw_box()
-        handled = True
-    elif key == pgdn:
-      if scrollable:
-        scroll_offset = min(total_lines - height, scroll_offset + height)
-        await _draw_box()
-        handled = True
-    elif key == home:
-      if h_scrollable or scrollable:
+      elif key == down:
+        if scrollable and scroll_offset < total_lines - height:
+          scroll_offset += 1
+          await _draw_box()
+          handled = True
+      elif key == left:
+        if h_scrollable and h_scroll > 0:
+          h_scroll = max(0, h_scroll - h_step)
+          await _draw_box()
+          handled = True
+      elif key == right:
         if h_scrollable:
-          h_scroll = 0
+          max_h_off = max_line_width - inner_width
+          if h_scroll < max_h_off:
+            h_scroll = min(max_h_off, h_scroll + h_step)  # snaps to end on last step
+            await _draw_box()
+            handled = True
+      elif key == pgup:
         if scrollable:
-          scroll_offset = 0
-        await _draw_box()
-        handled = True
-    elif key == end:
-      if h_scrollable or scrollable:
-        if h_scrollable:
-          h_scroll = max(0, max_line_width - inner_width)
+          scroll_offset = max(0, scroll_offset - height)
+          await _draw_box()
+          handled = True
+      elif key == pgdn:
         if scrollable:
-          scroll_offset = max(0, total_lines - height)
-        await _draw_box()
-        handled = True
-    # Mouse click / drag
-    if not handled and key == click:
-      btn = getattr(key, 'button', None)
-      is_motion = getattr(key, 'motion', False)
-      if btn == left:
-        cr_click, cc_click = key.row, key.col
-        # Close button [■] on top border
-        if not is_motion and cr_click == save_top and close_btn_col <= cc_click <= close_btn_col + 2:
-          result = None
-          break
-        # Abort All text on prompt row
-        if not is_motion and queued_count > 0 and abort_text and cr_click == abort_row and abort_col_start <= cc_click <= abort_col_end:
+          scroll_offset = min(total_lines - height, scroll_offset + height)
+          await _draw_box()
+          handled = True
+      elif key == home:
+        if h_scrollable or scrollable:
+          if h_scrollable:
+            h_scroll = 0
+          if scrollable:
+            scroll_offset = 0
+          await _draw_box()
+          handled = True
+      elif key == end:
+        if h_scrollable or scrollable:
+          if h_scrollable:
+            h_scroll = max(0, max_line_width - inner_width)
+          if scrollable:
+            scroll_offset = max(0, total_lines - height)
+          await _draw_box()
+          handled = True
+      # Mouse click / drag
+      if not handled and key == click:
+        btn = getattr(key, 'button', None)
+        is_motion = getattr(key, 'motion', False)
+        if btn == left:
+          cr_click, cc_click = key.row, key.col
+          # Close button [■] on top border
+          if not is_motion and cr_click == save_top and close_btn_col <= cc_click <= close_btn_col + 2:
+            result = None
+            break
+          # Abort All text on prompt row
+          if not is_motion and abort_row and cr_click == abort_row and abort_col_start <= cc_click <= abort_col_end:
+            result = "abort"
+            break
+          # Vertical scrollbar — click or drag
+          if scrollable and cc_click == save_right:
+            scroll_top_row = save_top + 1  # first content row (arrow up)
+            scroll_bot_row = save_top + height  # last content row (arrow down)
+            if not is_motion and cr_click == scroll_top_row and scroll_offset > 0:
+              # Click on up arrow
+              scroll_offset = max(0, scroll_offset - 1)
+              await _draw_box()
+            elif not is_motion and cr_click == scroll_bot_row and scroll_offset < max_offset:
+              # Click on down arrow
+              scroll_offset = min(max_offset, scroll_offset + 1)
+              await _draw_box()
+            elif cr_click > scroll_top_row and cr_click < scroll_bot_row:
+              # Click or drag on track — map position to scroll offset
+              track_click = cr_click - scroll_top_row - 1  # 0-based track position
+              track_height_val = height - 2
+              if track_height_val > 0 and max_offset > 0:
+                scroll_offset = round(track_click / max(1, track_height_val - 1) * max_offset)
+                scroll_offset = max(0, min(scroll_offset, max_offset))
+                await _draw_box()
+          # Horizontal scrollbar — click or drag
+          if h_scrollable and cr_click == save_bottom:
+            h_arrow_left_col = save_left + 1
+            h_arrow_right_col = save_left + 2 + (inner_width - 2)
+            h_track_left = h_arrow_left_col + 1
+            h_track_right = h_arrow_right_col - 1
+            if not is_motion and cc_click == h_arrow_left_col and h_scroll > 0:
+              h_scroll = max(0, h_scroll - h_step)
+              await _draw_box()
+            elif not is_motion and cc_click == h_arrow_right_col and h_scroll < max_h_offset:
+              h_scroll = min(max_h_offset, h_scroll + h_step)
+              await _draw_box()
+            elif h_track_left <= cc_click <= h_track_right:
+              track_click = cc_click - h_track_left
+              h_track_width_val = inner_width - 2
+              if h_track_width_val > 0 and max_h_offset > 0:
+                raw = round(track_click / max(1, h_track_width_val - 1) * max_h_offset)
+                h_scroll = round(raw / h_step) * h_step  # snap to scroll step
+                h_scroll = max(0, min(h_scroll, max_h_offset))
+                await _draw_box()
+        handled = True  # consume all mouse events
+
+      if not handled:
+        # Up/Down/Left/Right that didn't scroll are consumed (don't dismiss)
+        if key in (up, down, left, right, pgup, pgdn, home, end):
+          continue
+        # Abort All
+        if queued_count > 0 and isinstance(key, str) and key.lower() == "a":
           result = "abort"
-          break
-        # Vertical scrollbar — click or drag
-        if scrollable and cc_click == save_right:
-          scroll_top_row = save_top + 1  # first content row (arrow up)
-          scroll_bot_row = save_top + height  # last content row (arrow down)
-          if not is_motion and cr_click == scroll_top_row and scroll_offset > 0:
-            # Click on up arrow
-            scroll_offset = max(0, scroll_offset - 1)
-            await _draw_box()
-          elif not is_motion and cr_click == scroll_bot_row and scroll_offset < max_offset:
-            # Click on down arrow
-            scroll_offset = min(max_offset, scroll_offset + 1)
-            await _draw_box()
-          elif cr_click > scroll_top_row and cr_click < scroll_bot_row:
-            # Click or drag on track — map position to scroll offset
-            track_click = cr_click - scroll_top_row - 1  # 0-based track position
-            track_height_val = height - 2
-            if track_height_val > 0 and max_offset > 0:
-              scroll_offset = round(track_click / max(1, track_height_val - 1) * max_offset)
-              scroll_offset = max(0, min(scroll_offset, max_offset))
-              await _draw_box()
-        # Horizontal scrollbar — click or drag
-        if h_scrollable and cr_click == save_bottom:
-          h_arrow_left_col = save_left + 1
-          h_arrow_right_col = save_left + 2 + (inner_width - 2)
-          h_track_left = h_arrow_left_col + 1
-          h_track_right = h_arrow_right_col - 1
-          if not is_motion and cc_click == h_arrow_left_col and h_scroll > 0:
-            h_scroll = max(0, h_scroll - h_step)
-            await _draw_box()
-          elif not is_motion and cc_click == h_arrow_right_col and h_scroll < max_h_offset:
-            h_scroll = min(max_h_offset, h_scroll + h_step)
-            await _draw_box()
-          elif h_track_left <= cc_click <= h_track_right:
-            track_click = cc_click - h_track_left
-            h_track_width_val = inner_width - 2
-            if h_track_width_val > 0 and max_h_offset > 0:
-              raw = round(track_click / max(1, h_track_width_val - 1) * max_h_offset)
-              h_scroll = round(raw / h_step) * h_step  # snap to scroll step
-              h_scroll = max(0, min(h_scroll, max_h_offset))
-              await _draw_box()
-      handled = True  # consume all mouse events
-
-    if not handled:
-      # Up/Down/Left/Right that didn't scroll are consumed (don't dismiss)
-      if key in (up, down, left, right, pgup, pgdn, home, end):
-        continue
-      # Abort All
-      if queued_count > 0 and isinstance(key, str) and key.lower() == "a":
-        result = "abort"
-      elif return_key:
-        result = key
-      else:
-        result = None
-      break
-
-  # Restore mouse reporting state (the cursor's visibility comes back below)
-  await ansi_mouse_reporting(user, saved_mouse)
-
-  # Restore the screen area from saved data
-  if need_nowrap:
-    ansi_wrap(user, False)
-  for ri, r in enumerate(range(save_top, save_bottom + 1)):
-    for ci, c in enumerate(range(save_left, save_right + 1)):
-      if 1 <= r <= user.screen_height and 1 <= c <= user.screen_width:
-        ch = saved[ri][ci]
-        await ansi_move_deferred(user, row=r, col=c, drain=False)
-        ansi_color(user, fg=ch.fg, fg_br=ch.fg_br, bg=ch.bg, bg_br=ch.bg_br)
-        await send(user, ch.char, drain=False)
-
-  # Back to where the interrupted output was: cursor, colours, staged output
-  await restore_cursor(user, saved_cursor)
-  if need_nowrap:
-    ansi_wrap(user, True)
+        elif return_key:
+          result = key
+        else:
+          result = None
+        break
+  finally:
+    # Put back what the popup covered and interrupted, also when it is
+    # cancelled (a page arriving over the idle warning, say)
+    await ansi_mouse_reporting(user, saved_mouse)
+    if need_nowrap:
+      ansi_wrap(user, False)
+    for ri, r in enumerate(range(save_top, save_bottom + 1)):
+      for ci, c in enumerate(range(save_left, save_right + 1)):
+        if 1 <= r <= user.screen_height and 1 <= c <= user.screen_width:
+          ch = saved[ri][ci]
+          await ansi_move_deferred(user, row=r, col=c, drain=False)
+          ansi_color(user, fg=ch.fg, fg_br=ch.fg_br, bg=ch.bg, bg_br=ch.bg_br)
+          await send(user, ch.char, drain=False)
+    # cursor, colours, autowrap, staged output
+    await restore_cursor(user, saved_cursor)
 
   return result
 

@@ -1,4 +1,5 @@
 """input_output.py: helpers that write escape sequences, and the state they track."""
+import asyncio
 import unittest
 from unittest import mock
 
@@ -9,6 +10,28 @@ from definitions import blue, black, cyan, green
 
 def row_text(user, row):
     return "".join(ch.char for ch in user.screen[row - 1]).rstrip()
+
+
+def blank_screen(user):
+    return all(not row_text(user, r) for r in range(1, user.screen_height + 1))
+
+
+async def any_key(user, *args, **kwargs):
+    return " "
+
+
+class LineFeed(unittest.IsolatedAsyncioTestCase):
+    async def test_at_the_bottom_of_a_scroll_region(self):
+        user = _setup.make_user()
+        await io.ansi_move(user, 23, 1)
+        await io.send(user, "separator")                  # below the region
+        await io.ansi_set_region(user, 3, 22)
+        await io.ansi_move(user, 22, 1)
+        await io.send(user, "first")
+        await io.send(user, "\r\nsecond")                 # the region scrolls; the cursor stays
+        self.assertEqual(user.cur_row, 22)
+        self.assertEqual((row_text(user, 21), row_text(user, 22), row_text(user, 23)),
+                         ("first", "second", "separator"))
 
 
 class MouseReporting(unittest.IsolatedAsyncioTestCase):
@@ -40,6 +63,26 @@ class ClearLineEnd(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row_text(user, 5), "typing...")
         self.assertEqual(user.screen[0][10].bg, blue)             # in the pending background
         self.assertEqual(user.screen[0][9].bg, black)
+
+    async def test_wrap_off_full_row_keeps_its_last_character(self):
+        user = _setup.make_user()
+        io.ansi_wrap(user, False)
+        await io.ansi_move(user, 4, 1)
+        await io.send(user, "z" * user.screen_width)       # the cursor stays on the last column
+        user.writer.out.clear()
+        await io.ansi_clear_line_end(user)
+        self.assertNotIn("\x1b[K", user.writer.text())
+        self.assertEqual(row_text(user, 4), "z" * user.screen_width)
+
+    async def test_a_move_asked_for_after_a_full_row_is_honoured(self):
+        user = _setup.make_user()
+        await io.ansi_move(user, 4, 1)
+        await io.send(user, "old text")
+        await io.ansi_move(user, 3, 1)
+        await io.send(user, "y" * user.screen_width)       # tracked at (4, 1) now
+        await io.ansi_move_deferred(user, row=4, col=1)    # ... and asked for explicitly
+        await io.ansi_clear_line_end(user)
+        self.assertEqual(row_text(user, 4), "")
 
     async def test_nothing_to_clear_after_a_full_row(self):
         user = _setup.make_user()
@@ -93,6 +136,102 @@ class Popup(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(input_fields, "get_input_key", click_the_button):
             await input_fields.show_message_box(user, "Hello there")
         self.assertEqual(len(keys_read), 1)
+
+    async def test_a_cancelled_popup_still_restores(self):
+        import input_fields
+        user = _setup.make_user()
+        up = asyncio.Event()
+
+        async def no_key_yet(user, *args, **kwargs):
+            up.set()
+            await asyncio.sleep(3600)
+
+        with mock.patch.object(input_fields, "get_input_key", no_key_yet):
+            popup = asyncio.create_task(input_fields.show_message_box(user, "Hello there"))
+            await up.wait()
+            self.assertFalse(user.cur_show_cursor)
+            popup.cancel()                                   # (a page arriving, say)
+            with self.assertRaises(asyncio.CancelledError):
+                await popup
+        self.assertTrue(user.cur_show_cursor)
+        self.assertTrue(blank_screen(user))
+
+    async def test_popup_at_the_right_edge_restores_autowrap(self):
+        import input_fields
+        user = _setup.make_user()
+        io.ansi_wrap(user, False)                            # (as the teleconference runs)
+        with mock.patch.object(input_fields, "get_input_key", any_key):
+            await input_fields.show_message_box(user, "x", col=62, width=18)   # reaches column 80
+        self.assertFalse(user.cur_wrap)
+
+    async def test_longest_title_keeps_the_border_inside_the_box(self):
+        import input_fields
+        user = _setup.make_user()
+        with mock.patch.object(input_fields, "get_input_key", any_key):
+            await input_fields.show_message_box(user, "x", title="T" * 70)    # cut to fit
+        self.assertTrue(blank_screen(user))                  # (no corner left outside the box)
+
+    async def test_scrolling_sideways_with_popups_queued(self):
+        import input_fields
+        from definitions import Eint
+        from keyboard_codes import click, left
+        user = _setup.make_user()
+        keys = [Eint(click, button=left, row=1, col=1, motion=False, shift=False, alt=False,
+                     ctrl=False, wheel=None), " "]
+
+        async def click_then_key(user, *args, **kwargs):
+            return keys.pop(0)
+
+        with mock.patch.object(input_fields, "get_input_key", click_then_key):
+            await input_fields.show_message_box(user, "w" * 200, word_wrap=False, queued_count=2)
+        self.assertEqual(keys, [])
+
+
+class Moves(unittest.IsolatedAsyncioTestCase):
+    async def test_moving_down_out_of_a_scroll_region(self):
+        user = _setup.make_user()
+        await io.ansi_set_region(user, 3, 22)
+        await io.ansi_move(user, 22, 80)                     # the region's bottom margin
+        user.writer.out.clear()
+        await io.ansi_move_deferred(user, row=24, col=80, drain=True)   # to the input row
+        self.assertEqual(user.writer.text(), "\x1b[24;80H")  # (line feeds would scroll the region)
+        self.assertEqual((user.cur_row, user.cur_col), (24, 80))
+
+    async def test_moving_up_into_the_region_from_below_it(self):
+        user = _setup.make_user()
+        await io.ansi_set_region(user, 3, 22)
+        await io.ansi_move(user, 24, 5)
+        user.writer.out.clear()
+        await io.ansi_move_deferred(user, row=2, col=5, drain=True)     # above the region
+        self.assertEqual(user.writer.text(), "\x1b[2;5H")
+
+    async def test_short_moves_inside_the_region_stay_relative(self):
+        user = _setup.make_user()
+        await io.ansi_set_region(user, 3, 22)
+        await io.ansi_move(user, 10, 5)
+        user.writer.out.clear()
+        await io.ansi_move_deferred(user, row=12, col=5, drain=True)
+        self.assertEqual(user.writer.text(), "\n\n")
+
+
+class Overlay(unittest.IsolatedAsyncioTestCase):
+    async def test_overlay_gets_the_whole_screen_and_gives_everything_back(self):
+        user = _setup.make_user()
+        await io.ansi_set_region(user, 3, 22)
+        await io.ansi_move(user, 10, 4)
+        io.ansi_color(user, fg=cyan)
+        await io.ansi_color_2(user)
+        io.ansi_color(user, fg=green)
+        await io.ansi_move_deferred(user, row=12, col=6)
+        staged = (user.new_fg, user.new_fg_br, user.new_row, user.new_col)
+        await io.push_screen(user)
+        self.assertEqual((user.scroll_region_top, user.scroll_region_bottom), (None, None))
+        await io.ansi_cls(user)
+        await io.send(user, "the overlay")
+        await io.pop_screen(user)
+        self.assertEqual((user.scroll_region_top, user.scroll_region_bottom), (3, 22))
+        self.assertEqual((user.cur_row, user.cur_col, user.cur_fg), (10, 4, cyan))
+        self.assertEqual((user.new_fg, user.new_fg_br, user.new_row, user.new_col), staged)
 
 
 if __name__ == "__main__":

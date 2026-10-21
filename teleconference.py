@@ -14,7 +14,7 @@ from definitions import (
 )
 from input_output import (
     send, ansi_move_deferred, ansi_color, ansi_wrap, ansi_cls, get_input_key,
-    ansi_set_region, ansi_clear_line_end,
+    ansi_set_region, ansi_clear_line_end, cursor_preserved,
 )
 from keyboard_codes import left, right, home, end, back, delete
 
@@ -233,18 +233,25 @@ async def _draw_typing_indicator(user, channel_key):
         if u is not user and u in user_typing:
             if now - user_typing[u] < TYPING_TIMEOUT:
                 typers.append(u.handle)
-    saved_r, saved_c = user.new_row, user.new_col
-    await ansi_move_deferred(user, row=2, col=1)
-    if typers:
-        if len(typers) == 1:
-            text = f" {typers[0]} is typing..."
-        else:
-            text = f" {', '.join(typers)} are typing..."
-        text = text[:user.screen_width]
-        ansi_color(user, fg=white, fg_br=False, bg=black)
-        await send(user, text)
-    await ansi_clear_line_end(user)  # the rest of the row
-    await ansi_move_deferred(user, row=saved_r, col=saved_c, drain=True)
+    if not typers:
+        text = ""
+    elif len(typers) == 1:
+        text = f" {typers[0]} is typing..."
+    else:
+        text = f" {', '.join(typers)} are typing..."
+    text = text[:user.screen_width]
+    if text == user._typing_shown:
+        return  # (every keystroke in the channel gets here)
+    user._typing_shown = text
+    # Usually called from another member's task: draw in one piece, and leave
+    # this member's own output (cursor, colours, staged move) as it was
+    async with user.write_lock:
+        async with cursor_preserved(user, hide_cursor=True):
+            await ansi_move_deferred(user, row=2, col=1)
+            ansi_color(user, fg=white, fg_br=False, bg=black)
+            if text:
+                await send(user, text)
+            await ansi_clear_line_end(user)  # the rest of the row
 
 
 async def _broadcast_typing_indicator(channel_key):
@@ -274,6 +281,7 @@ async def _setup_screen(user, channel_key):
     ansi_wrap(user, False)
 
     await _draw_header(user, channel_key)
+    user._typing_shown = None  # (row 2 is blank: draw the indicator whatever it says)
     await _draw_typing_indicator(user, channel_key)
     await _draw_separator(user)
     await _draw_input_prompt(user)

@@ -7,7 +7,7 @@ Top half shows the other person's typing, bottom half is your own editor.
 
 import asyncio
 
-from input_output import send, ansi_move, ansi_move_deferred, ansi_color, ansi_cls, ansi_wrap, get_input_key
+from input_output import send, ansi_move, ansi_color, ansi_cls, ansi_wrap
 from input_fields import show_message_box
 from keyboard_codes import *
 from definitions import *
@@ -555,10 +555,11 @@ async def _handle_invitation(user):
       outline_fg=cyan, outline_fg_br=True,
       return_key=True,
     )
-    # Ignore mouse events / non-string keys — re-show the popup
-    if not isinstance(key, str):
+    # None: closed with its [■] button, a decline.  Other mouse events and
+    # non-string keys: re-show the popup.
+    if key is not None and not isinstance(key, str):
       continue
-    accepted = (key.lower() == 'y')
+    accepted = key is not None and key.lower() == 'y'
     if not future.done():
       future.set_result(accepted)
     return accepted
@@ -612,7 +613,7 @@ async def run(user, dest_conf, menu_item=None):
   """Module entry point — start a one-on-one chat.
   If user has a pending session (was invited and accepted), join it.
   Otherwise, prompt for a target handle and send an invitation."""
-  from common import Destinations, global_data
+  from common import Destinations
   from input_fields import InputField
 
   # Inviter flow — prompt for target

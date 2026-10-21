@@ -64,7 +64,7 @@ Menu options specify `option_defaults: {target: <module_dest>}`. When the user s
 ### user_director (Central Routing)
 
 All destination transitions go through `user_director`, which:
-1. Resets mouse reporting (forced: a door's output reaches the terminal untracked) and colors
+1. Resets mouse reporting (forced: a door's output reaches the terminal untracked), the cursor's visibility and colors
 2. Checks access keys: `check_keys` on the destination, and `check_menu_keys` for a submenu reached as a `MenuNode`
 3. On denied: shows a popup and finds a fallback destination
 4. On allowed: calls the destination
@@ -124,12 +124,17 @@ Native doors skip DOSBox-X. A socket door (`DOOR32.SYS`) is bridged over TCP, an
 
 The BBS tracks cursor position and color state precisely:
 
-- `cur_*` properties reflect the actual terminal state (updated only by the `input_output.py` functions that write the sequences: `send()`, `ansi_move()`, `ansi_move_2()`, `ansi_cls()`, `ansi_set_region()`, `_ansi_color_write()`, `ansi_hide_cursor()`/`ansi_show_cursor()`)
+- `cur_*` properties reflect the actual terminal state. The BBS's own output updates them only through the `input_output.py` functions that write the sequences: `send()`, `ansi_move()`, `ansi_move_2()`, `ansi_cls()`, `ansi_set_region()`, `_ansi_color_write()`, `ansi_hide_cursor()`/`ansi_show_cursor()`. During a door, the ANSI emulator (`ansi_emulator.py`) sets them as the door's output moves the real cursor.
+- A line feed in `send()` follows the scroll region (`ansi_set_region`) as the terminal does: at the region's bottom the region scrolls and the cursor stays
 - `new_*` properties stage pending changes (set by `ansi_move_deferred()`, `ansi_color()`)
 - `send()` compares new vs cur and emits minimal escape codes; `ansi_clear_line_end()` applies pending changes the same way before clearing the rest of the row
-- After text that fills a row to the last column, the cursor's position differs between terminals (deferred or immediate wrap): it is tracked as the start of the next row with `_wrap_ambiguous` set, and the next move is sent as an absolute position
+- After text that fills a row to the last column, the cursor's position differs between terminals (deferred or immediate wrap): it is tracked as the start of the next row with `_pos_uncertain` set, and the next move is sent as an absolute position (the same after setting a scroll region, which homes the cursor on some terminals and not on others). With autowrap off the cursor stays on that last column. Either way `_row_full` is set until something moves the cursor, so `ansi_clear_line_end()` then clears nothing (an `ESC[K` there would erase the character just written)
 - Mouse reporting is switched with `ansi_mouse_reporting()`, which tracks it in `user.mouse_reporting`
-- Raw ANSI writes and manual `cur_*` assignments are never used directly (the one exception, the screen-size probe in `setup_terminal`, runs before there is a screen to track)
+- Everything the BBS draws goes through those functions; nothing else assigns `cur_*`. What reaches `user.writer` directly is output the tracking doesn't cover:
+  - a door's output (passed through by `door.py`'s output pump and tracked by the emulator);
+  - file-transfer protocol data and the transfer's status lines (`file_transfer.py`);
+  - notices sent just before a connection is closed (idle timeout, a login from elsewhere, shutdown);
+  - the screen-size probe in `setup_terminal`, which runs before there is a screen to track.
 - `user.write_lock` (re-entrant) serializes writes to `user.writer`, so background tasks such as the stars never interleave with other output
 
 ### Screen Buffer
@@ -141,7 +146,7 @@ An ANSI emulator (`ansi_emulator.py`) maintains `user.screen` — a character-by
 
 ### Ambient Stars
 
-`stars.stars_loop` runs per connection. It reads the settings on every tick: the system's `stars.enabled` is the master switch, and a user's `show_stars` can only turn stars off. Stars still on screen are erased when they switch off. Each tick draws under `user.write_lock`, inside `input_output.cursor_preserved`, which saves and restores the tracked cursor, the colours (both current and pending), a staged move, the wrap state and the cursor's visibility, so the BBS's own output is undisturbed; popups (`show_message_box`) restore the same state with `save_cursor`/`restore_cursor`. New stars are sampled with geometric gaps (`_chosen_cells`) rather than with a random number per cell. `ansi_cls` calls a hook that repaints the stars still active, and nothing is drawn while the caller is in a door.
+`stars.stars_loop` runs per connection. It reads the settings on every tick: the system's `stars.enabled` is the master switch, and a user's `show_stars` can only turn stars off. Stars still on screen are erased when they switch off. A tick first works out what to draw; one that has something draws it under `user.write_lock`, inside `input_output.cursor_preserved`, which saves and restores the tracked cursor, the colours (both current and pending), a staged move, the wrap state and the cursor's visibility, so the BBS's own output is undisturbed, and an idle tick writes nothing; popups (`show_message_box`) restore the same state with `save_cursor`/`restore_cursor`. New stars are sampled with geometric gaps (`_chosen_cells`) rather than with a random number per cell. `ansi_cls` calls a hook that repaints the stars still active, and nothing is drawn while the caller is in a door.
 
 ## Modem connections
 

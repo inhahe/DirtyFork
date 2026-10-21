@@ -85,6 +85,12 @@ class Drawing(unittest.IsolatedAsyncioTestCase):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
 
+    async def test_an_idle_tick_writes_nothing(self):
+        user = _setup.make_user()
+        async with user.write_lock:
+            await stars._tick(user, [], 4, False, 0.0, 100)   # no stars, none to spawn
+        self.assertEqual(user.writer.text(), "")
+
     async def test_repaint_after_clear_only_while_wanted(self):
         user = _setup.make_user()
         user._stars_active = [(2, 2, 0, 0.0, 4, False)]

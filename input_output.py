@@ -44,9 +44,24 @@ def _blank_cell(user):
   terminal actually shows when CLS or scroll fills with the current bg."""
   return Char(' ', user.cur_fg, user.cur_fg_br, user.cur_bg, user.cur_bg_br)
 
-def emu_scroll(user): # todo: add scroll region paramaters?
-  del user.screen[0]
-  user.screen.append([_blank_cell(user) for _ in range(user.screen_width)])
+def emu_scroll(user, top=1, bottom=None):
+  """Scroll rows *top* to *bottom* (1-based, inclusive; the whole screen by
+  default) of user.screen up a line, as the terminal does."""
+  bottom = bottom or len(user.screen)
+  del user.screen[top - 1]
+  user.screen.insert(bottom - 1, [_blank_cell(user) for _ in range(user.screen_width)])
+
+def _line_feed(user):
+  """Move the tracked cursor down a line as the terminal does: at the bottom
+  of the scroll region (the whole screen if none is set) the region scrolls
+  up and the cursor stays; anywhere else it moves down, stopping at the last
+  row (below a region nothing scrolls)."""
+  bottom = user.scroll_region_bottom or user.screen_height
+  if user.cur_row == bottom:
+    if user.screen:
+      emu_scroll(user, user.scroll_region_top or 1, bottom)
+  elif user.cur_row < user.screen_height:
+    user.cur_row += 1
 
 def emu_clear(user):
   for x in range(len(user.screen)):
@@ -74,6 +89,8 @@ async def _send_locked(user, message, drain):
   if drain:
     await user.writer.drain()
   for char in message:
+    if char != "\x00":
+      user._row_full = False
     if char=="\x00":
       pass
     elif char=="\x08":
@@ -81,10 +98,7 @@ async def _send_locked(user, message, drain):
     elif char=="\x09":
       user.cur_col = (user.cur_col//8)*8+8
     elif char=="\x0a":
-      if user.cur_row < user.screen_height:
-        user.cur_row += 1
-      else:
-        emu_scroll(user)
+      _line_feed(user)
     elif char=="\x0c":
       emu_clear(user)
       user.cur_col = user.cur_row = 1
@@ -95,6 +109,7 @@ async def _send_locked(user, message, drain):
         return
       if user.screen and 0 < user.cur_row <= len(user.screen) and 0 < user.cur_col <= len(user.screen[0]):
         user.screen[user.cur_row-1][user.cur_col-1] = Char(char, fg=user.cur_fg, fg_br=user.cur_fg_br, bg=user.cur_bg, bg_br=user.cur_bg_br)
+      user._row_full = user.cur_col == user.screen_width
       if not user.cur_wrap:
         user.cur_col = min(user.cur_col+1, user.screen_width)
       else:
@@ -103,12 +118,9 @@ async def _send_locked(user, message, drain):
           # deferred-wrap terminals keep cursor at col 80, immediate-wrap terminals
           # move to col 1 of the next row. We track as wrapped (col 1, next row)
           # and set a flag so ansi_move_2 uses absolute positioning next time.
-          if user.cur_row==user.screen_height:
-            emu_scroll(user)
-          else:
-            user.cur_row += 1
+          _line_feed(user)
           user.cur_col = 1
-          user._wrap_ambiguous = True
+          user._pos_uncertain = True
         else:
           user.cur_col += 1
   # Keep new_row/new_col in sync so the next send() doesn't reposition backwards
@@ -213,7 +225,7 @@ async def ansi_move(user, row, col, drain=False):
     user.writer.write(f"\x1b[{row};{col}H")
     user.cur_row = user.new_row = row
     user.cur_col = user.new_col = col
-    user._wrap_ambiguous = False
+    user._pos_uncertain = user._row_full = False
     if drain:
       await user.writer.drain()
 
@@ -249,21 +261,23 @@ async def ansi_mouse_reporting(user, on=True, drain=False, force=False):
 
 def save_cursor(user):
   """Record, for restore_cursor, what output in progress depends on besides
-  the screen's contents: the terminal's cursor position, colour and cursor
-  visibility, and what has been staged but not sent yet (the pending colour
-  from ansi_color and move from ansi_move_deferred)."""
+  the screen's contents: the terminal's cursor position, colour, cursor
+  visibility and autowrap, and what has been staged but not sent yet (the
+  pending colour from ansi_color and move from ansi_move_deferred)."""
   return (user.cur_row, user.cur_col, user.new_row, user.new_col,
           (user.cur_fg, user.cur_bg, user.cur_fg_br, user.cur_bg_br),
           (user.new_fg, user.new_bg, user.new_fg_br, user.new_bg_br),
-          getattr(user, '_wrap_ambiguous', False), getattr(user, 'cur_show_cursor', True))
+          getattr(user, '_pos_uncertain', False), getattr(user, 'cur_show_cursor', True),
+          getattr(user, 'cur_wrap', True), getattr(user, '_row_full', False))
 
 async def restore_cursor(user, saved, drain=True):
   """Put back what save_cursor(user) returned as *saved*: the terminal's colour,
-  cursor position and visibility, then the pending colour and move, so the
+  autowrap, cursor position and visibility, then the pending colour and move, so the
   output that was interrupted (by a popup, a star) carries on undisturbed.
   With *drain*, flushes (and ignores a caller who has gone)."""
-  cur_row, cur_col, new_row, new_col, cur_colour, new_colour, wrap_ambiguous, shown = saved
+  cur_row, cur_col, new_row, new_col, cur_colour, new_colour, pos_uncertain, shown, wrap, row_full = saved
   async with user.write_lock:
+    ansi_wrap(user, wrap)
     fg, bg, fg_br, bg_br = cur_colour
     ansi_color(user, fg=fg, bg=bg, fg_br=fg_br, bg_br=bg_br)
     await ansi_color_2(user)
@@ -271,7 +285,7 @@ async def restore_cursor(user, saved, drain=True):
     fg, bg, fg_br, bg_br = new_colour
     ansi_color(user, fg=fg, bg=bg, fg_br=fg_br, bg_br=bg_br)
     await ansi_move_deferred(user, row=new_row, col=new_col)
-    user._wrap_ambiguous = wrap_ambiguous
+    user._pos_uncertain, user._row_full = pos_uncertain, row_full
     if shown:
       await ansi_show_cursor(user)
     else:
@@ -297,29 +311,34 @@ async def cursor_preserved(user, hide_cursor=False):
 
 async def ansi_left(user, val=1, drain=False):
   assert val >= 0
+  user._row_full = False
   user.new_col = max(user.new_col-val, 1)
   if drain:
     await ansi_move_2(user, drain)
   
 async def ansi_right(user, val=1, drain=False):
   assert val >= 0
+  user._row_full = False
   user.new_col = min(user.new_col+val, user.screen_width)
   if drain:
     await ansi_move_2(user, drain)
   
 async def ansi_up(user, val=1, drain=False): 
   assert val >= 0
+  user._row_full = False
   user.new_row = max(user.new_row-val, 1)
   if drain:
     await ansi_move_2(user, drain)
 
 async def ansi_down(user, val=1, drain=False): 
   assert val >= 0
+  user._row_full = False
   user.new_row = min(user.new_row+val, user.screen_height)
   if drain:
     await ansi_move_2(user, drain)
 
 async def ansi_move_deferred(user, row=None, col=None, drain=False): # we have the drain option because if we're moving the cursor in(to) an input field, the user will want to see where he's about to type.
+  user._row_full = False  # (a move asked for, even to where the cursor is)
   user.new_row = row if row else user.new_row
   user.new_col = col if col else user.new_col
   user.new_row = max(1, min(user.new_row, user.screen_height or 25))
@@ -332,10 +351,11 @@ async def ansi_move_2(user, drain=False):
     await _ansi_move_2_locked(user, drain)
 
 async def _ansi_move_2_locked(user, drain=False):
-  # After writing to the last column, cursor position is ambiguous between terminal
-  # types (deferred vs immediate wrap). Force absolute positioning to be safe.
-  if user._wrap_ambiguous:
-    user._wrap_ambiguous = False
+  # Where the terminal's cursor is after writing the last column (deferred or
+  # immediate wrap) or setting the scroll region differs between terminals:
+  # position it absolutely.
+  if user._pos_uncertain:
+    user._pos_uncertain = False
     if user.cur_row != user.new_row or user.cur_col != user.new_col:
       user.cur_row = min(user.new_row, user.screen_height)
       user.cur_col = min(user.new_col, user.screen_width)
@@ -369,7 +389,14 @@ async def _ansi_move_2_locked(user, drain=False):
       else:
         user.writer.write(f"\x1b[{val}D")
   elif user.cur_row != user.new_row and user.cur_col == user.new_col:
-    if user.new_row < user.cur_row: # go up
+    top = user.scroll_region_top or 1
+    bottom = user.scroll_region_bottom or user.screen_height
+    if user.cur_row <= bottom < user.new_row or user.new_row < top <= user.cur_row:
+      # Across a scroll-region margin a relative move goes wrong (a line feed
+      # at the bottom margin scrolls the region, cursor up/down stop at the
+      # margins): go there absolutely
+      user.writer.write(f"\x1b[{user.new_row};{user.new_col}H")
+    elif user.new_row < user.cur_row: # go up
       val = user.cur_row - user.new_row
       if val == 1:
         user.writer.write("\x1b[A")
@@ -451,7 +478,7 @@ async def ansi_cls(user, fg=None, bg=None, fg_br=None, bg_br=None):
     emu_clear(user)
     user.cur_row = user.new_row = 1
     user.cur_col = user.new_col = 1
-    user._wrap_ambiguous = False
+    user._pos_uncertain = user._row_full = False
     await user.writer.drain()
     # Let any registered post-cls hook (e.g. ambient stars) repaint itself
     hook = getattr(user, '_post_cls_hook', None)
@@ -467,11 +494,13 @@ async def ansi_clear_line_end(user, drain=False):
 
   A pending move and colour (ansi_move_deferred, ansi_color) are applied
   first, as send() applies them, so this clears where the next text would
-  go, in its background colour.  Right after text that filled its row to
-  the last column nothing is cleared: there is nothing to its right, and
-  the terminal's cursor may still be on that row (see _send_locked)."""
+  go, in its background colour.  Right after text that filled its row
+  through the last column (user._row_full; no move asked for since),
+  nothing is cleared: there is nothing to its right, and the terminal's
+  cursor is on that last column (autowrap off, where ESC[K would erase the
+  character just written) or may still be (autowrap on: see _send_locked)."""
   async with user.write_lock:
-    if not (user._wrap_ambiguous and (user.new_row, user.new_col) == (user.cur_row, user.cur_col)):
+    if not user._row_full:
       await _ansi_move_2_locked(user)
       _ansi_color_write(user)
       user.writer.write("\x1b[K")
@@ -494,11 +523,14 @@ async def ansi_set_region(user, top_row=None, bottom_row=None, drain=False):
         user.writer.write(f"\x1b[{top_row};{bottom_row}r")
       user.scroll_region_top = top_row
       user.scroll_region_bottom = bottom_row
-      # Setting the scroll region (DECSTBM) also homes the terminal's cursor.
-      # Track that; the pending position is kept, so the next output moves
-      # back to where the caller meant it to go.
+      # Setting the scroll region (DECSTBM) homes the cursor on a VT100, but
+      # not on every terminal (some leave it on resetting the region), so the
+      # position is tracked as home but taken as unknown: the next move is
+      # sent absolutely.  The pending position is kept, so the next output
+      # goes back to where the caller meant it to go.
       user.cur_row = user.cur_col = 1
-      user._wrap_ambiguous = False
+      user._pos_uncertain = True
+      user._row_full = False
       if drain:
         await user.writer.drain()
 
@@ -517,31 +549,27 @@ def _snapshot_screen(user):
     ]
   return {
     'screen': screen_copy,
-    'width': user.screen_width,
-    'height': user.screen_height,
-    'cur_row': user.cur_row,
-    'cur_col': user.cur_col,
-    'new_row': user.new_row,
-    'new_col': user.new_col,
-    'cur_fg': user.cur_fg, 'cur_fg_br': user.cur_fg_br,
-    'cur_bg': user.cur_bg, 'cur_bg_br': user.cur_bg_br,
-    'cur_wrap': getattr(user, 'cur_wrap', True),
+    'cursor': save_cursor(user),  # (and colours, autowrap, staged output)
+    'region': (user.scroll_region_top, user.scroll_region_bottom),
     'mouse_reporting': getattr(user, 'mouse_reporting', False),
     'stars_active': list(getattr(user, '_stars_active', None) or []),
   }
 
 async def push_screen(user):
   """Save the current screen onto user.screen_stack so it can be restored
-  later by pop_screen. Use this before an overlay activity (e.g. /chat) takes
-  over the terminal."""
+  later by pop_screen, and give the overlay the whole screen (no scroll
+  region). Use this before an overlay activity (e.g. /chat) takes over the
+  terminal."""
   if not hasattr(user, 'screen_stack') or user.screen_stack is None:
     user.screen_stack = []
   user.screen_stack.append(_snapshot_screen(user))
+  await ansi_set_region(user)  # the overlay gets the whole screen (pop_screen puts it back)
 
 async def pop_screen(user):
   """Restore the most recently push_screen'd screen state. Repaints every
-  cell from the snapshot, then restores cursor position, color, wrap, and
-  mouse reporting state. No-op if the stack is empty."""
+  cell from the snapshot, then restores the scroll region, mouse reporting
+  and what save_cursor records (cursor, colours, autowrap, staged output).
+  No-op if the stack is empty."""
   stack = getattr(user, 'screen_stack', None)
   if not stack:
     return
@@ -555,6 +583,7 @@ async def pop_screen(user):
     user._stars_active.clear()
 
   await ansi_cls(user)
+  await ansi_set_region(user, *snap['region'])
   ansi_wrap(user, False)
 
   if snap['screen']:
@@ -596,14 +625,8 @@ async def pop_screen(user):
         await ansi_move_deferred(user, row=r_idx + 1, col=run_start + 1, drain=False)
         await send(user, "".join(run_chars), drain=False)
 
-  # Restore wrap, color, mouse, cursor
-  ansi_wrap(user, snap['cur_wrap'])
-  ansi_color(user, fg=snap['cur_fg'], fg_br=snap['cur_fg_br'],
-             bg=snap['cur_bg'], bg_br=snap['cur_bg_br'])
-
   await ansi_mouse_reporting(user, snap['mouse_reporting'])
-
-  await ansi_move(user, snap['cur_row'] or 1, snap['cur_col'] or 1, drain=True)
+  await restore_cursor(user, snap['cursor'])
 
   # Restore the stars active list so the background animation keeps tracking
   # the stars that were visible before the overlay.

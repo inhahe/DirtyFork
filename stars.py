@@ -269,44 +269,50 @@ async def _tick(user, active, fg, fg_br, spawn_p, frame_interval_ms):
   now = asyncio.get_event_loop().time()
   cur_row, cur_col = user.cur_row, user.cur_col
 
-  async with cursor_preserved(user, hide_cursor=True):
-    # --- 1) Advance stars whose time has come ---
-    survivors = []
-    for star in active:
-      r, c, idx, next_at, star_fg, star_fg_br = star
-      if not _in_bounds(user, r, c):
-        continue
+  # --- 1) Advance stars whose time has come ---
+  survivors = []
+  draws = []  # (row, col, char, fg, fg_br), drawn below
+  for star in active:
+    r, c, idx, next_at, star_fg, star_fg_br = star
+    if not _in_bounds(user, r, c):
+      continue
 
-      if now < next_at:
-        survivors.append(star)
-        continue
+    if now < next_at:
+      survivors.append(star)
+      continue
 
-      if not _matches_star(user.screen[r-1][c-1], _FRAMES[idx], star_fg, star_fg_br):
-        continue  # cell was overwritten by something else; abandon
+    if not _matches_star(user.screen[r-1][c-1], _FRAMES[idx], star_fg, star_fg_br):
+      continue  # cell was overwritten by something else; abandon
 
-      next_idx = idx + 1
-      if next_idx >= len(_FRAMES):
-        # Star is done — restore the cell to a default-attr space
-        await _draw(user, r, c, ' ', white, False)
-      else:
-        await _draw(user, r, c, _FRAMES[next_idx], star_fg, star_fg_br)
-        survivors.append((r, c, next_idx, _next_advance_time(now, frame_interval_ms),
-                          star_fg, star_fg_br))
+    next_idx = idx + 1
+    if next_idx >= len(_FRAMES):
+      # Star is done — restore the cell to a default-attr space
+      draws.append((r, c, ' ', white, False))
+    else:
+      draws.append((r, c, _FRAMES[next_idx], star_fg, star_fg_br))
+      survivors.append((r, c, next_idx, _next_advance_time(now, frame_interval_ms),
+                        star_fg, star_fg_br))
 
-    # --- 2) Spawn new stars: every eligible cell independently with spawn_p ---
-    first_char = _FRAMES[0]
-    for i in _chosen_cells(height * width, spawn_p):
-      r, c = divmod(i, width)
-      r += 1
-      c += 1
-      # Skip the bottom-right cell (writing there can scroll on autowrap)
-      # and the user's current cursor cell
-      if (r == height and c == width) or (r == cur_row and c == cur_col):
-        continue
-      if not _is_default_cell(user.screen[r-1][c-1]):
-        continue
-      await _draw(user, r, c, first_char, fg, fg_br)
-      survivors.append((r, c, 0, _first_advance_time(now, frame_interval_ms), fg, fg_br))
+  # --- 2) Spawn new stars: every eligible cell independently with spawn_p ---
+  first_char = _FRAMES[0]
+  for i in _chosen_cells(height * width, spawn_p):
+    r, c = divmod(i, width)
+    r += 1
+    c += 1
+    # Skip the bottom-right cell (writing there can scroll on autowrap)
+    # and the user's current cursor cell
+    if (r == height and c == width) or (r == cur_row and c == cur_col):
+      continue
+    if not _is_default_cell(user.screen[r-1][c-1]):
+      continue
+    draws.append((r, c, first_char, fg, fg_br))
+    survivors.append((r, c, 0, _first_advance_time(now, frame_interval_ms), fg, fg_br))
 
-    # Replace active list in place so the caller's reference stays valid
-    active[:] = survivors
+  # Only a tick that draws touches the terminal (an idle one writes nothing)
+  if draws:
+    async with cursor_preserved(user, hide_cursor=True):
+      for r, c, char, star_fg, star_fg_br in draws:
+        await _draw(user, r, c, char, star_fg, star_fg_br)
+
+  # Replace active list in place so the caller's reference stays valid
+  active[:] = survivors
