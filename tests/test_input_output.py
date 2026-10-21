@@ -187,6 +187,31 @@ class Popup(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(keys, [])
 
 
+class Tabs(unittest.IsolatedAsyncioTestCase):
+    async def test_tab_stops_every_eight_columns(self):
+        user = _setup.make_user()
+        for start, stop in ((1, 9), (8, 9), (9, 17), (75, 80)):
+            await io.ansi_move(user, 1, start)
+            await io.send(user, "\t")
+            self.assertEqual(user.cur_col, stop, f"tab from column {start}")
+
+
+class AfterADoor(unittest.IsolatedAsyncioTestCase):
+    async def test_the_door_s_region_and_cursor_are_tracked_and_undone(self):
+        from ansi_emulator import AnsiEmulator
+        user = _setup.make_user()
+        AnsiEmulator(user).feed("\x1b[1;23r\x1b[?25l")    # the door's own region, cursor hidden
+        self.assertEqual((user.scroll_region_top, user.scroll_region_bottom), (1, 23))
+        self.assertFalse(user.cur_show_cursor)
+        user.writer.out.clear()
+        await io.ansi_reset_modes(user)
+        out = user.writer.text()
+        for seq in ("\x1b[?6l", "\x1b[r", "\x1b[?7h", "\x1b[?25h", "\x1b[?1000l"):
+            self.assertIn(seq, out)
+        self.assertEqual((user.scroll_region_top, user.scroll_region_bottom), (None, None))
+        self.assertTrue(user.cur_show_cursor)
+
+
 class Moves(unittest.IsolatedAsyncioTestCase):
     async def test_moving_down_out_of_a_scroll_region(self):
         user = _setup.make_user()
@@ -212,6 +237,27 @@ class Moves(unittest.IsolatedAsyncioTestCase):
         user.writer.out.clear()
         await io.ansi_move_deferred(user, row=12, col=5, drain=True)
         self.assertEqual(user.writer.text(), "\n\n")
+
+
+class SidewaysPopup(unittest.IsolatedAsyncioTestCase):
+    async def test_long_title_and_prompt_fit_the_top_border(self):
+        import input_fields
+        from keyboard_codes import right
+        user = _setup.make_user()
+        draws = []
+
+        async def key_after_two_draws(user, *args, **kwargs):
+            draws.append(row_text(user, 1))
+            return right if len(draws) == 1 else " "         # scroll right once (a redraw), then close
+
+        with mock.patch.object(input_fields, "get_input_key", key_after_two_draws):
+            await input_fields.show_message_box(user, "w" * 200, word_wrap=False, title="T" * 69)
+        self.assertEqual(len(draws), 2)
+        for line in draws:
+            self.assertLessEqual(len(line), user.screen_width)
+            self.assertTrue(line.endswith("]┐"), line[-6:])            # ends with [x] and its corner
+        self.assertEqual(draws[0], draws[1])                               # (no shrinking per redraw)
+        self.assertTrue(blank_screen(user))
 
 
 class Overlay(unittest.IsolatedAsyncioTestCase):

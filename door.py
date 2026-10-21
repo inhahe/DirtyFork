@@ -17,7 +17,7 @@ import time
 import paths
 
 from definitions import *
-from input_output import send, ansi_cls, ansi_set_region
+from input_output import send, ansi_cls, ansi_set_region, ansi_reset_modes
 from config import get_config
 from ansi_emulator import AnsiEmulator
 from logger import log
@@ -1343,7 +1343,6 @@ async def run(user, destination, menu_item=None):
     user.popup_event = asyncio.Event()
     dosbox_log_file = None
     dosbox_tcp_server = None
-    region_set = False
     ended_by = ENDED_BY_DOOR
     daily_marked = False  # this session is the day's first: it runs the daily commands
     dosbox_log_read = False
@@ -1364,7 +1363,6 @@ async def run(user, destination, menu_item=None):
         if door_rows < _screen_rows(user):
             await ansi_set_region(user, 1, door_rows, drain=True)
             emulator.scroll_bottom = door_rows
-            region_set = True
 
         if in_dosbox:
             # Listen *before* writing the DOSBox config and launching DOSBox, so
@@ -1548,11 +1546,12 @@ async def run(user, destination, menu_item=None):
             if os.path.exists(node_dir):
                 log.error("Could not remove all of node dir %s", node_dir)
             log.debug("Cleaned up %s node %s", door_name, node_num)
-        if region_set:
-            try:
-                await ansi_set_region(user, drain=True)  # back to the full screen
-            except Exception:
-                pass  # caller already gone
+        try:
+            # back to the full screen, and undo any mode the door left set
+            # (its own scroll region, origin mode, a hidden cursor, ...)
+            await ansi_reset_modes(user, drain=True)
+        except Exception:
+            pass  # caller already gone
 
     await send(user, cr + lf + "Returning to BBS..." + cr + lf, drain=True)
     # null: back to the menu the door was chosen from (see common.do_destination)

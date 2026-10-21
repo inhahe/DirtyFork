@@ -268,7 +268,8 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     _h_prompt = ""
 
   async def _draw_box():
-    nonlocal _h_prompt, close_btn_col, abort_col_start, abort_col_end, abort_row  # (read by the click handling)
+    nonlocal close_btn_col, abort_col_start, abort_col_end, abort_row  # (read by the click handling)
+    wrap_before = user.cur_wrap
     if need_nowrap:
       ansi_wrap(user, False)
 
@@ -283,16 +284,19 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
 
     if h_scrollable and _h_prompt:
       # tl + ─ + space + title + space + ─*fill + space + prompt + space + [■] + tr
-      used = len(title_str) + len(_h_prompt) + 7 + len(close_str)
-      fill_len = inner_width + 2 - used
+      h_prompt = _h_prompt
+      fill_len = inner_width + 2 - (len(title_str) + len(h_prompt) + 7 + len(close_str))
       if fill_len < 0:
-        # Not enough room — truncate prompt
-        _h_prompt = _h_prompt[:len(_h_prompt) + fill_len]
-        fill_len = 0
+        # Not enough room: shorten the prompt, then the title
+        cut = min(len(h_prompt), -fill_len)
+        h_prompt = h_prompt[:len(h_prompt) - cut]
+        fill_len += cut
+        title_str = title_str[:max(0, len(title_str) + min(0, fill_len))]
+        fill_len = max(0, fill_len)
       if title_str:
-        top_line = tl + horiz + " " + title_str + " " + horiz * max(0, fill_len) + " " + _h_prompt + " " + close_str + tr
+        top_line = tl + horiz + " " + title_str + " " + horiz * fill_len + " " + h_prompt + " " + close_str + tr
       else:
-        top_line = tl + horiz * max(0, fill_len + len(title_str) + 3) + " " + _h_prompt + " " + close_str + tr
+        top_line = tl + horiz * (fill_len + 3) + " " + h_prompt + " " + close_str + tr
     elif title_str:
       fill_len = inner_width - len(title_str) - 3 - len(close_str)
       top_line = tl + horiz + " " + title_str + " " + horiz * max(0, fill_len) + close_str + tr
@@ -427,14 +431,14 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
     if scrollable:
       await ansi_move_deferred(user, row=row, col=col, drain=False)
 
-    if need_nowrap:
-      ansi_wrap(user, True)
+    ansi_wrap(user, wrap_before)
 
     await user.writer.drain()
 
   # Enable mouse reporting for clickable elements, hide cursor
   saved_mouse = user.mouse_reporting
   result = None
+  user.popup_depth += 1  # (other tasks don't draw on a covered screen: see screen_covered)
   try:
     await ansi_mouse_reporting(user, True)
     await ansi_hide_cursor(user, drain=True)
@@ -565,18 +569,22 @@ async def show_message_box(user, text, row=null, col=null, width=null, max_width
   finally:
     # Put back what the popup covered and interrupted, also when it is
     # cancelled (a page arriving over the idle warning, say)
-    await ansi_mouse_reporting(user, saved_mouse)
-    if need_nowrap:
-      ansi_wrap(user, False)
-    for ri, r in enumerate(range(save_top, save_bottom + 1)):
-      for ci, c in enumerate(range(save_left, save_right + 1)):
-        if 1 <= r <= user.screen_height and 1 <= c <= user.screen_width:
-          ch = saved[ri][ci]
-          await ansi_move_deferred(user, row=r, col=c, drain=False)
-          ansi_color(user, fg=ch.fg, fg_br=ch.fg_br, bg=ch.bg, bg_br=ch.bg_br)
-          await send(user, ch.char, drain=False)
-    # cursor, colours, autowrap, staged output
-    await restore_cursor(user, saved_cursor)
+    try:
+      await ansi_mouse_reporting(user, saved_mouse)
+      if need_nowrap:
+        ansi_wrap(user, False)
+      for ri, r in enumerate(range(save_top, save_bottom + 1)):
+        for ci, c in enumerate(range(save_left, save_right + 1)):
+          if 1 <= r <= user.screen_height and 1 <= c <= user.screen_width:
+            ch = saved[ri][ci]
+            await ansi_move_deferred(user, row=r, col=c, drain=False)
+            ansi_color(user, fg=ch.fg, fg_br=ch.fg_br, bg=ch.bg, bg_br=ch.bg_br)
+            await send(user, ch.char, drain=False)
+      # cursor, colours, autowrap, staged output
+      await restore_cursor(user, saved_cursor)
+    finally:
+      user.popup_depth -= 1
+    await screen_uncovered(user)  # (redraws what others couldn't draw meanwhile)
 
   return result
 

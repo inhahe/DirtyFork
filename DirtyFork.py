@@ -125,7 +125,6 @@ class _IdleMonitor:
         )
         # User pressed a key — they're still there
         self._touch()
-        self._in_warning = False
         return True  # user responded
       else:
         # No screen yet — fall back to raw text
@@ -136,19 +135,18 @@ class _IdleMonitor:
         try:
           data = await asyncio.wait_for(self._reader.read(1), timeout=seconds_left)
         except asyncio.TimeoutError:
-          self._in_warning = False
           return False  # no response
         if data:
           self._touch()
-        self._in_warning = False
         return True
     except Disconnected:
       # Inner read() timed out during the popup — propagate
-      self._in_warning = False
       raise
     except Exception:
-      self._in_warning = False
       return False
+    finally:
+      # (also when the popup is cancelled: a page arriving over it, say)
+      self._in_warning = False
 
   async def read(self, n=1):
     timeout = _get_idle_timeout(self._user)

@@ -262,7 +262,11 @@ class User:
     self.popup_queue = []     # queued popups waiting to show (list of kwarg dicts)
     self._in_popup = False    # True while a popup is being displayed
     self._chat_invitation = None  # (from_user, asyncio.Future) when a chat invite is pending
-    self._typing_shown = None     # teleconference: the typing indicator now on row 2 (None: unknown)
+    # What covers the screen, and redrawing what was missed under it (see input_output.screen_covered)
+    self.popup_depth = 0          # popups (show_message_box) open now
+    self.screen_stack = []        # overlays (push_screen) open now
+    self.screen_stale = False     # something wasn't drawn because the screen was covered
+    self.redraw_hook = None       # async callable redrawing the current activity's whole screen
     self._chat_session_ready = None  # asyncio.Event set when the inviter has constructed a ChatSession for this user
     self._source_menu = None      # MenuNode the user was in when entering a module
     self._option_menu = None      # MenuNode whose option the user picked last (the menu it is listed in)
@@ -1107,7 +1111,7 @@ async def user_director(user, next_destination, menu_item=null):
   # destination (in case the previous one didn't clean up)
   async with user.write_lock:
     await ansi_mouse_reporting(user, False, force=True)
-    await ansi_show_cursor(user)
+    await ansi_show_cursor(user, force=True)
     ansi_color(user, drain=True)
 
   # Access granted — run the destination

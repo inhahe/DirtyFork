@@ -409,7 +409,7 @@ class AnsiEmulator:
       if code == 7:
         self.user.cur_wrap = True
       elif code == 25:
-        pass  # Show cursor -- ignore
+        self.user.cur_show_cursor = True  # (the door's; tracked so it can be undone after)
       elif code == 6:
         self.origin_mode = True
         # Home cursor to top of scroll region
@@ -420,7 +420,7 @@ class AnsiEmulator:
       if code == 7:
         self.user.cur_wrap = False
       elif code == 25:
-        pass  # Hide cursor -- ignore
+        self.user.cur_show_cursor = False
       elif code == 6:
         self.origin_mode = False
         self.user.cur_row = 1
@@ -658,6 +658,10 @@ class AnsiEmulator:
     else:
       self.scroll_top = 1
       self.scroll_bottom = u.screen_height
+    # The BBS's own tracking (send's line feeds, cursor moves) follows the
+    # region too, until ansi_reset_modes after the door
+    full = self.scroll_top == 1 and self.scroll_bottom == u.screen_height
+    u.scroll_region_top, u.scroll_region_bottom = (None, None) if full else (self.scroll_top, self.scroll_bottom)
     # CUP to home after setting scroll region
     if self.origin_mode:
       u.cur_row = self.scroll_top

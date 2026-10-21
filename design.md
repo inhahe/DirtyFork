@@ -112,7 +112,7 @@ A session in `door.run()`:
 
    Each pump reports `ENDED_BY_DOOR` or `ENDED_BY_CALLER`. When the door ends first, the output pump gets up to 2 s to deliver the last screen. The tasks are cancelled however the bridge ends, cancellation of the session included.
 6. **Stop.** The door gets 1 s to exit by itself if it ended the session. If the caller hung up or aborted, the closed connection is the door's carrier drop, and it gets 10 s to save the player. After that it is terminated.
-7. **Cleanup** (in a `finally`, each step even if an earlier wait was interrupted): the process is stopped and killed if need be, the node is released, the listener and logs are closed, DOSBox-X's output is logged, the daily mark is settled, and the node directory is removed. The scroll region is reset. The caller returns to the menu the door was picked from.
+7. **Cleanup** (in a `finally`, each step even if an earlier wait was interrupted): the process is stopped and killed if need be, the node is released, the listener and logs are closed, DOSBox-X's output is logged, the daily mark is settled, and the node directory is removed. Then `ansi_reset_modes` puts the terminal's modes back (no scroll region, origin mode off, autowrap on, cursor shown, mouse reporting off), whatever the door left set. The caller returns to the menu the door was picked from.
 
 Native doors skip DOSBox-X. A socket door (`DOOR32.SYS`) is bridged over TCP, and a stdio door over its pipes.
 
@@ -124,7 +124,7 @@ Native doors skip DOSBox-X. A socket door (`DOOR32.SYS`) is bridged over TCP, an
 
 The BBS tracks cursor position and color state precisely:
 
-- `cur_*` properties reflect the actual terminal state. The BBS's own output updates them only through the `input_output.py` functions that write the sequences: `send()`, `ansi_move()`, `ansi_move_2()`, `ansi_cls()`, `ansi_set_region()`, `_ansi_color_write()`, `ansi_hide_cursor()`/`ansi_show_cursor()`. During a door, the ANSI emulator (`ansi_emulator.py`) sets them as the door's output moves the real cursor.
+- `cur_*` properties reflect the actual terminal state. The BBS's own output updates them only through the `input_output.py` functions that write the sequences: `send()`, `ansi_move()`, `ansi_move_2()`, `ansi_cls()`, `ansi_set_region()`, `_ansi_color_write()`, `ansi_hide_cursor()`/`ansi_show_cursor()`. During a door, the ANSI emulator (`ansi_emulator.py`) sets them as the door's output moves the real cursor, and records the door's scroll region in `user.scroll_region_*` and its cursor visibility in `cur_show_cursor`.
 - A line feed in `send()` follows the scroll region (`ansi_set_region`) as the terminal does: at the region's bottom the region scrolls and the cursor stays
 - `new_*` properties stage pending changes (set by `ansi_move_deferred()`, `ansi_color()`)
 - `send()` compares new vs cur and emits minimal escape codes; `ansi_clear_line_end()` applies pending changes the same way before clearing the rest of the row
@@ -147,6 +147,16 @@ An ANSI emulator (`ansi_emulator.py`) maintains `user.screen` — a character-by
 ### Ambient Stars
 
 `stars.stars_loop` runs per connection. It reads the settings on every tick: the system's `stars.enabled` is the master switch, and a user's `show_stars` can only turn stars off. Stars still on screen are erased when they switch off. A tick first works out what to draw; one that has something draws it under `user.write_lock`, inside `input_output.cursor_preserved`, which saves and restores the tracked cursor, the colours (both current and pending), a staged move, the wrap state and the cursor's visibility, so the BBS's own output is undisturbed, and an idle tick writes nothing; popups (`show_message_box`) restore the same state with `save_cursor`/`restore_cursor`. New stars are sampled with geometric gaps (`_chosen_cells`) rather than with a random number per cell. `ansi_cls` calls a hook that repaints the stars still active, and nothing is drawn while the caller is in a door.
+
+## Drawing on other users' screens
+
+Some activities draw on a user's screen from other users' tasks. In the teleconference, a message, a header change or the typing indicator reaches every member's screen from the task of whoever caused it. That goes through `teleconference._draw_on(target, draw)`:
+
+- It draws in one piece, under the target's write lock and inside `cursor_preserved`, so the target's own half-done output (cursor, colours, a staged move) carries on undisturbed.
+- While a popup (`user.popup_depth`) or an overlay (`user.screen_stack`, from `push_screen`) covers the target's screen (`input_output.screen_covered`), it draws nothing. Drawing then would go over the popup, and be lost when the popup restores what it covered. It marks the screen stale (`user.screen_stale`) instead.
+- When the popup or overlay closes, `screen_uncovered` calls `user.redraw_hook`, if the screen went stale meanwhile. The teleconference's hook redraws its whole screen: the layout, as much recent history as the chat area shows, and the half-typed input.
+
+The typing indicator compares the text it wants with what row 2 of `user.screen` shows, and draws only when they differ, which is rarely: every keystroke in a channel gets there.
 
 ## Modem connections
 

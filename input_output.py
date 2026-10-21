@@ -44,10 +44,9 @@ def _blank_cell(user):
   terminal actually shows when CLS or scroll fills with the current bg."""
   return Char(' ', user.cur_fg, user.cur_fg_br, user.cur_bg, user.cur_bg_br)
 
-def emu_scroll(user, top=1, bottom=None):
-  """Scroll rows *top* to *bottom* (1-based, inclusive; the whole screen by
-  default) of user.screen up a line, as the terminal does."""
-  bottom = bottom or len(user.screen)
+def emu_scroll(user, top, bottom):
+  """Scroll rows *top* to *bottom* (1-based, inclusive) of user.screen up a
+  line, as the terminal does."""
   del user.screen[top - 1]
   user.screen.insert(bottom - 1, [_blank_cell(user) for _ in range(user.screen_width)])
 
@@ -89,14 +88,13 @@ async def _send_locked(user, message, drain):
   if drain:
     await user.writer.drain()
   for char in message:
-    if char != "\x00":
-      user._row_full = False
     if char=="\x00":
-      pass
-    elif char=="\x08":
+      continue
+    user._row_full = False
+    if char=="\x08":
       user.cur_col = max(user.cur_col-1, 1)
     elif char=="\x09":
-      user.cur_col = (user.cur_col//8)*8+8
+      user.cur_col = min(((user.cur_col - 1) // 8 + 1) * 8 + 1, user.screen_width)  # (stops at 9, 17, ...)
     elif char=="\x0a":
       _line_feed(user)
     elif char=="\x0c":
@@ -208,8 +206,9 @@ async def send_markup(user, text, fg=white, bg=black, fg_br=False, bg_br=False, 
     await user.writer.drain()
 
 
-def ansi_wrap(user, wrap=True):
-  if user.cur_wrap != wrap:
+def ansi_wrap(user, wrap=True, force=False):
+  """Turn autowrap on or off (with *force*, even if tracked as so already)."""
+  if force or user.cur_wrap != wrap:
     if wrap:
       user.writer.write("\x1b[?7h") 
     else:
@@ -237,9 +236,10 @@ async def ansi_hide_cursor(user, drain=False):
       if drain:
         await user.writer.drain()
 
-async def ansi_show_cursor(user, drain=False):
+async def ansi_show_cursor(user, drain=False, force=False):
+  """Show the cursor (with *force*, even if tracked as shown)."""
   async with user.write_lock:
-    if not getattr(user, 'cur_show_cursor', True):
+    if force or not user.cur_show_cursor:
       user.cur_show_cursor = True
       user.writer.write("\x1b[?25h")
       if drain:
@@ -259,6 +259,36 @@ async def ansi_mouse_reporting(user, on=True, drain=False, force=False):
     if drain:
       await user.writer.drain()
 
+async def ansi_reset_modes(user, drain=False):
+  """Put the terminal's modes back as the BBS expects them, whatever output
+  it didn't track (a door's) left: no scroll region, origin mode off,
+  autowrap on, the cursor shown and mouse reporting off.  All of it is sent,
+  not only what the tracking says differs."""
+  async with user.write_lock:
+    user.writer.write("\x1b[?6l")  # origin mode off (nothing in the BBS uses it, so untracked)
+    await ansi_set_region(user, force=True)
+    ansi_wrap(user, True, force=True)
+    await ansi_show_cursor(user, force=True)
+    await ansi_mouse_reporting(user, False, force=True)
+    if drain:
+      await user.writer.drain()
+
+def screen_covered(user):
+  """True while a popup (show_message_box) or an overlay (push_screen) covers
+  the user's screen.  Other tasks must not draw on it then (it would be drawn
+  over the popup, and lost when the popup restores what it covered): they set
+  user.screen_stale instead, and screen_uncovered has it redrawn."""
+  return user.popup_depth > 0 or bool(user.screen_stack)
+
+async def screen_uncovered(user):
+  """Call when a popup or overlay closes.  If the screen is no longer covered
+  and something was not drawn while it was (user.screen_stale), redraw it all
+  with user.redraw_hook (set by the activity that owns the screen)."""
+  if user.screen_stale and not screen_covered(user):
+    user.screen_stale = False
+    if user.redraw_hook is not None:
+      await user.redraw_hook()
+
 def save_cursor(user):
   """Record, for restore_cursor, what output in progress depends on besides
   the screen's contents: the terminal's cursor position, colour, cursor
@@ -267,8 +297,7 @@ def save_cursor(user):
   return (user.cur_row, user.cur_col, user.new_row, user.new_col,
           (user.cur_fg, user.cur_bg, user.cur_fg_br, user.cur_bg_br),
           (user.new_fg, user.new_bg, user.new_fg_br, user.new_bg_br),
-          getattr(user, '_pos_uncertain', False), getattr(user, 'cur_show_cursor', True),
-          getattr(user, 'cur_wrap', True), getattr(user, '_row_full', False))
+          user._pos_uncertain, user.cur_show_cursor, user.cur_wrap, user._row_full)
 
 async def restore_cursor(user, saved, drain=True):
   """Put back what save_cursor(user) returned as *saved*: the terminal's colour,
@@ -511,9 +540,11 @@ async def ansi_clear_line_end(user, drain=False):
     if drain:
       await user.writer.drain()
 
-async def ansi_set_region(user, top_row=None, bottom_row=None, drain=False):
+async def ansi_set_region(user, top_row=None, bottom_row=None, drain=False, force=False):
+  """Set the scroll region to rows *top_row* to *bottom_row* (none: the whole
+  screen); with *force*, even if it is tracked as set already."""
   async with user.write_lock:
-    if user.scroll_region_top != top_row or user.scroll_region_bottom != bottom_row:
+    if force or user.scroll_region_top != top_row or user.scroll_region_bottom != bottom_row:
       if bottom_row is None:
         if top_row is None:
           user.writer.write("\x1b[r")
@@ -560,8 +591,6 @@ async def push_screen(user):
   later by pop_screen, and give the overlay the whole screen (no scroll
   region). Use this before an overlay activity (e.g. /chat) takes over the
   terminal."""
-  if not hasattr(user, 'screen_stack') or user.screen_stack is None:
-    user.screen_stack = []
   user.screen_stack.append(_snapshot_screen(user))
   await ansi_set_region(user)  # the overlay gets the whole screen (pop_screen puts it back)
 
@@ -570,10 +599,9 @@ async def pop_screen(user):
   cell from the snapshot, then restores the scroll region, mouse reporting
   and what save_cursor records (cursor, colours, autowrap, staged output).
   No-op if the stack is empty."""
-  stack = getattr(user, 'screen_stack', None)
-  if not stack:
+  if not user.screen_stack:
     return
-  snap = stack.pop()
+  snap = user.screen_stack.pop()
 
   # Clear the live stars active list BEFORE ansi_cls fires the post-cls
   # hook. Otherwise the hook would repaint chat-session stars onto the
@@ -632,6 +660,7 @@ async def pop_screen(user):
   # the stars that were visible before the overlay.
   if hasattr(user, '_stars_active') and user._stars_active is not None:
     user._stars_active[:] = snap.get('stars_active', [])
+  await screen_uncovered(user)
 
 
 class _PopupInterrupt(Exception):

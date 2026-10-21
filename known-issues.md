@@ -14,6 +14,12 @@ Unsolved bugs and debt that couldn't be fixed when found. Fix and remove entries
 - **What:** stars already on screen stop twinkling (and stay) for as long as the launch popup waits for a key, until the door's clear screen removes them.
 - **Fix:** set `in_door` after the launch popup, checking that popups and pages during that popup still behave.
 
+## Two copies of the line-feed and scroll-region logic
+
+- **Where:** `input_output._line_feed` (the BBS's own output) and `ansi_emulator`'s `_line_feed`/`_index` (a door's output), each with its own region state: `user.scroll_region_*` and the emulator's `scroll_top`/`scroll_bottom`.
+- **What:** the emulator now copies the door's region into `user.scroll_region_*`, so the BBS's tracking follows it, but the two implementations can still drift apart. The emulator also models origin mode, which the BBS tracking doesn't.
+- **Fix:** let the emulator keep its region in `user.scroll_region_*` and share one line-feed routine; door.py's `screen_rows` region (`emulator.scroll_bottom = ...`) would then go through `ansi_set_region` alone.
+
 ## Modem support is untested
 
 - **Where:** `modem.py`, `DirtyFork.py` (`modem_listener`).
