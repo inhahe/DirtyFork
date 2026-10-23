@@ -311,6 +311,48 @@ During connection setup, the BBS detects the terminal type via telnet TTYPE nego
 
 ---
 
+## Web Terminal
+
+Callers without a telnet program can use the BBS from a web page: a browser terminal (jsTerm, an ANSI/CP437 terminal drawn on a canvas) that reaches the BBS on its ordinary telnet port. A browser cannot open a telnet connection itself, so the page talks WebSocket to a small bridge, `web/jsterm_bridge.py`, which telnets to the BBS for it. The BBS needs no change and no restart: to it, a web caller is one more telnet caller.
+
+```
+browser (bbs.html, jsTerm) --wss://host/bbs-ws--> nginx --> web/jsterm_bridge.py (127.0.0.1:8023) --telnet--> BBS (127.0.0.1:23)
+```
+
+**On inhahe.com** (the sysop's own setup):
+
+- **The page**: `https://inhahe.com/bbs.html`, from `D:\mypage\inhahe.com`: `bbs.html`, and `jsterm\` for jsTerm itself, its font, and the page's script (`jsterm\bbs.js`). `jsterm\README.txt` says where jsTerm came from and what was changed in it. The page connects as soon as it loads, shows whether it is connected, and offers to connect again after a disconnect.
+- **jQuery**, the one file jsTerm takes from the web: `bbs.html` loads it from `code.jquery.com` (with an integrity hash). `bbs-local.html` is the same page using the copy in `jsterm\vendor\` instead, for when the web copy is unwanted or unreachable; copy it over `bbs.html` to switch.
+- **nginx** (in WSL, `/etc/nginx/sites-enabled/inhahe.com`) passes `/bbs-ws` to the bridge, upgrading it to a WebSocket, so the page works over both `https` (as `wss://`) and `http`, through the site's own certificate and port.
+- **The bridge** runs from logon as the Task Scheduler task "DirtyFork web bridge", registered (and started) by `web\register-bridge.ps1`, and restarted a minute after it exits. It runs independently of the BBS: while the BBS is down, web callers are told so. It logs to `web\jsterm_bridge.log`.
+
+**To set it up elsewhere:**
+
+1. `pip install websockets` (it is in `requirements.txt`).
+2. Run the bridge: `powershell -NoProfile -File web\register-bridge.ps1` (options `-Listen 127.0.0.1:8023 -Bbs 127.0.0.1:23`), or `python web/jsterm_bridge.py --listen ... --bbs ... [--max-clients 50] [--log path]` by hand.
+3. Proxy a path to it in the web server, as a WebSocket:
+
+   ```nginx
+   location = /bbs-ws {
+       proxy_pass http://127.0.0.1:8023;
+       proxy_http_version 1.1;
+       proxy_set_header Upgrade $http_upgrade;
+       proxy_set_header Connection "upgrade";
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+       proxy_read_timeout 1h;   # the bridge pings every 30 s
+       proxy_send_timeout 1h;
+   }
+   ```
+
+4. Put `bbs.html` and `jsterm/` in the site. The page connects to `/bbs-ws` on its own host; `?ws=<url>` on its address points it elsewhere (to try a bridge directly).
+
+**What callers get**: an 80x25 CP437 ANSI terminal (it reports its type as `ANSI`, and its size on request), typing as on a keyboard (letters, punctuation and accented letters CP437 has; arrows, Home/End, PgUp/PgDn, Insert/Delete, F1-F10, Ctrl+letter; Ctrl+V pastes). F11 and F12 stay with the browser (full screen, developer tools).
+
+**Limits**: no file transfers (the browser terminal has no ZMODEM), and no mouse (it sends no clicks). The bridge connects only to the BBS it was started for, whatever the page asks, and at most `--max-clients` web callers at once (default 50); the next is asked to try later. The BBS sees every web caller as coming from the bridge (see `known-issues.md`); the bridge's log records their real addresses.
+
+---
+
 ## Modem Support (Experimental)
 
 Modem/serial connections are supported via `pyserial-asyncio`. The BBS answers incoming calls itself with standard AT commands (it turns the modem's auto-answer off, answers on `RING` with `ATA`, and hangs up with `+++` / `ATH`). Multiple serial ports can be configured for multi-line setups; modem callers are treated as `ansi-bbs` terminals (CP437).

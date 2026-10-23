@@ -20,6 +20,12 @@ Unsolved bugs and debt that couldn't be fixed when found. Fix and remove entries
 - **What:** the emulator now copies the door's region into `user.scroll_region_*`, so the BBS's tracking follows it, but the two implementations can still drift apart. The emulator also models origin mode, which the BBS tracking doesn't.
 - **Fix:** let the emulator keep its region in `user.scroll_region_*` and share one line-feed routine; door.py's `screen_rows` region (`emulator.scroll_bottom = ...`) would then go through `ansi_set_region` alone.
 
+## Web callers all appear to come from 127.0.0.1
+
+- **Where:** `web/jsterm_bridge.py` opens the telnet connection for each web caller, so the BBS's peer address (logs, and anything that ever uses it) is the bridge's.
+- **What:** the caller's real address reaches only the bridge (nginx's `X-Real-IP`), which logs it in `web/jsterm_bridge.log`.
+- **Fix:** have the bridge announce the caller on the connection (a PROXY protocol v1 line, or a telnet NEW-ENVIRON variable such as `IPADDRESS`), and have `DirtyFork.py` accept it only from 127.0.0.1 and record it as the caller's address.
+
 ## Modem support is untested
 
 - **Where:** `modem.py`, `DirtyFork.py` (`modem_listener`).

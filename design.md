@@ -7,6 +7,7 @@ What the BBS does and how it is built inside. For setting it up and configuring 
 Each links to the part of DOCS.md that describes its configuration.
 
 - **Connections**: telnet (`telnetlib3`) and dial-up modems (`pyserial-asyncio`, several serial ports). [Modem Support](DOCS.md#modem-support-experimental)
+- **Web terminal**: a browser terminal (jsTerm) that reaches the telnet port through a WebSocket bridge outside the BBS process. [Web Terminal](DOCS.md#web-terminal)
 - **Terminals**: encoding detection (CP437 or UTF-8) and screen-size detection; ANSI output with tracked cursor and colour state. [Terminal and Encoding](DOCS.md#terminal-and-encoding)
 - **Login and registration**: an inline registration form whose fields and rules come from `register.yaml`. [Registration](DOCS.md#registration)
 - **Menus**: prefix matching, `x` to exit levels, dotted paths, `/jump`, and a per-user start destination. [Menu System](DOCS.md#menu-system)
@@ -173,6 +174,14 @@ When the popup or overlay closes normally (not on the way out of a disconnect), 
 
 `SerialReader` and `SerialWriter` in `modem.py` provide the same interface as telnetlib3's reader/writer: `write(data)`, `drain()`, `close()`, `get_extra_info()` on the writer and `read(n)` on the reader. Modem terminals auto-detect as `ansi-bbs` (CP437 encoding). Each configured port gets its own `modem_listener` task.
 
+## Web terminal
+
+`web/jsterm_bridge.py` is a separate process (its own Task Scheduler task), not part of the BBS: it accepts WebSockets from the browser terminal and opens an ordinary telnet connection to the BBS for each, so the BBS treats web callers as telnet callers and needs no restart when the bridge does.
+
+- **Protocol** (jsTerm's): the page's first message, and any later "connect", is `telnet|<host>|<port>`; the bridge ignores the host and port and (re)connects to the one BBS it was started for, so it cannot relay anywhere else. Every other message is input; both directions carry bytes as text whose characters are U+0000..U+00FF (Latin-1), and telnet negotiation passes through for the browser terminal to answer.
+- **Closing**: the BBS hanging up closes the WebSocket (1000) so the page can offer to reconnect; an unreachable BBS sends a message and closes with 1011; past `--max-clients`, 1013.
+- **The browser side** lives in the web root, not in this repository (`D:\mypage\inhahe.com`: `bbs.html`, `jsterm/`); `jsterm/README.txt` there lists what was changed in jsTerm to make it work with this BBS, notably answering `ESC[6n` (which `get_screen_size` relies on) and the terminal type (`ANSI`, read as CP437).
+
 ## Idle timeout
 
 The `_IdleMonitor` class wraps the reader's `read()` method — the single entry point for all user input (menus, input fields, doors, teleconference, file transfers). This means timeouts work everywhere without any per-module code. The warning popup's own input loop calls `read()` recursively; the monitor detects this via an `_in_warning` flag and does a plain timed wait without showing another popup. If the user has no screen yet (before terminal detection), the warning falls back to raw text.
@@ -206,7 +215,7 @@ Plain `unittest`, in `tests/`. Run from the project directory, with the BBS's Py
 python -m unittest discover -s tests
 ```
 
-They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data directory that is removed afterwards, and need no network, DOSBox or door files. Covered: door node directories, the generated autoexec and dropfiles, the daily mark, the door I/O pumps and process handling, menu keys on `/jump`, dotted paths and jumps to a menu by name, the text menu's prompt line, the escape-sequence helpers, and the ambient stars.
+They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data directory that is removed afterwards, and need no network, DOSBox or door files. Covered: door node directories, the generated autoexec and dropfiles, the daily mark, the door I/O pumps and process handling, menu keys on `/jump`, dotted paths and jumps to a menu by name, the text menu's prompt line, the escape-sequence helpers, the ambient stars, and the web terminal's bridge (against a fake BBS on a loopback port: it reaches only its own BBS, every byte value in both directions, reconnects, hang-ups, an unreachable BBS, the connection limit).
 
 ## File Manifest
 
@@ -236,4 +245,6 @@ They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data
 | `modules.py` | Dynamic module loader |
 | `paths.py` | Path resolution (project vs data directory) |
 | `stars.py` | Ambient star animation |
+| `web/jsterm_bridge.py` | WebSocket-to-telnet bridge for the browser terminal (a separate process) |
+| `web/register-bridge.ps1` | Registers and starts the bridge's Task Scheduler task |
 | `tests/` | Unit tests (`python -m unittest discover -s tests`) |

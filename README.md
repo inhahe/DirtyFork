@@ -15,6 +15,7 @@ A modern async Python BBS supporting telnet and dial-up modem connections, with 
 - **Sysop panel** — manage user keys, key groups, and user settings
 - **Configurable menus** with prefix matching, multi-column layout, and `/jump` navigation
 - **Popup system** with queueing, scrolling, and mouse support
+- **Web terminal** — callers can use the BBS from a web page (jsTerm, through a WebSocket-to-telnet bridge); see [DOCS.md](DOCS.md#web-terminal)
 - **Modem support** via pyserial-asyncio with AT command handling (untested — see below)
 - **Idle timeout** with configurable warning prompt and separate modem/telnet timeouts
 - **Rotating logs** and SQLite database (auto-created on first run)

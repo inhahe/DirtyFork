@@ -4,6 +4,8 @@ ruamel.yaml
 telnetlib3
 pyserial-asyncio
 bcrypt
+# for web/jsterm_bridge.py (the web terminal)
+websockets
 # for lib/ymodem (YMODEM-G transfers)
 ordered-set
 
