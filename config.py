@@ -428,7 +428,8 @@ def get_config(*dicts, path=None, main=False): # because of this, no module that
   if not path:
     path = main_path
   if not path in configs:
-    cfg = Config(yaml.safe_load(open(path, "r").read()))
+    with open(path, "r", encoding="utf-8") as f:  # not the locale's code page (cp1252 here)
+      cfg = Config(yaml.safe_load(f.read()))
     _apply_option_defaults(cfg)
     configs[path] = cfg
   return ConfigView(*dicts, configs[path])
