@@ -396,9 +396,15 @@ browser (bbs.html: xterm.js, zmodem.js) --wss://host/bbs-ws--> nginx --> web/ter
 
 ## Modem Support (Experimental)
 
-Modem/serial connections are supported via `pyserial-asyncio`. The BBS answers incoming calls itself with standard AT commands (it turns the modem's auto-answer off, answers on `RING` with `ATA`, and hangs up with `+++` / `ATH`). Multiple serial ports can be configured for multi-line setups; modem callers are treated as `ansi-bbs` terminals (CP437).
+Callers can dial in to a Hayes-compatible modem on a serial port (by `pyserial-asyncio`); each configured port is a line, answering one call at a time. The BBS answers calls itself: it sets the modem up, answers on `RING` with `ATA`, and once the call ends hangs up by dropping DTR (falling back to `+++` and `ATH` for a modem that ignores DTR), then sets the modem up again for the next call. Modem callers are treated as `ansi-bbs` terminals (CP437). Output is paced to the line's speed (from the modem's `CONNECT` message), so that cancelling a file transfer, or its repair of a damaged stretch, does not wait behind minutes of queued data.
 
-**Note:** Modem support is currently untested — the developer does not have a modem.
+**What the modem needs.** After your `init_string` (sent first, each time a port is set up: `ATZ` by default, to load the modem's stored profile, or `AT&F` for its factory settings), the BBS sends `ATE0V1Q0S0=0&C1&D2`: no echo, results in words, no auto-answer, carrier detect (DCD) following the carrier, and a hang-up when DTR drops. RTS/CTS (hardware) flow control is on at the port; most modems have it on by default, otherwise add it to the init string (`&K3` on many, `&H1&R2` on US Robotics). The cable must carry DCD, DTR and RTS/CTS (a full modem cable, not three wires); a USB modem has them built in. Without DCD the BBS cannot tell when a caller hangs up, and the line stays busy until the idle timeout (`modem.idle_timeout`).
+
+**The log says** when the modem does not answer a command (no modem on the port, switched off, or at a different speed), answers `ERROR`, answers a call but does not connect, shows no carrier during a call, or when a port cannot be opened or fails (retried every 10 seconds, logged once until it works again).
+
+**Over VoIP.** A phone line that is really VoIP (a cable or fibre provider's phone port, an analogue telephone adapter) carries modem signals poorly: the high speeds (V.90/V.92, V.34) mostly fail there, and lower ones (V.32bis, 14,400 bps and below) are likelier to hold. If the adapter offers it, use the G.711 codec and turn off silence suppression; limiting the modem's top speed in the init string (vendor-specific) can help.
+
+**Testing:** `tests/test_modem.py` runs the modem code against a simulated modem (on the real serial transport), including a ZMODEM download over the line; it has not yet been used with real hardware.
 
 ### Configuration
 
@@ -406,7 +412,7 @@ Modem/serial connections are supported via `pyserial-asyncio`. The BBS answers i
 modem:
   baudrate: 115200        # serial port speed — 115200 is ideal because
                           # modem compression can exceed the line rate
-  init_string: ATZ        # default AT init command
+  init_string: ATZ        # default AT init command (the BBS's own settings follow it)
   idle_timeout: 300       # modem-specific idle timeout (seconds, 0 = disabled)
   ports:
     - port: COM1

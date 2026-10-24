@@ -26,11 +26,11 @@ Unsolved bugs and debt that couldn't be fixed when found. Fix and remove entries
 - **What:** the caller's real address reaches only the bridge (nginx's `X-Real-IP`), which logs it in `web/terminal_bridge.log`.
 - **Fix:** have the bridge announce the caller on the connection (a PROXY protocol v1 line, or a telnet NEW-ENVIRON variable such as `IPADDRESS`), and have `DirtyFork.py` accept it only from 127.0.0.1 and record it as the caller's address.
 
-## Modem support is untested
+## Modem support is untested with real hardware
 
-- **Where:** `modem.py`, `DirtyFork.py` (`modem_listener`).
-- **What:** written against the AT command set but never run with a modem.
-- **Fix:** test with real hardware, or a null-modem pair and a terminal program that emulates one.
+- **Where:** `modem.py`; `tests/test_modem.py`, `tests/fake_modem.py`.
+- **What:** it is tested against a simulated Hayes modem on pyserial-asyncio's real transport (setting up, answering, hang-ups both ways, flow control at the line's speed, a failing port, a ZMODEM download), but never with a modem: how real modems word their results, how quickly they raise and drop DCD, and Windows' serial driver (rather than the simulation's) are untried. Those tests also run on Windows only: elsewhere pyserial-asyncio waits on the port's file descriptor, which the simulated port has not got.
+- **Fix:** test with real hardware (two modems and a line simulator, or a line to call); for the tests elsewhere, give the simulated port a socket pair as its file descriptor.
 
 ## The screen size is read only at login
 

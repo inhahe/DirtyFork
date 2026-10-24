@@ -16,7 +16,7 @@ A modern async Python BBS supporting telnet and dial-up modem connections, with 
 - **Configurable menus** with prefix matching, multi-column layout, and `/jump` navigation
 - **Popup system** with queueing, scrolling, and mouse support
 - **Web terminal** — callers can use the BBS from a web page: xterm.js with the mouse, ZMODEM file transfers and a choice of screen sizes, through a WebSocket-to-telnet bridge; see [DOCS.md](DOCS.md#web-terminal)
-- **Modem support** via pyserial-asyncio with AT command handling (untested — see below)
+- **Modem support** via pyserial-asyncio with AT command handling (tested against a simulated modem, not yet real hardware — see below)
 - **Idle timeout** with configurable warning prompt and separate modem/telnet timeouts
 - **Rotating logs** and SQLite database (auto-created on first run)
 
@@ -183,9 +183,9 @@ The sysop menu (requires the `sysop` key group) provides:
 
 ## Modem Support (Experimental)
 
-Modem/serial connections are supported via pyserial-asyncio. The BBS listens for incoming calls using AT commands (RING detection, ATA to answer, ATH to hang up). Multiple serial ports can be configured for multi-line setups.
+Callers can dial in to Hayes-compatible modems on serial ports (pyserial-asyncio), a line per port. The BBS sets each modem up, answers on RING, notices a caller's hang-up by the carrier (DCD), hangs up by dropping DTR, and paces its output to the line's speed. See [Modem Support](DOCS.md#modem-support-experimental) for what the modem and cable need.
 
-**Note:** Modem support is currently untested — the developer does not have a modem. If you try it, please report issues.
+**Note:** the modem code is tested against a simulated modem (`tests/test_modem.py`), not yet with real hardware. If you try it, please report issues.
 
 ```yaml
 modem:
@@ -200,7 +200,7 @@ modem:
       baudrate: 9600      # per-port override
 ```
 
-Modem connections auto-detect as ANSI/CP437 terminals. Each port gets its own listener task.
+Modem connections auto-detect as ANSI/CP437 terminals. Each port answers its calls one at a time.
 
 ## Idle Timeout
 

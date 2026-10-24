@@ -69,7 +69,7 @@ async def user_loop(reader, writer, connection_type="telnet"):
   user.reader = IdleMonitor(reader, user)
 
   try:
-    peer = writer.get_extra_info("peername", ("?",))[0] if connection_type == "telnet" else connection_type
+    peer = writer.get_extra_info("peername", ("?",))[0]  # (a modem's: its port)
   except Exception:
     peer = "?"
   log.info("New %s connection from %s", connection_type, peer)
@@ -153,40 +153,18 @@ async def user_loop(reader, writer, connection_type="telnet"):
     if handle and handle.lower() in global_data.users:
       del global_data.users[handle.lower()]
 
-    # Modem: hang up before closing
-    if connection_type == "modem":
-      try:
-        from modem import hangup
-        await hangup(writer)
-      except Exception:
-        pass
-
     try:
-      writer.close()
+      writer.close()  # (a modem's writer hangs up; modem.listen waits for it before the next call)
     except Exception:
       pass
 
 
 # ---------------------------------------------------------------------------
-# Modem listener
+# Modem ports
 # ---------------------------------------------------------------------------
 
-async def modem_listener(port, baudrate, init_string):
-  """Listen for incoming modem calls on a single port and spawn user sessions."""
-  from modem import wait_for_call
-
-  log.info("Modem listener starting on %s at %d baud", port, baudrate)
-
-  while True:
-    try:
-      result = await wait_for_call(port, baudrate, init_string)
-      if result:
-        reader, writer = result
-        log.info("Modem: incoming call on %s, starting session", port)
-        asyncio.create_task(user_loop(reader, writer, connection_type="modem"))
-    except Exception as e:
-      log.error("Modem listener error on %s: %s: %s", port, type(e).__name__, e)
-      await asyncio.sleep(5)
+async def _modem_session(reader, writer):
+  await user_loop(reader, writer, connection_type="modem")
 
 
 def _get_modem_ports():
@@ -250,12 +228,13 @@ async def main():
   server = await telnetlib3.create_server(host=config.hostname, port=config.port, shell=user_loop, encoding='cp437', encoding_errors='surrogateescape', timeout=0)
   log.info("BBS listening on %s:%s", config.hostname, config.port)
 
-  # Modem listeners (one task per port)
+  # Modems (a task per port, answering its calls one at a time)
   modem_ports = _get_modem_ports()
-  for port, baudrate, init_string in modem_ports:
-    asyncio.create_task(modem_listener(port, baudrate, init_string))
   if modem_ports:
-    log.info("Modem listeners started on %d port(s)", len(modem_ports))
+    import modem
+    modem_tasks = [asyncio.create_task(modem.listen(port, baudrate, init_string, _modem_session))
+                   for port, baudrate, init_string in modem_ports]
+    log.info("Modem listeners started on %d port(s)", len(modem_tasks))
 
   # Handle Ctrl+C gracefully
   import signal

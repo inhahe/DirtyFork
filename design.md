@@ -26,7 +26,7 @@ DirtyFork is an async Python BBS. Each client connection spawns an async `user_l
 ```
 DirtyFork.py: main()
   ├─ telnetlib3.create_server(shell=user_loop)    — telnet listener
-  ├─ modem_listener(port, baudrate, init_string)   — one per serial port (if configured)
+  ├─ modem.listen(port, baudrate, init_string, …)  — one per serial port (if configured), a call at a time
   │
   └─ user_loop(reader, writer, connection_type) per connection:
       ├─ idle.IdleMonitor wraps reader for timeout/warning
@@ -164,16 +164,21 @@ When the popup or overlay closes normally (not on the way out of a disconnect), 
 
 ## Modem connections
 
-1. `modem_listener()` opens the serial port and sends the init string (default `ATZ`)
-2. Disables auto-answer (`ATS0=0`) so calls are answered manually
-3. Waits for `RING`
-4. Answers with `ATA` and waits for `CONNECT`
-5. On connect, wraps the serial reader/writer in adapter classes (`SerialReader`/`SerialWriter`) that match the telnetlib3 interface
-6. Spawns a `user_loop` with `connection_type="modem"`
-7. On disconnect, sends `+++` pause then `ATH` to hang up
-8. Returns to waiting for the next `RING`
+Each configured port has a `modem.listen()` task, which answers its calls one at a time:
 
-`SerialReader` and `SerialWriter` in `modem.py` provide the same interface as telnetlib3's reader/writer: `write(data)`, `drain()`, `close()`, `get_extra_info()` on the writer and `read(n)` on the reader. Modem terminals auto-detect as `ansi-bbs` (CP437 encoding). Each configured port gets its own `modem_listener` task.
+1. `wait_for_call()` opens the port (RTS/CTS flow control, DTR up) and sends the sysop's init string (default `ATZ`), then `modem.SETUP` (`ATE0V1Q0S0=0&C1&D2`: no echo, results in words, no auto-answer, DCD following the carrier, hang-up on DTR). A command the modem does not answer, or answers `ERROR`, is logged as a warning.
+2. It waits for `RING`, answers with `ATA` and waits (60 s) for `CONNECT`; a failed answer (`NO CARRIER`, silence) gets an `ATH`, and the wait for the next `RING`.
+3. On `CONNECT` it returns a `SerialReader` and `SerialWriter`, the telnetlib3 reader's and writer's interface (`read(n)`, `set_encoding`; `write`, `drain`, `close`, `wait_closed`, `get_extra_info`), and starts a task watching the carrier.
+4. `listen()` runs the session (`user_loop` with `connection_type="modem"`) to its end, then closes the writer, which hangs up, and waits for that before setting the modem up again for the next call.
+
+During a call:
+
+- **The caller's hang-up**: once DCD drops (having been up), the reader returns `""`, so the session ends; data that comes after the drop (the modem's `NO CARRIER`) is the modem's, not the caller's keys. The watch task polls DCD and ends a read that is waiting; a modem that never shows DCD is warned about (hang-ups then go unnoticed but for the idle timeout).
+- **Flow control**: `drain()` waits until no more than about a second of output (at the speed in the `CONNECT` message) is queued in the transport and the port: pyserial-asyncio buffers 64 KiB before its own drain waits, and on Windows hands everything to the driver at once, which at modem speeds is minutes that a ZMODEM repair or a cancel would wait through. ZMODEM also drains every subpacket on a modem (`Settings.drain_every`). A drain raises `ConnectionResetError` if the caller hangs up meanwhile.
+- **Hanging up** (`close()`, from any of the BBS's closes: the session's end, shutdown, a second login, logout): wait (up to 10 s) for the output to leave, drop DTR, and if the carrier stays up, the `+++` escape between guard times and `ATH`; then close the port. DTR is left low however it ends (a shutdown cancels it).
+- **A failed port** (a USB modem unplugged): reads end the session; `wait_for_call` raises `ModemGone` rather than reading a dead port as a quiet one (which spun without yielding and stopped the whole BBS). `listen()` tries the port again every 10 s, logging an error once until it works again.
+
+Modem callers' terminals count as `ansi-bbs` (CP437). The reader decodes incrementally, so a UTF-8 character split across reads arrives whole.
 
 ## Web terminal
 
@@ -229,7 +234,8 @@ They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data
 - **ZMODEM** (`test_zmodem.py`): framing in every header form and CRC, escaping of every byte value, and whole transfers between our sender and receiver over an in-memory pipe that can damage, drop or block what passes, with files of awkward sizes, skips, limits, cancels, timeouts, 16-bit CRCs and windowed receivers, more repairs in one file than `retries` (each further on), a receiver that gets no further, requests that pile up (one restart), a request from beyond the current pass, and lost confirmations after ZEOF following a repair.
 - **Against other implementations** (`test_zmodem_interop.py`, skipped without the tool): zmodem.js under Node (`tests/zmodem_peer.js`, running the web terminal's own copy) and lrzsz's `sz`/`rz` in WSL, both directions, with escaping and with damage on the line.
 - **YMODEM-G** (`test_ymodem.py`): `file_transfer` against small fake peers: a sender's cancel midway (nothing published), a device name, a receiver's cancel (not a success), a plain YMODEM receiver that refuses a packet once and asks late for the end of the batch, a connection that closes.
-- **The file library** (`test_file_transfer.py`, `test_modem.py`): upload names, sizes and room (checked as data arrives), publishing that never replaces; downloads of listed files only; cataloguing that keeps other callers' entries; serial flow control and timeouts.
+- **The file library** (`test_file_transfer.py`): upload names, sizes and room (checked as data arrives), publishing that never replaces; downloads of listed files only; cataloguing that keeps other callers' entries.
+- **Modems** (`test_modem.py`, Windows only): `modem.py` on pyserial-asyncio's real transport, against a simulated Hayes modem (`tests/fake_modem.py`: AT commands, RING, CONNECT, a line of a given speed, DCD, DTR, the `+++` escape): setting up, answering (and a failed answer), a modem that answers nothing, a port that fails while waiting, the caller's hang-up (loud and quiet), a modem without DCD, drain at 2400 bps and when the caller hangs up, hanging up after the output (by DTR, and by `ATH` when DTR is ignored), `close()` hanging up, one call at a time, a port that cannot be opened, a ZMODEM download over the line; and UTF-8 split across reads.
 - **The web terminal's bridge** (`test_terminal_bridge.py`): its telnet client alone, and the bridge against a fake BBS (negotiation, every byte value both ways, the subprotocol and first-message checks, hang-ups and connection errors, an unreachable BBS, the connection limits, silent sockets, origins).
 - **Transfers as a web caller makes them** (`test_web_transfers.py`): zmodem.js, over a WebSocket, through the bridge, to a real telnetlib3 server running `file_transfer` as the BBS does; downloads in UTF-8 and CP437, uploads with refused names and limits, cancelling; and the upload naming rules.
 - **The page** (`test_web_site.py`): `bbs-local.html` is `bbs.html` with local files, and the integrity hashes match the vendored copies; `bbs.js`, run in Node by `tests/page_in_node.js` as the page runs it (from the `<head>`, while the document loads), with stand-ins for the browser and the libraries (skipped without `node`), connects to `/bbs-ws` on the server that served it, and does not try from a page opened from the disk or one whose libraries did not load, saying why instead and hiding the controls.
@@ -260,7 +266,7 @@ They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data
 | `lib/` | The vendored YMODEM-G library (`ymodem`); where it came from, and what was changed, in `lib/README.md` |
 | `idle.py` | Idle timeout: the reader wrapper with its warning popup |
 | `logger.py` | Rotating file logging |
-| `modem.py` | Serial/modem adapter classes and AT command handling |
+| `modem.py` | Modem calls: setting up and answering (AT commands), the session's serial reader and writer, the carrier, hanging up, a port's calls one at a time |
 | `modules.py` | Dynamic module loader |
 | `paths.py` | Path resolution (project vs data directory) |
 | `stars.py` | Ambient star animation |

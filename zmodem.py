@@ -494,22 +494,25 @@ class Settings:
     has stopped reading) before giving up; generous, for slow modems.
     escape_ctrl: as receiver, ask the sender to escape every control
     character (for a link that is not 8-bit clean); as sender, escape them.
+    drain_every: bytes sent between waits for the link to take them (a
+    drain): what can be queued beyond the link's own buffer, so small on a
+    slow line, where it would hold up a repair or a cancel.
     """
     start_timeout: float = 120.0
     header_timeout: float = 10.0
     retries: int = 10
     stall_timeout: float = 300.0
     escape_ctrl: bool = False
+    drain_every: int = 16 * 1024
 
 
 class _Output:
     """What a session sends, with flow control that a failure can interrupt.
 
-    Drains every DRAIN_EVERY bytes (and after control frames). A drain is
-    abandoned when *failed* is set (the other side cancelled while we were
-    blocked) or after the stall timeout.
+    Drains every Settings.drain_every bytes (and after control frames). A
+    drain is abandoned when *failed* is set (the other side cancelled while
+    we were blocked) or after the stall timeout.
     """
-    DRAIN_EVERY = 16 * 1024
 
     def __init__(self, link: Link, settings: Settings):
         self.link = link
@@ -528,7 +531,7 @@ class _Output:
             raise self.failure
         self.link.write(data)
         self.pending += len(data)
-        if flush or self.pending >= self.DRAIN_EVERY:
+        if flush or self.pending >= self.settings.drain_every:
             self.pending = 0
             drain = asyncio.ensure_future(self.link.drain())
             failed = asyncio.ensure_future(self.failed.wait())
