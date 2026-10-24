@@ -262,7 +262,7 @@ file_tags: [game, utility, ...]   # the tags an uploader may choose from
 
 **Browse** treats tags as folders. In a folder are the further tags of its files (with how many files have them), then the files whose tags are exactly the folder's path; at the top, the untagged files. Enter opens a folder or downloads a file, Backspace goes up.
 
-**Lists** (search results, browsing, List All) show number, name, size, tags and description, a page at a time however many files match. Up/Down, PgUp/PgDn and Home/End move; typing a number and Enter goes to that file; **I** shows everything about the selected file (full description, tags, uploader, date added). **Download** asks for a name and looks it up in the catalogue (with several of that name, it lists them to choose from); it is never joined to a folder.
+**Lists** (search results, browsing, List All) show number, name, size, tags and description, a page at a time however many files match. Up/Down, PgUp/PgDn and Home/End move; typing a number and Enter goes to that file; **I** shows everything about the selected file (full description, tags, uploader, date added); a sysop's **E** edits its description and tags (below). **Download** asks for a name and looks it up in the catalogue (with several of that name, it lists them to choose from); it is never joined to a folder.
 
 **Transfers** use ZMODEM (`zmodem.py`, DirtyFork's own) or YMODEM-G (`lib/ymodem`). A caller is asked which only when their terminal can run both; the web terminal runs ZMODEM only, so it is used without asking. A download starts by itself in terminals that watch for ZMODEM (SyncTERM, the web terminal); in others the caller starts receiving. For an upload the BBS waits (up to two minutes) for the caller's terminal to start sending. Pressing **Ctrl+X five times** cancels either. Afterwards the screen is redrawn as it was.
 
@@ -275,7 +275,9 @@ file_tags: [game, utility, ...]   # the tags an uploader may choose from
 
 After an upload the caller is asked for a description and tags (from `file_tags`) for each file saved.
 
-**Vetting uploads.** A caller with the `upload_key` key (default `trusted_uploader`), or a sysop, has uploads listed at once. Anyone else's go to `files/pending` and are listed to no one, the uploader included, until a sysop deals with them in **Sysop > Vet Uploads**: the list of uploads awaiting approval, oldest first, where Enter shows one with **Approve** (moved into the library, listed), **Reject** (deleted, after a confirmation) and **Download** (to look at it first). Sysops online get a popup once the uploader has given its description and tags (whatever their paging settings), and a sysop logging in is told how many are waiting. Grant the key in Sysop > Keys, or through a key group.
+**Vetting uploads.** A caller with the `upload_key` key (default `trusted_uploader`), or a sysop, has uploads listed at once. Anyone else's go to `files/pending` and are listed to no one, the uploader included, until a sysop deals with them in **Sysop > Vet Uploads**: the list of uploads awaiting approval, oldest first, where Enter shows one with **Approve** (moved into the library, listed), **Reject** (deleted, after a confirmation), **Edit** (its description and tags, below) and **Download** (to look at it first). Sysops online get a popup once the uploader has given its description and tags (whatever their paging settings), and a sysop logging in is told how many are waiting. Grant the key in Sysop > Keys, or through a key group.
+
+**Editing a file's details.** A sysop edits a file's description and tags in one form, reached three ways: **E** on a file in any list, **Edit** while vetting an upload, and **Sysop > Edit Files** (the library's search, where Enter edits the file picked). In the form, Tab moves between the description, the tag list (Insert adds a tag, Delete removes the one highlighted; a tag may hold commas and spaces) and the buttons. Saving a file `library_sync.py` lists makes its details the sysop's: the sync keeps them from then on, even when the file changes. **Reset** (shown for such a file) gives them back to the sync, which sets them again at its next run.
 
 Files you put in the library's folder yourself are catalogued (as yours, `sysop_handle`, untagged) when the BBS starts and whenever `library_sync.py` runs; files gone from it are forgotten. A `meta.yaml` from before the catalogue (`files_meta`) is read once, at startup: its keys and descriptions go to those files, and once that is done it is moved to `files/catalog/meta.yaml.imported`.
 
@@ -364,12 +366,13 @@ Changes apply immediately to the user's live session if they're online.
 
 ### Sysop Panel
 
-The sysop panel is a menu with four management tools:
+The sysop panel is a menu with five management tools:
 
 - **Keys**: Look up a user by handle, view and edit their keys (comma-separated)
 - **Groups**: Edit key group definitions in the config YAML (using ruamel.yaml to preserve comments). Changes reload into the live config and re-expand all online users' keys
 - **Settings**: Edit any user's settings using the same settings page code
-- **Vet Uploads**: approve, reject or download the uploads awaiting approval (see File Library)
+- **Vet Uploads**: approve, reject, edit or download the uploads awaiting approval (see File Library)
+- **Edit Files**: find any file in the library (the library's search) and edit its description and tags
 
 Access requires the `sysop` key group (configured in `white_keys`).
 

@@ -1153,6 +1153,8 @@ def sync_source(ctx, source, conf):
       if (old is not None and (old.root, old.path) == (item.root, item.path)
               and (old.fingerprint == item.fingerprint if item.stamp is None
                    else (old.size, old.mtime) == item.stamp)):
+        if old.edited:
+          continue  # (a sysop set its details: they are kept)
         tags = library.clean_tags(item.tags)
         new_desc = item.description if item.description is not None else old.description
         if tags != list(old.tags) or new_desc != old.description:
@@ -1181,15 +1183,21 @@ def sync_source(ctx, source, conf):
           size, mtime = item.stamp
         else:
           size, mtime = library.file_stamp(os.path.join(ctx.lib.roots[item.root], *item.path.split("/")))
-        description = item.description if item.description is not None else (
-          item.describe() if item.describe else "")
+        tags = item.tags
+        if old is not None and old.edited:  # (a sysop set its details: they are kept)
+          description, tags = old.description, list(old.tags)
+        else:
+          description = item.description if item.description is not None else (
+            item.describe() if item.describe else "")
         if old is not None and (old.root, old.path) != (item.root, item.path):
           library.remove(con, old.id)
           if old.root == library.ZIPS:
             _delete_zip(ctx, old.path)
-        library.put(con, root=item.root, path=item.path, size=size, mtime=mtime, description=description,
-                    uploader=uploader, tags=item.tags, source=source, source_key=item.key,
-                    fingerprint=item.fingerprint)
+        file_id = library.put(con, root=item.root, path=item.path, size=size, mtime=mtime,
+                              description=description, uploader=uploader, tags=tags, source=source,
+                              source_key=item.key, fingerprint=item.fingerprint)
+        if old is not None and old.edited:  # (a new row, if it moved: the mark goes with it)
+          con.execute("UPDATE files SET edited = 1 WHERE id = ?", (file_id,))
       except sqlite3.Error:
         raise  # (the catalogue itself: the source fails, and is rolled back)
       except Exception as exc:

@@ -1,6 +1,7 @@
 """
-Sysop module — user key management, key group editing, user settings, and
-vetting uploads to the file library (file.vet_uploads).
+Sysop module — user key management, key group editing, user settings,
+vetting uploads to the file library (file.vet_uploads), and editing any
+library file's description and tags (file.edit_files).
 Accessible only to users with the 'sysop' key.
 """
 
@@ -298,5 +299,8 @@ async def run(user, dest_conf, menu_item=None):
     elif action == "vet_uploads":
         import file
         await file.vet_uploads(user)
+    elif action == "edit_files":
+        import file
+        await file.edit_files(user)
 
     return RetVals(status=success, next_destination=null, next_menu_item=null)

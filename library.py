@@ -45,7 +45,7 @@ LINKED_TYPES = frozenset({"gallery", "videos", "samples", "mods"})  # listed in 
 SOURCE_TYPES = LINKED_TYPES | {"websites", "webpages", "github"}
 DEFAULT_UPLOAD_KEY = "trusted_uploader"
 SYNC_LOCK = "library_sync.lock"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SOURCE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -403,6 +403,7 @@ CREATE TABLE IF NOT EXISTS files (
   source TEXT,                         -- the library_sync source listing it; NULL for uploads
   source_key TEXT,                     -- what it is in that source; NULL when that is its path
   fingerprint TEXT,                    -- what the source made it from, to see a change (zips)
+  edited INTEGER NOT NULL DEFAULT 0,   -- 1: a sysop set its tags and description; the sync keeps them
   tag_count INTEGER NOT NULL DEFAULT 0,
   name_norm TEXT NOT NULL,             -- norm(name): searched, and the order lists are in
   desc_norm TEXT NOT NULL,
@@ -454,10 +455,18 @@ def _schema_version(con):
   return int(row[0]) if row else None
 
 
+# What each schema version adds to the one before: a catalogue an older
+# DirtyFork made is brought up to date by ensure_schema. (_SCHEMA is the
+# latest, for a new catalogue.)
+_MIGRATIONS = {
+  2: ["ALTER TABLE files ADD COLUMN edited INTEGER NOT NULL DEFAULT 0"],
+}
+
+
 def ensure_schema(lib):
-  """Create the catalogue and its folders if need be (at startup). A
-  catalogue already made is only read: creating takes the write lock, which
-  a sync may be holding."""
+  """Create the catalogue and its folders if need be, or bring an older
+  one's schema up to date (at startup). A catalogue that is up to date is
+  only read: writing takes the write lock, which a sync may be holding."""
   for d in (lib.files_dir, lib.pending_dir, os.path.dirname(os.path.abspath(lib.catalog))):
     os.makedirs(d, exist_ok=True)
   con = connect(lib)
@@ -467,8 +476,17 @@ def ensure_schema(lib):
       raise RuntimeError(f"{lib.catalog} is from a newer DirtyFork (schema {version})")
     if version == SCHEMA_VERSION:
       return
-    con.execute("PRAGMA journal_mode = WAL")
-    con.executescript(_SCHEMA)
+    if version is None:
+      con.execute("PRAGMA journal_mode = WAL")
+      con.executescript(_SCHEMA)
+    else:
+      con.execute("BEGIN IMMEDIATE")
+      if _schema_version(con) != version:  # (another process migrated it meanwhile)
+        con.rollback()
+        return
+      for step in range(version + 1, SCHEMA_VERSION + 1):
+        for statement in _MIGRATIONS[step]:
+          con.execute(statement)
     con.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema', ?)", (str(SCHEMA_VERSION),))
     con.commit()
   finally:
@@ -491,6 +509,7 @@ class Entry:
   source_key: str
   fingerprint: str
   tags: tuple
+  edited: bool = False  # a sysop set its details (set_details): the sync leaves them be
 
   @property
   def pending(self):
@@ -584,7 +603,7 @@ def _entry(row, tags):
   return Entry(id=row["id"], root=row["root"], path=row["path"], name=_name(row["path"]), size=row["size"],
                mtime=row["mtime"], description=row["description"], uploader=row["uploader"],
                added=row["added"], source=row["source"], source_key=row["source_key"] or row["path"],
-               fingerprint=row["fingerprint"], tags=tuple(tags))
+               fingerprint=row["fingerprint"], tags=tuple(tags), edited=bool(row["edited"]))
 
 
 def fetch(con, ids):
@@ -652,6 +671,20 @@ def set_tags(con, file_id, tags):
   con.executemany("INSERT INTO file_tags (file_id, tag_norm, tag, position) VALUES (?, ?, ?, ?)",
                   [(file_id, norm(t), t, i) for i, t in enumerate(tags)])
   con.execute("UPDATE files SET tag_count = ? WHERE id = ?", (len(tags), file_id))
+
+
+def set_details(con, file_id, description, tags):
+  """A sysop's description and tags for a file, kept from then on: the sync
+  no longer sets them (reset_details lets it again). The caller commits."""
+  set_description(con, file_id, description)
+  set_tags(con, file_id, tags)
+  con.execute("UPDATE files SET edited = 1 WHERE id = ?", (file_id,))
+
+
+def reset_details(con, file_id):
+  """Let the sync set the file's description and tags again (at its next
+  run). The caller commits."""
+  con.execute("UPDATE files SET edited = 0 WHERE id = ?", (file_id,))
 
 
 def set_description(con, file_id, description):
@@ -830,8 +863,9 @@ def approve(lib, con, file_id, temp_prefix):
     moved = con.execute("UPDATE files SET root = ?, path = ?, added = ? WHERE id = ?",
                         (UPLOADS, entry.name, int(time.time()), file_id)).rowcount
     if not moved:  # (forgotten meanwhile, by a sync that saw the pending folder without it)
-      put(con, root=UPLOADS, path=entry.name, size=entry.size, mtime=entry.mtime, description=entry.description,
-          uploader=entry.uploader, tags=entry.tags)
+      again = put(con, root=UPLOADS, path=entry.name, size=entry.size, mtime=entry.mtime,
+                  description=entry.description, uploader=entry.uploader, tags=entry.tags)
+      con.execute("UPDATE files SET edited = ? WHERE id = ?", (int(entry.edited), again))
     con.commit()
   except sqlite3.Error as exc:
     con.rollback()

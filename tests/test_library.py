@@ -473,6 +473,18 @@ class Folders(unittest.TestCase):
       bbs.close()
     self.assertEqual(self.catalogued("uploads"), {"new.zip": ("alice", 1)})
 
+  def test_a_sysops_details_and_giving_them_back(self):
+    file_id = library.put(self.con, root="pics", path="x/y.jpg", size=1, tags=["pic", "x"], source="pics",
+                          description="an AI caption")
+    self.con.commit()
+    library.set_details(self.con, file_id, "my words", ["mine", "pic"])
+    self.con.commit()
+    e = library.get(self.con, file_id)
+    self.assertEqual((e.description, e.tags, e.edited), ("my words", ("mine", "pic"), True))
+    library.reset_details(self.con, file_id)
+    self.con.commit()
+    self.assertFalse(library.get(self.con, file_id).edited)
+
   def test_reserved_names(self):
     self.assertEqual(self.lib.reserved_names(), {"catalog", "pending", "zips", "repos"})
     beside = dataclasses.replace(self.lib, catalog=os.path.join(self.lib.files_dir, "cat.db"))
@@ -481,6 +493,46 @@ class Folders(unittest.TestCase):
     self.write(self.lib.files_dir, "cat.db-wal")
     self.write(self.lib.files_dir, "library_sync.lock")
     self.assertEqual(library.reconcile_uploads(beside, self.con, ".upload-"), (0, 0))  # (never catalogued)
+
+
+class Schema(unittest.TestCase):
+  # The files table as schema 1 had it: what a catalogue made before
+  # schema 2 holds.
+  V1_FILES = """CREATE TABLE files (id INTEGER PRIMARY KEY, root TEXT NOT NULL, path TEXT NOT NULL,
+    size INTEGER NOT NULL, mtime INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '',
+    uploader TEXT NOT NULL DEFAULT '', added INTEGER NOT NULL, source TEXT, source_key TEXT,
+    fingerprint TEXT, tag_count INTEGER NOT NULL DEFAULT 0, name_norm TEXT NOT NULL, desc_norm TEXT NOT NULL,
+    uploader_norm TEXT NOT NULL, UNIQUE (root, path))"""
+
+  def test_an_older_catalogue_is_brought_up_to_date(self):
+    top = tempfile.mkdtemp(prefix="library-")
+    try:
+      lib = make_library(top)
+      os.remove(lib.catalog)
+      con = sqlite3.connect(lib.catalog)
+      con.executescript(self.V1_FILES + """;
+        CREATE TABLE file_tags (file_id INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
+          tag_norm TEXT NOT NULL, tag TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (file_id, tag_norm))
+          WITHOUT ROWID;
+        CREATE TABLE sync_state (source TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+          PRIMARY KEY (source, key)) WITHOUT ROWID;
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);""")
+      con.execute("INSERT INTO settings (key, value) VALUES ('schema', '1')")
+      con.execute("INSERT INTO files (root, path, size, added, name_norm, desc_norm, uploader_norm) "
+                  "VALUES ('uploads', 'old.zip', 1, 0, 'old.zip', '', '')")
+      con.commit()
+      con.close()
+      library.ensure_schema(lib)
+      con = library.connect(lib)
+      try:
+        self.assertEqual(library._schema_version(con), library.SCHEMA_VERSION)
+        e = library.fetch(con, library.all_ids(con))[0]
+        self.assertEqual((e.name, e.edited), ("old.zip", False))
+        library.ensure_schema(lib)  # (and once up to date, left be)
+      finally:
+        con.close()
+    finally:
+      shutil.rmtree(top, ignore_errors=True)
 
 
 class Config(unittest.TestCase):

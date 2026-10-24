@@ -367,6 +367,25 @@ class Syncing(Scratch):
     self.assertEqual(failures, [])
     self.assertGreater(done[0], 0)
 
+  def test_a_sysops_details_outlast_the_sync(self):
+    data = self.path("data")
+    path = write(os.path.join(data, "a.flac"), "1")
+    c = conf(type="samples", dir=data)
+    S.sync_source(self.ctx, "src", c)
+    file_id = library.source_entries(self.con, "src")["a.flac"].id
+    library.set_details(self.con, file_id, "a kick drum", ["drums"])
+    self.con.commit()
+    S.sync_source(self.ctx, "src", c)                       # unchanged
+    S.sync_source(self.ctx, "src", conf(type="samples", dir=data, tags=["new"]))  # its tags would change
+    write(path, "22")
+    S.sync_source(self.ctx, "src", c)                       # the file changed
+    e = library.get(self.con, file_id)
+    self.assertEqual((e.description, e.tags, e.edited, e.size), ("a kick drum", ("drums",), True, 2))
+    library.reset_details(self.con, file_id)
+    self.con.commit()
+    S.sync_source(self.ctx, "src", c)
+    self.assertEqual(self.listed(), {"a.flac": (("sample",), 2, "")})
+
   def test_the_handler_starts_without_the_write_lock(self):
     # (fetching repositories, fingerprinting sites: slow, and the BBS must
     # be able to catalogue an upload meanwhile)

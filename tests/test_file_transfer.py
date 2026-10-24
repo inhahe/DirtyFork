@@ -359,10 +359,65 @@ class LibraryFiles(unittest.TestCase):
 
     def test_vetting_reject(self):
         from keyboard_codes import right, tab
-        # Tab to Reject (Back wraps round to Approve), Enter; then Delete, the first button
-        self.assertEqual(self.vet(self.unvetted, [tab, tab, tab, tab, right, "\r", "\r"]), "unvetted.zip was deleted.")
+        # Tab round the five buttons back to Approve, Right to Reject, Enter; then Delete, the first button
+        self.assertEqual(self.vet(self.unvetted, [tab] * 5 + [right, "\r", "\r"]), "unvetted.zip was deleted.")
         self.assertIsNone(self.entry(self.unvetted))
         self.assertFalse(os.path.exists(os.path.join(self.lib.pending_dir, "unvetted.zip")))
+
+    def press(self, keys, work):
+        """Run work() (a coroutine function) with these keys pressed, in
+        the forms and in the lists. Returns the message boxes shown."""
+        import input_fields
+        f = self.file
+        keys = iter(keys)
+        shown = []
+
+        async def key(user, *args, **kwargs):
+            return next(keys)
+
+        async def show(user, text, *args, **kwargs):
+            shown.append(text)
+        with mock.patch.object(input_fields, "get_input_key", key), mock.patch.object(f, "get_input_key", key), \
+                mock.patch.object(f, "show_message_box", show):
+            asyncio.run(work())
+        return shown
+
+    def test_editing_from_the_vetting_screen(self):
+        from keyboard_codes import tab, insert
+        f = self.file
+        sysop = self.user("boss", {"sysop"})
+        keys = ([tab, tab, "\r"]                         # Approve, Reject, Edit
+                + list("a fine tool") + [tab]            # the description, then the tags
+                + [insert] + list("utility") + ["\r"]    # a tag added
+                + [tab, "\r"]                            # Save
+                + [tab, tab, tab, tab, "\r"])            # back at the vetting screen: Back
+        shown = self.press(keys, lambda: f._vet_one(sysop, self.entry(self.unvetted)))
+        e = self.entry(self.unvetted)
+        self.assertEqual((e.description, e.tags, e.edited, e.root), ("a fine tool", ("utility",), True, "pending"))
+        self.assertIn("Saved the details of unvetted.zip.", shown)
+
+    def test_e_edits_from_a_list_for_a_sysop_only(self):
+        from array import array
+        from keyboard_codes import tab
+        f = self.file
+        caller, sysop = self.user(), self.user("boss", {"sysop"})
+        self.press(["e", "q"], lambda: f._pick_files(caller, f._Items(array("q", [self.game])), "t"))
+        self.assertFalse(self.entry(self.game).edited)
+        self.press(["e"] + list("ok") + [tab, tab, "\r", "q"],
+                   lambda: f._pick_files(sysop, f._Items(array("q", [self.game])), "t"))
+        self.assertEqual((self.entry(self.game).description, self.entry(self.game).edited), ("ok", True))
+
+    def test_edit_files_is_the_search_with_the_same_form(self):
+        f = self.file
+        seen = {}
+
+        async def search(user, open_file=None, heading=None):
+            seen["open_file"] = open_file
+        with mock.patch.object(f, "_search_files", search):
+            asyncio.run(f.edit_files(self.user("boss", {"sysop"})))
+            self.assertIs(seen.pop("open_file"), f._edit_details)
+            asyncio.run(f.edit_files(self.user()))  # (not a sysop: nothing)
+            self.assertEqual(seen, {})
 
     def test_a_list_keeps_the_rows_on_screen_when_its_cache_is_full(self):
         f = self.file
@@ -420,7 +475,7 @@ class LibraryFiles(unittest.TestCase):
         counted = []
         real = self.library.listed_count
 
-        async def form(user, query, count):
+        async def form(user, query, count, heading):
             return next(queries)
         with mock.patch.object(f, "_search_form", form), \
                 mock.patch.object(f, "show_message_box", mock.AsyncMock()), \
