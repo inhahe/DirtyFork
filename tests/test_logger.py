@@ -49,6 +49,7 @@ class Console(unittest.TestCase):
         saved = (list(dirtyfork.handlers), dirtyfork.propagate, dirtyfork.level, list(root.handlers))
 
         def restore():
+            self.console.resumed.set()  # (first: a writer stuck on it holds its handler's lock)
             for handler in dirtyfork.handlers:
                 if isinstance(handler, logger.ConsoleLog):
                     handler.stop(timeout=1)
@@ -70,14 +71,17 @@ class Console(unittest.TestCase):
                 with warnings.catch_warnings():
                     warnings.simplefilter("always")
                     warnings.warn("a Python warning", RuntimeWarning)
+                logger.log.info("%d lines", "not a number")  # (a record that cannot be logged)
                 done.set()
             threading.Thread(target=go, daemon=True).start()
             self.assertTrue(done.wait(2), "logging waited for the paused console")
             self.console.resumed.set()
-            shown = self.console.shown(7)
+            shown = self.console.shown(8)
         self.assertIn("line 4", shown)
         self.assertIn("from asyncio", shown)
         self.assertIn("a Python warning", shown)
+        self.assertEqual(shown.count("--- Logging error ---"), 1, shown)  # (the file's and the console's, once)
+        self.assertIn("not a number", shown)
 
     def test_lines_beyond_the_backlog_are_counted_not_kept(self):
         handler = logger.ConsoleLog(backlog=3, stream=self.console)

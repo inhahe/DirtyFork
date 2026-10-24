@@ -641,6 +641,50 @@ class Transfers(unittest.TestCase):
             zmodem._Receiver.__init__ = original
         self.assertEqual(store["windowed.bin"], data)
 
+    def test_the_confirmation_of_a_file_behind_another_header_is_not_lost(self):
+        """After ZEOF, a ZACK and then the ZRINIT arrive together: the ZRINIT
+        must still be seen (looking past the ZACK for piled-up requests, it
+        was taken and dropped; every ZEOF after met the same, until the
+        sender gave up)."""
+        path, data = self.make("confirmed.bin", 5000)
+        confirmation = Encoder.hex_header(ZRINIT, zmodem.flag_bytes(f0=CANFDX | CANOVIO | CANFC32))
+        request = Encoder.hex_header(zmodem.ZRPOS, zmodem.pos_bytes(0))[:6]
+        started = []
+
+        def ack_first(chunk, offset):  # (the ZRINITs once the data has begun)
+            if chunk.startswith(request):
+                started.append(True)
+            if started and chunk == confirmation:
+                return Encoder.hex_header(zmodem.ZACK, zmodem.pos_bytes(5000)) + chunk
+            return chunk
+        sent, received, store = self.transfer([path], damage_to_sender=ack_first)
+        self.assertNotIsInstance(sent, Exception, repr(sent))
+        self.assertEqual([r.status for r in sent], ["sent"])
+        self.assertEqual(store["confirmed.bin"], data)
+
+    def test_an_acknowledgement_behind_another_header_is_not_lost(self):
+        """A windowed receiver's every ZACK comes behind a ZNAK: each window
+        must still be taken as acknowledged, not waited for until the
+        timeout, and sent again."""
+        path, data = self.make("acknowledged.bin", 20000)
+        original = zmodem._Receiver.__init__
+        ack = Encoder.hex_header(zmodem.ZACK, zmodem.pos_bytes(0))[:6]
+
+        def small_buffer(self, *args, **kwargs):
+            original(self, *args, **kwargs)
+            self.zrinit = Encoder.hex_header(ZRINIT, bytes([0x00, 0x10, 0, CANFDX | CANFC32]))
+
+        def nak_first(chunk, offset):
+            return Encoder.hex_header(zmodem.ZNAK) + chunk if chunk.startswith(ack) else chunk
+        zmodem._Receiver.__init__ = small_buffer
+        try:
+            with self.assertLogs("dirtyfork.zmodem", "DEBUG") as logs:
+                sent, received, store = self.transfer([path], damage_to_sender=nak_first)
+        finally:
+            zmodem._Receiver.__init__ = original
+        self.assertEqual(store["acknowledged.bin"], data)
+        self.assertFalse([line for line in logs.output if "no acknowledgement" in line])
+
 
 if __name__ == "__main__":
     unittest.main()

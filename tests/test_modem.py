@@ -18,7 +18,7 @@ from fake_modem import FakeModem, plugged_in
 PORT = "COM9"
 # (shorter waits than a real modem needs, to keep the tests quick)
 QUICK = dict(COMMAND_TIMEOUT=0.3, CARRIER_POLL=0.05, DTR_DROP=0.1, GUARD_TIME=0.25,
-             RETRY=0.05, SETTLE=0.05)
+             RETRY=0.05, SETTLE=0.05, FLUSH_LIMIT=1.0)
 
 
 def run(coro, timeout=30):
@@ -136,10 +136,51 @@ class Modem(unittest.TestCase):
         self.assertEqual(fake.commands[2:], ["ATA", "ATH", "ATA"])
         self.assertIn("answered, but no connection (NO CARRIER)", logs.output[0])
 
-    def test_the_line_speed_comes_from_connect(self):
+    def test_the_line_speed_comes_from_carrier_or_connect(self):
         self.assertEqual(modem.line_speed("CONNECT 33600/ARQ/V34/LAPM/V42BIS"), 33600)
         self.assertEqual(modem.line_speed("CONNECT 2400"), 2400)
         self.assertEqual(modem.line_speed("CONNECT"), 300)
+        # (many modems give the computer's speed in CONNECT, the line's in CARRIER)
+        self.assertEqual(modem.line_speed("CONNECT 115200", "CARRIER 2400"), 2400)
+        self.assertEqual(modem.line_speed("CONNECT 115200"), modem.ANALOG_TOP)
+
+    def test_a_carrier_message_sets_the_pace(self):
+        """CONNECT 115200 (the computer's speed) after CARRIER 2400: drain
+        keeps to 2400 bps, not to 115200's 11 KiB a second."""
+        fake = FakeModem(carrier="CARRIER 2400", connect="CONNECT 115200", cps=240)
+
+        async def then(reader, writer):
+            writer.write(b"x" * 2048)  # (8 s at 2400 bps; under a second at 33,600)
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(writer.drain(), 0.5)
+            fake.cps = None
+        self.connected(fake, then)
+
+    def test_a_distinctive_ring_is_answered(self):
+        fake = FakeModem()
+
+        async def go():
+            ready = lambda: fake.ring("RING 1")  # noqa: E731
+            reader, writer = await asyncio.wait_for(
+                modem.wait_for_call(PORT, 115200, "ATZ", ready=ready), 5)
+            writer.close()
+            await writer.wait_closed()
+        with plugged_in({PORT: fake}):
+            run(go())
+        self.assertIn("ATA", fake.commands)
+
+    def test_numeric_results_with_echo_are_read(self):
+        """A stored profile with E1 and V0: ATZ's echo ends in a CR, and its
+        result is a digit and a CR, with no LF anywhere."""
+        fake = FakeModem(numeric=True)
+
+        async def go():
+            waiting = asyncio.ensure_future(modem.wait_for_call(PORT, 115200, "ATZ"))
+            await eventually(lambda: fake.commands == ["ATZ", modem.SETUP])
+            await asyncio.sleep(0.4)  # (longer than a command may take to answer)
+            await stop(waiting)
+        with self.assertNoLogs("dirtyfork", "WARNING"), plugged_in({PORT: fake}):
+            run(go())
 
     # -- a port that fails --------------------------------------------------
 
@@ -241,6 +282,44 @@ class Modem(unittest.TestCase):
         self.assertEqual(fake.commands[-1], "ATH")
         self.assertFalse(fake.carrier)
         self.assertEqual(bytes(fake.to_caller), b"")  # (the +++ was not taken for data)
+
+    def test_a_line_that_holds_its_output_does_not_hold_up_the_hang_up(self):
+        """The modem stops taking data (switched off mid-call, or flow
+        control held) with output queued: the hang-up gives up on that output
+        and closes the port, rather than wait for it (pyserial-asyncio's
+        close flushes the port on the event loop's thread, without limit)."""
+        fake = FakeModem(connect="CONNECT 2400", cps=240)
+
+        async def then(reader, writer):
+            fake.powered = False  # (switched off: nothing leaves any more)
+            writer.write(b"x" * 2048)
+        self.connected(fake, then)
+        self.assertFalse(fake.is_open)
+        self.assertEqual(bytes(fake.unsent), b"")  # (dropped, not left queued)
+
+    def test_a_switched_off_modem_does_not_stop_a_shutdown(self):
+        """What setting it up wrote waits in the port for ever: stopping the
+        port's task must still end at once (and close the port)."""
+        fake = FakeModem(powered=False)
+
+        async def go():
+            listening = asyncio.ensure_future(modem.listen(PORT, 115200, "ATZ", None))
+            await eventually(lambda: fake.opened == 1 and len(fake.unsent) > len("ATZ\r"))
+            await stop(listening)
+        with self.assertLogs("dirtyfork", "WARNING"), plugged_in({PORT: fake}):
+            run(go(), timeout=15)
+        self.assertFalse(fake.is_open)
+
+    def test_a_modem_without_dcd_that_ignores_dtr_is_hung_up_with_ath(self):
+        """With no carrier to tell by, it may still be connected after DTR
+        dropped: ATH to be sure."""
+        fake = FakeModem(dcd=False, follows_dtr=False, guard=0.2)
+
+        async def then(reader, writer):
+            pass
+        self.connected(fake, then)
+        self.assertEqual(fake.commands[-1], "ATH")
+        self.assertFalse(fake.carrier)
 
     def test_closing_hangs_up_too(self):
         """The BBS closes connections itself (at shutdown, a second login,

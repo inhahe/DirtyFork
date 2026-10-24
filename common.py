@@ -174,6 +174,17 @@ class GlobalData:
 
 global_data = GlobalData()
 
+
+def forget_session(user):
+  """Take *user*'s ended session out of the registry (global_data). Under
+  its handle only if it is still the one there: a second login of the same
+  handle has replaced it, and that session must stay."""
+  global_data.users_logging_in.discard(user)
+  handle = getattr(user, "handle", None)
+  if handle and global_data.users.get(handle.lower()) is user:
+    del global_data.users[handle.lower()]
+
+
 shutdown_event = asyncio.Event()
 
 async def shutdown_bbs(reason="BBS shutting down."):
@@ -897,8 +908,8 @@ class _DestinationRegistry:
             old.writer.close()
           except Exception:
             pass
-          # Remove from registry so the new session can take the slot;
-          # the old user_loop's finally will be a no-op for this key.
+          # Remove from registry so the new session can take the slot; the
+          # old session, ending, leaves it (forget_session: no longer its).
           global_data.users.pop(user_in_db["handle"].lower(), None)
         uid = user_in_db["id"] if "id" in user_in_db.keys() else null
         setup_user_session(user, user_in_db["handle"], uid, user_in_db["time_created"])

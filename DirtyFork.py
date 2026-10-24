@@ -46,7 +46,7 @@ setup_logging()
 if not debug_mode:
   logging.getLogger("telnetlib3").setLevel(logging.WARNING)
 
-from common import User, Destinations, global_data, user_director
+from common import User, Destinations, forget_session, global_data, user_director
 from definitions import RetVals, success, fail, new_user, cr, lf, null, Disconnected, white, black, red
 from input_output import send
 from idle import IdleMonitor
@@ -149,9 +149,7 @@ async def user_loop(reader, writer, connection_type="telnet"):
       log.info("User '%s' logged off (%s)", handle, connection_type)
     else:
       log.info("Connection closed before login (%s)", connection_type)
-    global_data.users_logging_in.discard(user)
-    if handle and handle.lower() in global_data.users:
-      del global_data.users[handle.lower()]
+    forget_session(user)
 
     try:
       writer.close()  # (a modem's writer hangs up; modem.listen waits for it before the next call)

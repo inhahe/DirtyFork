@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import binascii
+import collections
 import logging
 import os
 import re
@@ -597,7 +598,10 @@ class _Sender:
         self.enc = Encoder(settings.escape_ctrl)
         self.crc32 = False
         self.window = 0  # bytes between acknowledgements (0: stream)
-        self.headers: asyncio.Queue = asyncio.Queue()
+        # The receiver's headers as they arrived (and, last, the failure that
+        # ended them): a deque, so that what comes next can be looked at.
+        self.headers: collections.deque = collections.deque()
+        self.arrived = asyncio.Event()
         self.monitor: Optional[asyncio.Task] = None
 
     async def _monitor(self) -> None:
@@ -614,26 +618,37 @@ class _Sender:
             except asyncio.CancelledError:
                 return
             except BaseException as exc:  # Aborted, LinkClosed
-                self.headers.put_nowait(exc)
+                self._arrive(exc)
                 self.out.fail(exc)
                 return
-            self.headers.put_nowait(hdr)
+            self._arrive(hdr)
+
+    def _arrive(self, item) -> None:
+        self.headers.append(item)
+        self.arrived.set()
 
     async def next_header(self, timeout: float) -> Header:
-        item = await asyncio.wait_for(self.headers.get(), timeout)
-        if isinstance(item, BaseException):
-            raise item
-        return item
+        """The next header, waiting at most *timeout* seconds for one."""
+        if not self.headers:
+            self.arrived.clear()
+            await asyncio.wait_for(self.arrived.wait(), timeout)
+        return self.pending_header()
 
     def pending_header(self) -> Optional[Header]:
         """A header that has already arrived, if any."""
-        try:
-            item = self.headers.get_nowait()
-        except asyncio.QueueEmpty:
+        if not self.headers:
             return None
+        item = self.headers.popleft()
         if isinstance(item, BaseException):
+            self.headers.appendleft(item)  # (it stays: every later look fails too)
             raise item
         return item
+
+    def _pending_request(self) -> Optional[Header]:
+        """The next header if it has arrived and is a request to send again."""
+        if self.headers and isinstance(self.headers[0], Header) and self.headers[0].type == ZRPOS:
+            return self.headers.popleft()
+        return None
 
     async def send(self, data: bytes, flush: bool = True) -> None:
         await self.out.send(data, flush)
@@ -799,40 +814,42 @@ class _Sender:
                 await self.send(self.enc.bin_header(ZDATA, pos_bytes(pos), self.crc32))
 
     def _requests(self, p: "_Progress", first: Optional[Header] = None):
-        """Act on *first* and the headers that have arrived behind it: a
-        position to send again from, "skip", or None to carry on.
+        """Act on *first* (or the next header that has arrived): a position
+        to send again from, "skip", or None to carry on.
 
-        Requests to send again that have piled up were all made before the
-        receiver could see an answer to any of them, so one restart answers
-        them all, from the furthest (each says the receiver has everything
-        before it). Answered one by one, each would take the sender back
-        behind a receiver that had moved on, which would ask again."""
-        restart = None
+        Requests to send again that have piled up behind a request were all
+        made before the receiver could see an answer to any of them, so one
+        restart answers them all, from the furthest (each says the receiver
+        has everything before it). Answered one by one, each would take the
+        sender back behind a receiver that had moved on, which would ask
+        again. Any other header is left where it is, for whoever is waiting
+        for it (an acknowledgement, the file's confirmation)."""
         hdr = first if first is not None else self.pending_header()
-        while hdr is not None:
-            if hdr.type == ZRPOS:
-                # (never beyond what was sent: that would leave a hole)
-                at = min(hdr.pos, p.sent)
-                restart = at if restart is None else max(restart, at)
-            elif hdr.type == ZACK:
-                p.confirm(min(hdr.pos, p.sent))
-            elif hdr.type == ZSKIP:
-                return "skip"
-            elif hdr.type in (ZABORT, ZFERR, ZCAN, ZFIN):
-                raise Aborted("the receiver cancelled")
-            # (ZNAK, a late ZRINIT: nothing to do)
-            hdr = self.pending_header()
-        if restart is not None:
+        if hdr is None:
+            return None
+        if hdr.type == ZRPOS:
+            # (never beyond what was sent: that would leave a hole)
+            restart = min(hdr.pos, p.sent)
+            while (more := self._pending_request()) is not None:
+                restart = max(restart, min(more.pos, p.sent))
             p.confirm(restart)
             p.error()
             p.restarts += 1
             log.debug("send: %s: the receiver asked for the data again from %d", p.name, restart)
-        return restart
+            return restart
+        if hdr.type == ZACK:
+            p.confirm(min(hdr.pos, p.sent))
+        elif hdr.type == ZSKIP:
+            return "skip"
+        elif hdr.type in (ZABORT, ZFERR, ZCAN, ZFIN):
+            raise Aborted("the receiver cancelled")
+        return None  # (and for ZNAK, a late ZRINIT)
 
     async def _wait_ack(self, pos: int, acked: int, p: "_Progress"):
         """After a ZCRCW at *pos*: wait for the receiver's ZACK. Returns None
         when acknowledged, else a position to send again from (*acked*, the
-        last acknowledged one, if it never answers) or "skip"."""
+        last acknowledged one, if it never answers) or "skip". A ZACK for an
+        earlier place is an old one (a repeat): it acknowledges nothing now."""
         for _ in range(self.settings.retries):
             try:
                 hdr = await self.next_header(self.settings.header_timeout)
@@ -841,7 +858,7 @@ class _Sender:
                 log.debug("send: %s: no acknowledgement at %d; sending again from %d",
                           p.name, pos, acked)
                 return acked
-            if hdr.type == ZACK:
+            if hdr.type == ZACK and hdr.pos >= pos:
                 p.confirm(pos)
                 return None
             restart = self._requests(p, hdr)

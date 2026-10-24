@@ -27,6 +27,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 from datetime import timedelta
 from logging.handlers import RotatingFileHandler
 
@@ -42,13 +43,23 @@ class ConsoleLog(logging.Handler):
     At most *backlog* records wait while the console is not taking output;
     further ones are not shown (the log file has them), and once there is room
     again a line says how many were left out. stop() writes what is waiting,
-    for at most *timeout* seconds (the console may still be paused at exit)."""
+    for at most *timeout* seconds (the console may still be paused at exit).
+
+    A record that cannot be logged (by this handler, or by the log file's:
+    report_error) is told on the console the same way, rather than written
+    to stderr by the thread logging it; the same error again within a
+    minute (a log file that cannot be rotated fails every record) is not."""
 
     def __init__(self, backlog=10_000, stream=None):
         super().__init__()
         self._stream = stream
-        self._queue = queue.Queue(maxsize=backlog)
+        self._backlog = backlog
+        # (a SimpleQueue: its put is reentrant, so a record logged while one
+        # is being put, by a finalizer, say, cannot deadlock the thread
+        # putting them, which is the event loop's)
+        self._queue = queue.SimpleQueue()
         self._left_out = 0
+        self._last_error = None  # ((type, message), when)
         self._thread = threading.Thread(target=self._show, name="console log", daemon=True)
         self._thread.start()
 
@@ -58,18 +69,34 @@ class ConsoleLog(logging.Handler):
         except Exception:
             self.handleError(record)
             return
-        if self._left_out:
-            try:
-                self._queue.put_nowait(f"({self._left_out} log lines were not shown here while the "
-                                       f"console was not taking output; the log file has them)")
-            except queue.Full:
-                self._left_out += 1
+        self._put(line)
+
+    def handleError(self, record):
+        self.report_error(record)
+
+    def report_error(self, record):
+        """Tell, on the console, why *record* could not be logged (called
+        while its exception is being handled)."""
+        if not logging.raiseExceptions:
+            return
+        exc_type, exc, _ = sys.exc_info()
+        key, now = (exc_type, str(exc)), time.monotonic()
+        with self.lock:
+            if self._last_error and self._last_error[0] == key and now - self._last_error[1] < 60:
                 return
-            self._left_out = 0
-        try:
-            self._queue.put_nowait(line)
-        except queue.Full:
+            self._last_error = (key, now)
+            self._put(f"--- Logging error ---\n{traceback.format_exc().rstrip()}\n"
+                      f"Message: {record.msg!r}\nArguments: {record.args!r}")
+
+    def _put(self, line):
+        if self._queue.qsize() >= self._backlog:
             self._left_out += 1
+            return
+        if self._left_out:
+            self._queue.put(f"({self._left_out} log lines were not shown here while the "
+                            f"console was not taking output; the log file has them)")
+            self._left_out = 0
+        self._queue.put(line)
 
     def _show(self):
         while True:
@@ -84,11 +111,22 @@ class ConsoleLog(logging.Handler):
                 pass  # (no console, or a closed one: nothing to show it on)
 
     def stop(self, timeout=2.0):
-        try:
-            self._queue.put(None, timeout=timeout)
-        except queue.Full:
-            return
+        self._queue.put(None)
         self._thread.join(timeout)
+
+
+class _FileLog(RotatingFileHandler):
+    """The log file. A record it cannot write is told on the console
+    (*console*, a ConsoleLog), not written to stderr by the thread logging
+    it: under a paused console that write would stop the event loop."""
+
+    def __init__(self, *args, console=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.console = console
+
+    def handleError(self, record):
+        if self.console is not None:
+            self.console.report_error(record)
 
 
 def _log_unraisable(unraisable):
@@ -207,23 +245,24 @@ def setup_logging():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # File handler with rotation
-    file_handler = RotatingFileHandler(
-        log_path,
-        maxBytes=split_at,
-        backupCount=backup_count,
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.DEBUG if "--debug" in sys.argv else logging.INFO)
-    file_handler.setFormatter(formatter)
-    log.addHandler(file_handler)
-
     # Console (stderr), written by its own thread — only show DEBUG if --debug was passed
     console_handler = ConsoleLog()
     console_handler.setLevel(logging.DEBUG if "--debug" in sys.argv else logging.INFO)
     console_handler.setFormatter(formatter)
-    log.addHandler(console_handler)
     atexit.register(console_handler.stop)
+
+    # File handler with rotation
+    file_handler = _FileLog(
+        log_path,
+        maxBytes=split_at,
+        backupCount=backup_count,
+        encoding="utf-8",
+        console=console_handler,
+    )
+    file_handler.setLevel(logging.DEBUG if "--debug" in sys.argv else logging.INFO)
+    file_handler.setFormatter(formatter)
+    log.addHandler(file_handler)
+    log.addHandler(console_handler)
 
     # Other libraries' warnings (asyncio's, telnetlib3's) go to both too: left
     # to logging's last resort, the event loop would write them to the console

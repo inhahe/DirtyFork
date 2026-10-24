@@ -20,9 +20,9 @@ drops (&D2). Flow control is RTS/CTS, which the port uses; the modem's side
 of it is its factory default on most modems, or the init string's job.
 
 Output queued between the BBS and the modem is kept to about a second of
-the line's speed (from the CONNECT message): the transport's own limit,
-64 KiB, is minutes at modem speeds, which a file transfer's repair or a
-caller's cancel would wait through.
+the line's speed (from the CARRIER or CONNECT message): the transport's own
+limit, 64 KiB, is minutes at modem speeds, which a file transfer's repair
+or a caller's cancel would wait through.
 """
 
 import asyncio
@@ -36,6 +36,8 @@ from logger import log
 SETUP = "ATE0V1Q0S0=0&C1&D2"
 COMMAND_TIMEOUT = 5.0   # seconds a setup command may take to answer (ATZ resets the modem)
 ANSWER_TIMEOUT = 60.0   # seconds from ATA to CONNECT (modems give up after S7, 50 s by default)
+ANALOG_TOP = 33600      # bps: the fastest line an answering modem has (V.90's 56k needs a digital line here)
+DRAIN_EVERY = 1024      # bytes a file transfer sends between drains on a modem (a ZMODEM subpacket)
 CARRIER_POLL = 0.5      # seconds between looks at DCD during a call
 DRAIN_POLL = 0.02       # seconds between looks at the output queue while draining
 FLUSH_LIMIT = 10.0      # seconds a hang-up waits for output still to leave
@@ -112,6 +114,11 @@ class SerialWriter:
   connection's encoding, or bytes), and the end of the call: close() hangs
   up, and wait_closed() waits until the modem is back on hook."""
 
+  # Bytes a file transfer may send between drains (file_transfer asks): at
+  # modem speeds what is queued beyond drain()'s second holds up a repair
+  # or a cancel.
+  drain_every = DRAIN_EVERY
+
   def __init__(self, stream_writer, port="serial", carrier=None, carrier_watch=None,
                encoding="cp437", line_speed=115200):
     # (kept, though all goes through its transport: asyncio closes the
@@ -179,10 +186,10 @@ class SerialWriter:
 
   async def _hang_up(self):
     """Wait (a while) for the output still queued to leave, then drop DTR;
-    if the carrier stays up (a modem not set to hang up on DTR), the +++
-    escape and ATH. The port is closed at the end, however it went: DTR is
-    low by then whatever stopped this (a shutdown cancels it), so the modem
-    is not left off hook."""
+    if the carrier stays up, or cannot be told (a modem not set to hang up
+    on DTR), the +++ escape and ATH. The port is closed at the end, however
+    it went: DTR is low by then whatever stopped this (a shutdown cancels
+    it), so the modem is not left off hook."""
     if self._carrier_watch is not None:
       self._carrier_watch.cancel()
     serial = self._transport.serial
@@ -192,8 +199,10 @@ class SerialWriter:
       await self._flushed(FLUSH_LIMIT)
       serial.dtr = False
       await asyncio.sleep(DTR_DROP)
-      if serial.cd:
-        log.info("Modem on %s: still connected with DTR low; hanging up with ATH", self._port)
+      # (with no carrier to tell by, it may have ignored DTR: ATH to be sure)
+      if serial.cd or (self._carrier is not None and not self._carrier.seen):
+        log.info("Modem on %s: perhaps still connected with DTR low; hanging up with ATH",
+                 self._port)
         await asyncio.sleep(GUARD_TIME)
         self._transport.write(b"+++")
         await asyncio.sleep(GUARD_TIME)
@@ -207,7 +216,7 @@ class SerialWriter:
         serial.dtr = False
       except Exception:
         pass
-      self._transport.close()
+      _close_port(self._transport)
 
   async def _flushed(self, limit):
     """Wait, at most *limit* seconds, until what was written has left both
@@ -221,6 +230,23 @@ class SerialWriter:
       await asyncio.sleep(0.1)
 
 
+def _close_port(transport):
+  """Close the port now, dropping any output still queued. pyserial-asyncio's
+  close() would wait for that output, and its port flush runs on the event
+  loop's thread without a time limit: a modem that has stopped taking data
+  (switched off, or flow control held) would stop the whole BBS, or leave
+  the port open for good."""
+  serial = transport.serial
+  if serial is None:  # (closed already: the port failed, say)
+    return
+  try:
+    serial.reset_output_buffer()  # (so that the flush when it closes is quick)
+  except Exception:
+    pass
+  if not transport.is_closing():  # (else a close is already under way)
+    transport.abort()
+
+
 async def _read_line(reader, timeout):
   """The modem's next line that is not empty, stripped; None if none comes
   within *timeout* seconds (None: no limit). Raises ModemGone if the port
@@ -228,8 +254,9 @@ async def _read_line(reader, timeout):
   RING would spin on a dead port, and stop the whole BBS).
 
   A line ends at its LF (results come as CR LF text CR LF: ended at the CR,
-  CONNECT's LF would be the caller's first key), or at the CR after a
-  numeric result (V0, until SETUP sets V1)."""
+  CONNECT's LF would be the caller's first key), or at the CR that ends an
+  echoed command or a numeric result (V0, which has no LF; until SETUP sets
+  E0V1)."""
   loop = asyncio.get_running_loop()
   end = None if timeout is None else loop.time() + timeout
   line = bytearray()
@@ -245,9 +272,10 @@ async def _read_line(reader, timeout):
       raise ModemGone(f"{type(exc).__name__}: {exc}") from exc
     if not ch:
       raise ModemGone("the port closed")
-    if ch == b"\n" or (ch == b"\r" and line.strip().isdigit()):
-      if line.strip():
-        return line.decode("ascii", "replace").strip()
+    text = line.strip()
+    if ch == b"\n" or (ch == b"\r" and (text.isdigit() or text[:2].upper() == b"AT")):
+      if text:
+        return text.decode("ascii", "replace")
       line.clear()
     elif ch != b"\r":
       line += ch
@@ -275,27 +303,36 @@ async def _command(reader, writer, command, timeout):
 
 
 async def _answer(reader, writer, timeout):
-  """Answer (ATA). Returns the CONNECT line, another final result (NO
-  CARRIER, say), or None if the modem says nothing within *timeout* seconds."""
+  """Answer (ATA). Returns (result, carrier): the CONNECT line or another
+  final result (NO CARRIER, say), or None if the modem says nothing within
+  *timeout* seconds; and the CARRIER line before it, if the modem gave one."""
   _send(writer, "ATA")
   await writer.drain()
   loop = asyncio.get_running_loop()
   end = loop.time() + timeout
+  carrier = None
   while True:
     line = await _read_line(reader, end - loop.time())
     if line is None:
-      return None
+      return None, carrier
     upper = line.upper()
     if upper.startswith("CONNECT") or upper in _ANSWER_FAILED:
-      return line
-    # (RING again, caller ID, information lines)
+      return line, carrier
+    if upper.startswith("CARRIER"):
+      carrier = line
+    # (RING again, caller ID, other information lines)
 
 
-def line_speed(connect):
-  """The line's speed in bits a second, from the modem's CONNECT message
-  ("CONNECT 33600/ARQ/V34", "CONNECT 2400"; a bare "CONNECT" means 300)."""
-  m = re.match(r"CONNECT\s+(\d+)", connect.strip().upper())
-  return int(m.group(1)) if m else 300
+def line_speed(connect, carrier=None):
+  """The line's speed in bits a second: from the modem's CARRIER message if
+  it gave one ("CARRIER 2400"), else from CONNECT ("CONNECT 33600/ARQ/V34";
+  a bare "CONNECT" means 300). At most ANALOG_TOP: many modems report in
+  CONNECT the computer's speed to them (115200) rather than the line's."""
+  for message, word in ((carrier, "CARRIER"), (connect, "CONNECT")):
+    m = re.match(word + r"\s+(\d+)", (message or "").strip().upper())
+    if m:
+      return min(int(m.group(1)), ANALOG_TOP)
+  return 300
 
 
 async def _watch_carrier(carrier, transport, stream_reader, port):
@@ -347,23 +384,24 @@ async def wait_for_call(port, baudrate, init_string="ATZ", ready=None):
       ready()
     while True:
       line = await _read_line(reader, None)
-      if line.upper() != "RING":
+      if not line.upper().startswith("RING"):  # (RING, or RING 1, RING A: distinctive rings)
         log.debug("Modem on %s: %s", port, line)  # (caller ID, stray output)
         continue
-      log.info("Modem on %s: RING, answering", port)
-      result = await _answer(reader, writer, ANSWER_TIMEOUT)
+      log.info("Modem on %s: %s, answering", port, line)
+      result, carrier_line = await _answer(reader, writer, ANSWER_TIMEOUT)
       if result is None or not result.upper().startswith("CONNECT"):
         log.warning("Modem on %s: answered, but no connection (%s)", port,
                     result or "the modem said nothing")
         await _command(reader, writer, "ATH", COMMAND_TIMEOUT)  # (in case it is still trying)
         continue
-      log.info("Modem on %s: %s", port, result)
+      log.info("Modem on %s: %s", port, f"{carrier_line}, {result}" if carrier_line else result)
       carrier = _Carrier(transport.serial)
       watch = asyncio.ensure_future(_watch_carrier(carrier, transport, reader, port))
       return (SerialReader(reader, carrier),
-              SerialWriter(writer, port, carrier, watch, line_speed=line_speed(result)))
+              SerialWriter(writer, port, carrier, watch,
+                           line_speed=line_speed(result, carrier_line)))
   except BaseException:
-    transport.close()
+    _close_port(transport)
     raise
 
 

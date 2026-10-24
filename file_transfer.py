@@ -153,13 +153,12 @@ async def _with_screen(user, text, work):
     await pop_screen(user)
 
 
-MODEM_DRAIN_EVERY = 1024  # (a subpacket: on a modem the line's own buffer is the rest)
-
-
 def _settings(user):
-  if getattr(user, "connection_type", "telnet") == "modem":
-    return zmodem.Settings(escape_ctrl=not _eight_bit_clean(user), drain_every=MODEM_DRAIN_EVERY)
-  return zmodem.Settings(escape_ctrl=not _eight_bit_clean(user))
+  settings = zmodem.Settings(escape_ctrl=not _eight_bit_clean(user))
+  drain_every = getattr(user.writer, "drain_every", None)  # (a slow link's, a modem's)
+  if drain_every:
+    settings.drain_every = drain_every
+  return settings
 
 
 # ---------------------------------------------------------------------------

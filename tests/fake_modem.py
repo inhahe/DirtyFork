@@ -8,10 +8,14 @@ hang_up() for the caller hanging up. plugged_in() installs it, for a port
 name, where pyserial-asyncio opens ports.
 
 Like a real modem it takes AT commands in command mode (echo until E0,
-results in words), answers a call with ATA (CONNECT, carrier up), passes
-data online at the line's speed (cps; None: at once), hangs up when DTR
-drops (unless follows_dtr is False) and goes back to command mode on the
-+++ escape between two silences of *guard* seconds.
+results in words, or digits until V1 if *numeric*), answers a call with ATA
+(CONNECT, after a CARRIER message if given; carrier up), passes data online
+at the line's speed (cps; None: at once; 0: held), hangs up when DTR drops
+(unless follows_dtr is False) and goes back to command mode on the +++
+escape between two silences of *guard* seconds. Switched off (*powered*
+False) it takes nothing and says nothing. Its flush() waits, as
+pyserial's does on Windows, without a time limit until all written has
+gone.
 
 pyserial-asyncio polls the port on Windows only: elsewhere it waits on a
 file descriptor, which this has not got (test_modem skips there).
@@ -25,15 +29,19 @@ import serial_asyncio
 
 
 class FakeModem:
-    def __init__(self, *, connect="CONNECT 33600/ARQ", cps=None, answers=True,
-                 results=True, dcd=True, follows_dtr=True, guard=1.0):
+    def __init__(self, *, connect="CONNECT 33600/ARQ", carrier=None, cps=None, answers=True,
+                 results=True, numeric=False, dcd=True, follows_dtr=True, guard=1.0,
+                 powered=True):
         self.connect = connect      # what ATA says when it connects
-        self.cps = cps              # the line's speed, bytes a second (None: at once)
+        self.carrier_message = carrier  # what it says before that (CARRIER 2400), if anything
+        self.cps = cps              # the line's speed, bytes a second (None: at once; 0: held)
         self.answers = answers      # ATA connects (else NO CARRIER)
         self.results = results      # it answers commands at all
+        self.numeric = numeric      # results as digits (V0) until V1
         self.dcd = dcd              # DCD follows the carrier (&C1 and wired)
         self.follows_dtr = follows_dtr  # dropping DTR hangs up (&D2)
         self.guard = guard          # the +++ escape's guard time, seconds
+        self.powered = powered      # off: takes nothing (CTS low), says nothing
         self.commands = []          # AT commands received
         self.to_caller = bytearray()  # what reached the caller
         self.dtr_drops = []         # len(unsent) each time DTR dropped
@@ -59,9 +67,9 @@ class FakeModem:
 
     # -- the caller's side ----------------------------------------------
 
-    def ring(self):
+    def ring(self, message="RING"):
         self.ringing = True
-        self._result("RING")
+        self._result(message)
 
     def type(self, data):
         """The caller types *data* (only when connected)."""
@@ -96,7 +104,9 @@ class FakeModem:
         self._check()
         data = bytes(data)
         now = time.monotonic()
-        if self.online:
+        if not self.powered:
+            self.unsent += data  # (the port's driver holds it: CTS is low)
+        elif self.online:
             self._online_write(data, now)
         else:
             self._command_bytes(data)
@@ -110,7 +120,14 @@ class FakeModem:
         return len(self.unsent)
 
     def flush(self):
-        pass
+        """As pyserial's on Windows: waits, without a time limit, until all
+        that was written has gone (for ever, if the line holds it)."""
+        while self.out_waiting:
+            time.sleep(0.05)
+
+    def reset_output_buffer(self):
+        self._check()
+        self.unsent.clear()
 
     def close(self):
         self.is_open = False
@@ -126,7 +143,7 @@ class FakeModem:
         if self._dtr and not value:
             self._transmit()
             self.dtr_drops.append(len(self.unsent))
-            if self.online and self.follows_dtr:
+            if self.online and self.follows_dtr and self.powered:
                 self._lose_carrier(quietly=False)
         self._dtr = value
 
@@ -134,7 +151,7 @@ class FakeModem:
     def cd(self):
         if not self.is_open:
             raise serial.PortNotOpenError()
-        return self._carrier and self.dcd
+        return self._carrier and self.dcd and self.powered
 
     # -- the modem ---------------------------------------------------------
 
@@ -144,8 +161,15 @@ class FakeModem:
         if not self.is_open:
             raise serial.PortNotOpenError()
 
+    _CODES = {"OK": "0", "CONNECT": "1", "RING": "2", "NO CARRIER": "3", "ERROR": "4"}
+
     def _result(self, text):
-        if self.results:
+        if not (self.results and self.powered):
+            return
+        if self.numeric:  # (V0: the code, and a CR alone)
+            code = next((c for word, c in self._CODES.items() if text.startswith(word)), "4")
+            self.rx += code.encode("ascii") + b"\r"
+        else:
             self.rx += b"\r\n" + text.encode("ascii") + b"\r\n"
 
     def _lose_carrier(self, quietly):
@@ -161,6 +185,8 @@ class FakeModem:
         now = time.monotonic()
         if not self.unsent:
             self._sent_at = now  # (an idle line saves up no time)
+            return
+        if not self.powered:
             return
         if self.cps is None:
             n = len(self.unsent)
@@ -208,11 +234,15 @@ class FakeModem:
             self.echo = True
         if "E0" in body:
             self.echo = False
+        if "V1" in body:
+            self.numeric = False
         if body.startswith("A"):
             if self.ringing and self.answers:
                 self.online = True
                 self._carrier = True
                 self._sent_at = time.monotonic()
+                if self.carrier_message:
+                    self._result(self.carrier_message)
                 self._result(self.connect)
             else:
                 self._result("NO CARRIER")
