@@ -325,6 +325,10 @@ class ModemSocket(Channel):
                 else:
                     self.logger.debug("[Sender]: <- CRC / G")
                     crc = 1
+                # DirtyFork: stream (YMODEM-G) only when the receiver asked for it
+                # with G; one that asked with C (plain YMODEM) acknowledges each
+                # packet and is lost if packets come without waiting for that.
+                streaming = c == G
 
                 sequence = 1
                 task.success_packet_count = 0
@@ -354,7 +358,7 @@ class ModemSocket(Channel):
 
                     retries = 0
                     while True:
-                        if self.protocol_type == ProtocolType.XMODEM or self.protocol_subtype == ProtocolSubType.YMODEM_BATCH_FILE_TRANSMISSION:
+                        if self.protocol_type == ProtocolType.XMODEM or self.protocol_subtype == ProtocolSubType.YMODEM_BATCH_FILE_TRANSMISSION or not streaming:
                             if retries < 10:
                                 self.write(header + data + checksum)
                                 self.logger.debug(f"[Sender]: Data packet {sequence} ->")
@@ -522,8 +526,12 @@ class ModemSocket(Channel):
 
                                 if valid:
 
-                                    file_name = bytes.decode(data.split(b"\x00")[0], "utf-8")
-                                    
+                                    raw_name = data.split(b"\x00")[0]
+                                    try:
+                                        file_name = raw_name.decode("utf-8")
+                                    except UnicodeDecodeError:  # DirtyFork: DOS-era senders use CP437
+                                        file_name = raw_name.decode("cp437")
+
                                     # batch end packet received
                                     if not file_name:
                                         self.logger.debug("[Receiver]: <- Batch end packet")
@@ -537,6 +545,13 @@ class ModemSocket(Channel):
                                         self.logger.debug("[Receiver]: <- Filename packet.")
 
                                     task_index += 1
+                                    # DirtyFork: the name is the sender's; keep only its last
+                                    # component, so it cannot be a path out of the save folder
+                                    # (os.path.join below would even take an absolute one whole).
+                                    file_name = file_name.replace("\\", "/").rsplit("/", 1)[-1]
+                                    file_name = file_name.split(":")[-1].strip()
+                                    if file_name in ("", ".", ".."):
+                                        file_name = "upload.bin"
                                     task.name = file_name
                                     self.logger.debug(f"[Receiver]: File - {task.name}")
 

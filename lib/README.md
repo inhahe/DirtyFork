@@ -1,14 +1,8 @@
 # Vendored libraries
 
-The file-transfer protocol libraries `file_transfer.py` uses. It puts this directory on `sys.path`, so they import as `modem` and `ymodem`. Neither is available as a working package on PyPI in the form used here. Both are unmodified copies, under the MIT license (see the `LICENSE` in each).
+The file-transfer protocol library `file_transfer.py` uses for YMODEM-G. It puts this directory on `sys.path`, so it imports as `ymodem`. It is not available as a working package on PyPI in the form used here.
 
-## modem: ZMODEM
-
-- **What:** Wijnand Modderman-Lenstra's `modem` package (XMODEM, YMODEM and ZMODEM; `__version__` 0.2.4, `setup.py` version 1.0), from the `multi-protocol` branch of https://github.com/tehmaze/modem.
-- **Python 3 port:** by Enix Yu. The port itself is commit `2e2e46d`, "apply PEP8; port to python3", and this copy is the state at `c20ea54`, both from 2018-11-07. Upstream never merged it. It survives in the branches of two open pull requests that build on it: #2 (devotip, "Py3.7 multi protocol") and #13 (heimir-sverrisson, "Fix ymodem issues").
-- **License:** the package declares MIT (`__license__` in `modem/__init__.py`, `license` in its `setup.py`) but ships no license text. `modem/LICENSE` is the standard MIT text with the package's own copyright notices.
-- **Used by DirtyFork:** `modem.protocol.zmodem.ZMODEM` only.
-- **Not included:** the later commits on those pull requests (2019 to 2022), which change only XMODEM, YMODEM and `Modem.calc_checksum` in `base.py`. That function still calls `ord()` on bytes, which fails under Python 3; ZMODEM never calls it.
+ZMODEM is DirtyFork's own, `zmodem.py`. Until 2026-10 it came from Wijnand Modderman-Lenstra's `modem` package (vendored here as `lib/modem`), whose ZMODEM could only receive, and failed under Python 3 on the first data packet; it was removed then. Being a package named `modem`, it also hid DirtyFork's own `modem.py` from imports made after `file_transfer` had put this directory first on `sys.path`.
 
 ## ymodem: YMODEM-G
 
@@ -16,3 +10,4 @@ The file-transfer protocol libraries `file_transfer.py` uses. It puts this direc
 - **License:** MIT, `ymodem/LICENSE` (upstream's own file).
 - **Needs:** `ordered-set` (listed in the project's `requirements.txt`).
 - **Used by DirtyFork:** `ymodem.Socket.ModemSocket` and `ymodem.Protocol.ProtocolType`.
+- **Changed here** (marked "DirtyFork" in `ymodem/Socket.py`): the receiver keeps only the last component of the file name the sender gives, and refuses `.` and `..`. Upstream joins the sender's name to the save folder as it is, so a name such as `..\..\DirtyFork.yaml`, or an absolute path, was written outside it. A name that is not UTF-8 is read as CP437 instead of stopping the transfer.

@@ -126,10 +126,15 @@ def _settings(user):
   )
 
 
+def _owned_elsewhere(user):
+  """A door or a file transfer has the terminal: nothing may be drawn on it."""
+  return user.in_door or getattr(user, 'in_transfer', False)
+
+
 def _showing(user, enabled):
-  """True if stars may be drawn now: *enabled* (from _settings), the user is
-  not in a door, and the screen size is known."""
-  return bool(enabled and not user.in_door and user.screen and user.screen_width)
+  """True if stars may be drawn now: *enabled* (from _settings), no door or
+  file transfer has the terminal, and the screen size is known."""
+  return bool(enabled and not _owned_elsewhere(user) and user.screen and user.screen_width)
 
 
 async def _draw(user, r, c, char, fg, fg_br):
@@ -198,8 +203,8 @@ async def stars_loop(user):
 
       if not showing:
         if active:
-          if user.in_door or not user.screen:
-            active.clear()  # the door owns the screen (and clears it when it starts)
+          if _owned_elsewhere(user) or not user.screen:
+            active.clear()  # a door or transfer owns the screen (and it is redrawn after)
           else:
             async with user.write_lock:
               await _erase(user, active)
@@ -211,7 +216,9 @@ async def stars_loop(user):
 
       try:
         async with user.write_lock:
-          await _tick(user, active, fg, fg_br, spawn_p, interval_ms)
+          # (checked again: a transfer may have started while we waited for the lock)
+          if _showing(user, enabled):
+            await _tick(user, active, fg, fg_br, spawn_p, interval_ms)
       except asyncio.CancelledError:
         raise
       except Exception as e:

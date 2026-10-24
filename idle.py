@@ -160,6 +160,15 @@ class IdleMonitor:
       self._touch()
     return data
 
+  async def read_raw(self, n=1):
+    """Read without the idle timeout or its warning popup (a file transfer
+    has its own timeouts, and a popup would land in its data); what arrives
+    still counts as activity."""
+    data = await self._reader.read(n)
+    if data:
+      self._touch()
+    return data
+
   # The connection's text encoding belongs to the reader underneath: setting
   # it here must reach that reader (common._set_connection_encoding), not
   # just this wrapper, which is what __getattr__ alone would let happen.

@@ -11,19 +11,26 @@ class EncodingThroughTheIdleMonitor(unittest.TestCase):
     """The BBS's reader is wrapped in an IdleMonitor; switching the
     connection's encoding must reach the reader underneath."""
 
-    def test_the_telnet_reader_switches(self):
+    def test_telnet_and_serial_readers(self):
         class TelnetReader:
             fn_encoding = staticmethod(lambda **kw: "cp437")
+
+        class SerialReader:
+            encoding = "cp437"
+
+            def set_encoding(self, enc):
+                self.encoding = enc
 
         async def switch(inner):
             user = common.User(inner, _setup.FakeWriter())
             user.reader = IdleMonitor(inner, user)  # (made inside the event loop, as always)
-            user.encoding = "latin-1"
-            common._set_connection_encoding(user)
+            common._set_connection_encoding(user, "latin-1")
 
-        telnet = TelnetReader()
+        telnet, serial = TelnetReader(), SerialReader()
         asyncio.run(switch(telnet))
+        asyncio.run(switch(serial))
         self.assertEqual(telnet.fn_encoding(incoming=True), "latin-1")
+        self.assertEqual(serial.encoding, "latin-1")
 
 
 if __name__ == "__main__":

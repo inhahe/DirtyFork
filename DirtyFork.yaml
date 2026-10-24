@@ -69,6 +69,8 @@ file_tags:                     # sysop-defined list of valid file tags
   - demo
   - bbs
   - adult
+upload_max_size: 100 MB        # largest file a caller may upload (B, KB, MB, GB)
+upload_keep_free: 500 MB       # uploads are refused when they would leave less free disk than this
 user_configs: user_configs
 
 # bcrypt cost factor for password hashing. Higher = more secure but slower.

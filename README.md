@@ -8,7 +8,7 @@ A modern async Python BBS supporting telnet and dial-up modem connections, with 
 - **Forums** with threaded replies, quoting, and search
 - **Private messages** with threading
 - **Teleconference** — split-screen multi-channel real-time chat
-- **File library** with ZMODEM/YMODEM-G upload and download
+- **File library** with ZMODEM (our own implementation) and YMODEM-G upload and download, cancellable, with uploads kept to safe names and size limits
 - **Full ANSI/CP437 and UTF-8** with automatic encoding detection
 - **Per-user settings** — profile, preferences, encoding, start destination
 - **Access control** via white/black key system with recursive key groups

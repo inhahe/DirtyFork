@@ -11,14 +11,15 @@ from ruamel.yaml import YAML
 _yaml = YAML()
 _yaml.default_flow_style = False
 
-from definitions import (RetVals, Disconnected, success, fail,
+from definitions import (RetVals, Disconnected, success,
                          cr, lf, null,
                          white, black, green, cyan, red, blue, brown, magenta)
 from input_output import send, ansi_color, ansi_move_deferred, ansi_wrap, ansi_cls, get_input_key
 from input_fields import show_message_box, InputFields
-from file_transfer import (send_file_zmodem, recv_file_zmodem,
-                           send_file_ymodem, recv_file_ymodem,
-                           get_available_protocols)
+from file_transfer import (send_files_zmodem, receive_files_zmodem,
+                           send_files_ymodem, receive_files_ymodem,
+                           get_available_protocols, parse_size, UploadPolicy, TEMP_PREFIX)
+import file_transfer
 from keyboard_codes import up, down, pgup, pgdn, home, end, back
 from config import get_config
 from logger import log
@@ -122,8 +123,8 @@ def _get_all_files():
 
   for name in sorted(os.listdir(files_dir)):
     path = os.path.join(files_dir, name)
-    if not os.path.isfile(path):
-      continue
+    if name.startswith(TEMP_PREFIX) or not os.path.isfile(path):
+      continue  # (an upload in progress)
     # Skip the metadata file itself if it lives inside files_dir
     if os.path.abspath(path) == os.path.abspath(_meta_path()):
       continue
@@ -354,27 +355,36 @@ async def _show_file_list(user, files_with_meta, title):
 # Protocol chooser
 # ---------------------------------------------------------------------------
 
+def _usable_protocols(user):
+  """The protocols this BBS has that the caller's terminal can run (it may
+  run only some: common.detect_terminal sets user.transfer_protocols)."""
+  available = [p for p, ok in get_available_protocols().items() if ok]
+  terminal = getattr(user, 'transfer_protocols', None)
+  return [p for p in available if terminal is None or p in terminal]
+
+
 async def _transfers_refused(user):
-  """True, after telling the user why, when their terminal can't do file
-  transfers (common.detect_terminal decides: the browser terminal can't).
+  """True, after telling the user why, when no transfer protocol can be used.
   Check it before asking for anything a transfer needs, so they don't answer in vain."""
-  if user.file_transfers:
+  if _usable_protocols(user):
     return False
-  await show_message_box(user, "File transfers need a terminal program with ZMODEM or YMODEM-G, "
-                               "such as SyncTERM; the web terminal can't do them. Connect to the BBS "
-                               "with one of those to upload or download.")
+  if any(get_available_protocols().values()):
+    await show_message_box(user, "Your terminal can't run the file transfer protocols this BBS has "
+                                 "(ZMODEM, YMODEM-G). Connect with a terminal program that can, such "
+                                 "as SyncTERM, to upload or download.")
+  else:
+    await show_message_box(user, "No file transfer protocols are available on this system.")
   return True
 
 
 async def _choose_protocol(user):
-  """Let the user choose a transfer protocol. Returns protocol name or None."""
+  """The transfer protocol to use: the only usable one, or the caller's
+  choice. None (after saying why) when there is none."""
   if await _transfers_refused(user):
     return None
-  protocols = get_available_protocols()
-  available = [p for p, ok in protocols.items() if ok]
-  if not available:
-    await show_message_box(user, "No file transfer protocols are available on this system.")
-    return None
+  available = _usable_protocols(user)
+  if len(available) == 1:
+    return available[0]
 
   ansi_color(user, fg=cyan, fg_br=True, bg=black)
   await send(user, cr + lf + "Select transfer protocol:" + cr + lf, drain=False)
@@ -409,22 +419,15 @@ async def _do_download(user, filename):
     return
 
   log.info("User %s downloading %s via %s", user.handle, filename, protocol)
-  await send(user, cr + lf + f"Sending {filename} via {protocol.upper()}..." + cr + lf, drain=True)
-
-  if protocol == "zmodem":
-    result = await send_file_zmodem(user, file_path)
-  elif protocol == "ymodem":
-    result = await send_file_ymodem(user, file_path)
-  else:
-    result = RetVals(status=fail, message="Unknown protocol")
+  send_files = send_files_zmodem if protocol == "zmodem" else send_files_ymodem
+  result = await send_files(user, [file_path])
 
   if result.status == success:
     log.info("Download complete: %s for %s", filename, user.handle)
     await show_message_box(user, f"Transfer of {filename} complete!")
   else:
-    msg = getattr(result, 'message', 'Unknown error')
-    log.warning("Download failed: %s for %s: %s", filename, user.handle, msg)
-    await show_message_box(user, f"Transfer failed: {msg}")
+    log.warning("Download failed: %s for %s: %s", filename, user.handle, result.message)
+    await show_message_box(user, result.message)
 
 
 # ---------------------------------------------------------------------------
@@ -734,54 +737,55 @@ async def _download_file(user):
 # Upload (U)
 # ---------------------------------------------------------------------------
 
+def remove_stale_uploads():
+  """Delete what uploads cut short by a crash left behind (at startup only:
+  later, it could be someone's upload in progress)."""
+  file_transfer.remove_stale_uploads(_files_dir())
+
+
+def _upload_policy():
+  """What uploads may be (file_transfer.UploadPolicy): the library folder,
+  the catalogue's name kept free when it lives there, and the size limits
+  from the config (upload_max_size, upload_keep_free)."""
+  directory = _files_dir()
+  meta = _meta_path()
+  reserved = set()
+  if os.path.dirname(os.path.abspath(meta)) == os.path.abspath(directory):
+    reserved.add(os.path.basename(meta).lower())
+  return UploadPolicy(directory=directory, reserved=frozenset(reserved),
+                      max_bytes=parse_size(config.upload_max_size, 100 * 1024 * 1024),
+                      keep_free=parse_size(config.upload_keep_free, 500 * 1024 * 1024))
+
+
 async def _upload_file(user):
-  """Receive a file, then prompt for description and keys."""
+  """Receive files, then ask for a description and keys for each one saved."""
   protocol = await _choose_protocol(user)
   if not protocol:
     return
 
-  save_dir = _files_dir()
+  policy = _upload_policy()
   log.info("User %s uploading via %s", user.handle, protocol)
-  await send(user, cr + lf + f"Ready to receive via {protocol.upper()}. Start your transfer now." + cr + lf, drain=True)
+  receive = receive_files_zmodem if protocol == "zmodem" else receive_files_ymodem
+  result = await receive(user, policy)
 
-  if protocol == "zmodem":
-    result = await recv_file_zmodem(user, save_dir)
-  elif protocol == "ymodem":
-    result = await recv_file_ymodem(user, save_dir)
-  else:
-    result = RetVals(status=fail, message="Unknown protocol")
-
+  lines = []
+  if policy.saved:
+    lines.append("Received: " + ", ".join(policy.saved) + ".")
+  for name, why in policy.refused:
+    lines.append(f"Not kept: {name}: {why}.")
   if result.status != success:
-    msg = getattr(result, 'message', 'Unknown error')
-    log.warning("Upload failed for %s: %s", user.handle, msg)
-    await show_message_box(user, f"Upload failed: {msg}")
+    lines.append(result.message)
+  elif not policy.saved and not policy.refused:
+    lines.append("Nothing was uploaded.")
+  log.info("Upload by %s: saved %s, refused %s, %s", user.handle, policy.saved, policy.refused,
+           result.message)
+  await show_message_box(user, "\n".join(lines))
+  if not policy.saved:
     return
 
-  received_msg = getattr(result, 'message', 'Transfer complete')
-  log.info("Upload complete for %s: %s", user.handle, received_msg)
-
-  await send(user, cr + lf + f"Upload complete! {received_msg}" + cr + lf, drain=True)
-
-  # Figure out which file was received (the newest file in the directory)
-  # We look for files that weren't in meta before
   meta = _load_meta()
-  new_files = []
-  for name in sorted(os.listdir(save_dir)):
-    path = os.path.join(save_dir, name)
-    if os.path.isfile(path) and os.path.abspath(path) != os.path.abspath(_meta_path()):
-      if name not in meta:
-        new_files.append(name)
-
-  if not new_files:
-    # Fallback: just ask for the filename
-    await send(user, cr + lf + "Enter the filename of the uploaded file: ", drain=True)
-    fname = await _read_line(user, max_len=200)
-    fname = fname.strip()
-    if not fname:
-      return
-    new_files = [fname]
-
-  for fname in new_files:
+  await ansi_cls(user)
+  for fname in policy.saved:
     await send(user, cr + lf + f"Cataloguing: {fname}" + cr + lf, drain=False)
 
     # Description

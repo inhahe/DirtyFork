@@ -251,8 +251,9 @@ class User:
     self.cur_show_cursor = True
     self.encoding = "cp437"   # default encoding, updated by detect_terminal
     self.ttype = "unknown"    # terminal type string from TTYPE negotiation
-    self.file_transfers = True  # the terminal can do ZMODEM/YMODEM-G; set by detect_terminal
+    self.transfer_protocols = None  # the transfer protocols the terminal can do (None: any); set by detect_terminal
     self.bright_bg = "blink"  # how bright backgrounds are asked for: SGR 5 ("blink") or 100-107 ("aixterm"); set by detect_terminal
+    self.in_transfer = False  # True while a file transfer has the connection (file_transfer.py)
     self.in_door = False      # True while user is in a door game
     self.mouse_reporting = False  # True when mouse button-event tracking (ESC[?1002h) is active
     self._pos_uncertain = False  # True when the terminal's cursor may not be where it is tracked
@@ -729,15 +730,17 @@ async def get_screen_size(user):
      user.writer.write("We couldn't detect your screen size. Assuming 25x80.")
      return 25, 80
 
-def _set_connection_encoding(user):
-  """Switch the telnetlib3 reader/writer encoding for this connection."""
-  enc = user.encoding
+def _set_connection_encoding(user, encoding=None):
+  """Switch the connection's text encoding: to *encoding*, or back to the
+  user's own (user.encoding). Telnet (telnetlib3) and serial connections."""
+  enc = encoding or user.encoding
   def fn_encoding(outgoing=False, incoming=False):
     return enc
-  if hasattr(user.writer, 'fn_encoding'):
-    user.writer.fn_encoding = fn_encoding
-  if hasattr(user.reader, 'fn_encoding'):
-    user.reader.fn_encoding = fn_encoding
+  for end in (user.writer, user.reader):
+    if hasattr(end, 'fn_encoding'):
+      end.fn_encoding = fn_encoding
+    elif hasattr(end, 'set_encoding'):
+      end.set_encoding(enc)
 
 # Known terminal types and their default encodings
 # Terminals we can confidently auto-detect encoding for.
@@ -747,17 +750,18 @@ _UTF8_TERMINALS = {"xterm", "xterm-256color", "vt100", "vt220", "linux",
                    "kitty", "wezterm", "foot", "contour", "ghostty",
                    "putty"}
 _CP437_TERMINALS = {"ansi", "ansi-bbs", "avatar", "pcansi"}
-# Terminals that can't do file transfers: the browser terminal (web/jsterm_bridge.py)
-# reports "ANSI-JSTERM". Starting a transfer there would only fill the screen with
-# protocol bytes and swallow the caller's keys until the receiver gave up.
-_NO_TRANSFER_TERMINALS = {"jsterm"}
+# Terminals that can run only some transfer protocols (type substring -> those).
+# The web terminal (web/jsterm_bridge.py) reports "ANSI-JSTERM" and can run
+# none: a transfer would only fill its screen with protocol bytes and swallow
+# the caller's keys until the receiver gave up.
+_TERMINAL_TRANSFER_PROTOCOLS = {"jsterm": frozenset()}
 
 async def detect_terminal(user):
-  """Detect terminal encoding from TTYPE negotiation (CP437 if unknown),
-  whether the terminal can do file transfers (user.file_transfers), and how
-  it shows bright backgrounds (user.bright_bg: xterm-family terminals blink
-  on SGR 5, so they get SGR 100-107).
-  Any saved encoding preference in user.conf overrides this after login."""
+  """From the terminal type (telnet TTYPE): the encoding (CP437 if unknown),
+  the transfer protocols the terminal can run (user.transfer_protocols), and
+  how it shows bright backgrounds (user.bright_bg: xterm-family terminals
+  blink on SGR 5, so they get SGR 100-107).
+  Any saved encoding preference in user.conf overrides the encoding after login."""
   ttype = None
   try:
     ttype = user.writer.get_extra_info("TERM")
@@ -773,7 +777,9 @@ async def detect_terminal(user):
   if ttype:
     user.ttype = ttype
     ttype_lower = ttype.lower()
-    user.file_transfers = not any(name in ttype_lower for name in _NO_TRANSFER_TERMINALS)
+    for name, protocols in _TERMINAL_TRANSFER_PROTOCOLS.items():
+      if name in ttype_lower:
+        user.transfer_protocols = protocols
     for name in _CP437_TERMINALS:
       if name in ttype_lower:
         user.encoding = "cp437"

@@ -21,6 +21,10 @@ class SerialWriter:
     self._encoding = encoding
     self._closed = False
 
+  def set_encoding(self, encoding):
+    """Text encoding from now on (common._set_connection_encoding)."""
+    self._encoding = encoding
+
   def write(self, data):
     if self._closed:
       return
@@ -55,10 +59,16 @@ class SerialReader:
     self._reader = stream_reader
     self._encoding = encoding
 
+  def set_encoding(self, encoding):
+    """Text encoding from now on (common._set_connection_encoding)."""
+    self._encoding = encoding
+
   async def read(self, n=1):
+    # A cancellation (a timed-out read) must propagate: returned as "", it
+    # would look like the caller hanging up.
     try:
       data = await self._reader.read(n)
-    except (asyncio.CancelledError, Exception):
+    except Exception:
       return ""
     if not data:
       return ""

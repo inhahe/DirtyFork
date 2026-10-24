@@ -239,7 +239,18 @@ Multi-channel real-time chat with split-screen display. Users can join channels 
 
 ### File Library
 
-File management with search, browse, list, upload (ZMODEM/YMODEM-G), and download capabilities. Files are tagged with keys and descriptions via `files/meta.yaml`.
+File management with search, browse, list, upload, and download capabilities. Files are tagged with keys and descriptions via `files/meta.yaml`.
+
+**Transfers** use ZMODEM (`zmodem.py`, DirtyFork's own) or YMODEM-G (`lib/ymodem`). A caller is asked which only when their terminal can run both; one whose terminal runs neither (the web terminal) is told so. A download starts by itself in terminals that watch for ZMODEM (SyncTERM); in others the caller starts receiving. For an upload the BBS waits (up to two minutes) for the caller's terminal to start sending. Pressing **Ctrl+X five times** cancels either. Afterwards the screen is redrawn as it was.
+
+**Uploads** go into the library only whole and under a safe name:
+
+- The name the caller's terminal sends is cut to its last part (no folders), without characters Windows forbids, leading dots or device names (`CON`, `NUL`, `COM1` ...), and at most 120 characters.
+- A file never replaces another: a name already in the library (or the catalogue's own, `meta.yaml`) is refused, and the caller is told why.
+- A file is received under a temporary name (`.upload-*.part`, never listed) and published only when it has arrived whole; an interrupted one is deleted (and any left by a crash, at the next start).
+- `upload_max_size` (default `100 MB`) is the largest file taken, and `upload_keep_free` (default `500 MB`) the free disk space an upload must leave; sizes take B, KB, MB or GB.
+
+After an upload the caller is asked for a description and keys for each file saved.
 
 ### Registration
 
@@ -318,7 +329,7 @@ During connection setup, the BBS detects the terminal type via telnet TTYPE nego
 - Unknown terminals default to CP437
 - User's saved encoding preference overrides auto-detection after login
 
-The terminal type also decides how bright backgrounds are asked for: the blink attribute for BBS terminals (CP437, SyncTERM), the codes for bright background colours for xterm-family ones (which would blink instead).
+The terminal type also decides how bright backgrounds are asked for: the blink attribute for BBS terminals (CP437, SyncTERM), the codes for bright background colours for xterm-family ones (which would blink instead); and which file transfer protocols are offered.
 
 ### Mouse
 

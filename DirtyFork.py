@@ -242,6 +242,10 @@ async def main():
     loop.default_exception_handler(context)
   loop.set_exception_handler(_quiet_exception_handler)
 
+  # Uploads cut short by a crash leave temporary files in the file library
+  import file as file_library
+  file_library.remove_stale_uploads()
+
   # Telnet server
   server = await telnetlib3.create_server(host=config.hostname, port=config.port, shell=user_loop, encoding='cp437', encoding_errors='surrogateescape', timeout=0)
   log.info("BBS listening on %s:%s", config.hostname, config.port)
