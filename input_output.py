@@ -254,7 +254,9 @@ async def ansi_mouse_reporting(user, on=True, drain=False, force=False):
   (a door's output reaches it untracked)."""
   async with user.write_lock:
     if force or user.mouse_reporting != on:
-      user.writer.write("\x1b[?1000h\x1b[?1002h" if on else "\x1b[?1002l\x1b[?1000l")
+      # 1006: reports in SGR form, which carries any column (see keyboard_codes)
+      user.writer.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h" if on
+                        else "\x1b[?1006l\x1b[?1002l\x1b[?1000l")
       user.mouse_reporting = on
     if drain:
       await user.writer.drain()
@@ -463,7 +465,10 @@ def ansi_color(user, fg=None, bg=None, fg_br=None, bg_br=None, drain=False):
 
 def _ansi_color_write(user):
   """Write color escape codes to the buffer (synchronous). Called by ansi_color(drain=True) and ansi_color_2."""
-  # note: syncterm blinks instead of bright background
+  # Bright backgrounds: SGR 5 for BBS terminals (SyncTERM blinks instead,
+  # unless iCE colours are on), SGR 100-107 for xterm-family ones, which would
+  # blink (user.bright_bg, from detect_terminal).
+  aixterm = getattr(user, 'bright_bg', 'blink') == 'aixterm'
   codes = []
   if (user.new_fg == white and user.new_bg == black and user.new_fg_br == False and user.new_bg_br == False) and (user.cur_fg != white or user.cur_bg != black or user.cur_fg_br != False or user.cur_bg_br != False):
     user.writer.write("\x1b[m")
@@ -478,19 +483,24 @@ def _ansi_color_write(user):
       else:
         codes.append("22")
       user.cur_fg_br = user.new_fg_br
-    if user.new_bg_br != user.cur_bg_br:
-      if user.new_bg_br:
-        codes.append("5")
-        user.cur_bg_br = True
-      else:
-        codes.append("25")
-      user.cur_bg_br = user.new_bg_br
-    if user.new_fg != user.cur_fg:
-      codes.append(str(user.new_fg+30))
-      user.cur_fg = user.new_fg
-    if user.new_bg != user.cur_bg:
-      codes.append(str(user.new_bg+40))
-      user.cur_bg = user.new_bg
+    if aixterm:
+      if user.new_fg != user.cur_fg:
+        codes.append(str(user.new_fg+30))
+        user.cur_fg = user.new_fg
+      if user.new_bg != user.cur_bg or user.new_bg_br != user.cur_bg_br:
+        codes.append(str(user.new_bg + (100 if user.new_bg_br else 40)))
+        user.cur_bg = user.new_bg
+        user.cur_bg_br = user.new_bg_br
+    else:
+      if user.new_bg_br != user.cur_bg_br:
+        codes.append("5" if user.new_bg_br else "25")
+        user.cur_bg_br = user.new_bg_br
+      if user.new_fg != user.cur_fg:
+        codes.append(str(user.new_fg+30))
+        user.cur_fg = user.new_fg
+      if user.new_bg != user.cur_bg:
+        codes.append(str(user.new_bg+40))
+        user.cur_bg = user.new_bg
     if codes:
       user.writer.write(f"\x1b[{';'.join(codes)}m")
 

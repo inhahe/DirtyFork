@@ -8,7 +8,7 @@ Each links to the part of DOCS.md that describes its configuration.
 
 - **Connections**: telnet (`telnetlib3`) and dial-up modems (`pyserial-asyncio`, several serial ports). [Modem Support](DOCS.md#modem-support-experimental)
 - **Web terminal**: a browser terminal (jsTerm) that reaches the telnet port through a WebSocket bridge outside the BBS process. [Web Terminal](DOCS.md#web-terminal)
-- **Terminals**: encoding detection (CP437 or UTF-8) and screen-size detection; ANSI output with tracked cursor and colour state. [Terminal and Encoding](DOCS.md#terminal-and-encoding)
+- **Terminals**: encoding detection (CP437 or UTF-8), what the terminal type implies (how to show bright backgrounds) and screen-size detection; ANSI output with tracked cursor and colour state; mouse reports in SGR and X10 form. [Terminal and Encoding](DOCS.md#terminal-and-encoding)
 - **Login and registration**: an inline registration form whose fields and rules come from `register.yaml`. [Registration](DOCS.md#registration)
 - **Menus**: prefix matching, `x` to exit levels, dotted paths, `/jump`, and a per-user start destination. [Menu System](DOCS.md#menu-system)
 - **Access control**: keys (white/black lists per destination), recursive key groups, and banned users. [Access Control](DOCS.md#access-control)
@@ -216,7 +216,7 @@ Plain `unittest`, in `tests/`. Run from the project directory, with the BBS's Py
 python -m unittest discover -s tests
 ```
 
-They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data directory that is removed afterwards, and need no network, DOSBox or door files. Covered: door node directories, the generated autoexec and dropfiles, the daily mark, the door I/O pumps and process handling, menu keys on `/jump`, dotted paths and jumps to a menu by name, the text menu's prompt line, the escape-sequence helpers, the ambient stars, the encoding switch through the idle monitor, the web terminal's bridge (against a fake BBS on a loopback port: it reaches only its own BBS, every byte value in both directions, telnet commands split across reads reaching the page whole, only the first message as a request, hang-ups and connection errors, an unreachable BBS, the connection limits, silent sockets, origins), and terminal detection marking the web terminal as unable to transfer files, which the file library then tells its callers before asking them anything.
+They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data directory that is removed afterwards, and need no network, DOSBox or door files. Covered: door node directories, the generated autoexec and dropfiles, the daily mark, the door I/O pumps and process handling, menu keys on `/jump`, dotted paths and jumps to a menu by name, the text menu's prompt line, the escape-sequence helpers, the ambient stars, mouse reports and bright backgrounds, the encoding switch through the idle monitor, the web terminal's bridge (against a fake BBS on a loopback port: it reaches only its own BBS, every byte value in both directions, telnet commands split across reads reaching the page whole, only the first message as a request, hang-ups and connection errors, an unreachable BBS, the connection limits, silent sockets, origins), and terminal detection marking the web terminal as unable to transfer files, which the file library then tells its callers before asking them anything.
 
 ## File Manifest
 

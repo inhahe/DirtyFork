@@ -318,6 +318,12 @@ During connection setup, the BBS detects the terminal type via telnet TTYPE nego
 - Unknown terminals default to CP437
 - User's saved encoding preference overrides auto-detection after login
 
+The terminal type also decides how bright backgrounds are asked for: the blink attribute for BBS terminals (CP437, SyncTERM), the codes for bright background colours for xterm-family ones (which would blink instead).
+
+### Mouse
+
+Menus, forms and popups take clicks. The BBS asks for mouse reports in SGR form (`ESC[?1006h`), which carries any column, and still reads the older X10 form from terminals without it. The wheel is never taken for a click.
+
 ### Ambient Stars
 
 `stars.py` runs a background task per connection that twinkles dim stars in the empty parts of the screen, from the login screen on. They are off unless the `stars:` block in the main config sets `enabled: true` (see the commented example in `DirtyFork.yaml`, which also sets the animation speed, density and colour). Once logged in, a user can turn them off with `show_stars: false` in their user YAML (but not on, if the sysop has them off), and override the colour with `stars_fg` / `stars_fg_br`. Stars appear only in empty, default-coloured cells, so they never cover text, and never inside doors; stars still on screen are erased when they switch off.

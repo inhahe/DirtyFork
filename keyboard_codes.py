@@ -215,6 +215,25 @@ R = re.compile("\x1b\\[([1-9]\\d{0,3});([1-9]\\d{0,2})R")
 partial_M = re.compile("\x1b(?:\\[(?:M(?:[ -\xff](?:[ -\xff](?:[ -\xff])?)?)?)?)?")
 M = re.compile("\x1b\\[M[ -\xff][ -\xff][ -\xff]")
 
+# SGR mouse reports (ESC[?1006h): ESC [ < button ; col ; row, then M (press)
+# or m (release). Unlike the X10 form above, any column fits (X10 stops at
+# 223, and past 95 its bytes are not valid UTF-8).
+partial_SGR = re.compile("\x1b(?:\\[(?:<(?:\\d{1,4}(?:;(?:\\d{1,4}(?:;(?:\\d{1,4}[Mm]?)?)?)?)?)?)?)?")
+SGR = re.compile("\x1b\\[<(\\d{1,4});(\\d{1,4});(\\d{1,4})([Mm])")
+
+
+def _mouse_key(Cb, col, row, released=False):
+  """A click key from a mouse report's button byte (minus 32 in X10 form):
+  bits 0-1 the button (3: released, in X10 form), 4 shift, 8 alt, 16 ctrl,
+  32 motion, 64 the wheel (then bits 0-1: 0 up, 1 down). A wheel event has
+  button None, so it is never taken for a click."""
+  if Cb & 64:
+    button, wheel = None, [up, down, None, None][Cb & 3]
+  else:
+    button, wheel = (release if released else [left, middle, right, release][Cb & 3]), None
+  return Eint(click, button=button, shift=bool(Cb & 4), alt=bool(Cb & 8), ctrl=bool(Cb & 16),
+              wheel=wheel, motion=bool(Cb & 32), col=col, row=row)
+
 # takes a long time...
 
 # i think the clicks are about 4.1 million entries, the codestart entries for it would be about 20,000,000
@@ -247,18 +266,19 @@ keyboard_codes.update(keyboard_code_starts)
 del keyboard_code_starts
 
 def check_partial(k):
-  return k in keyboard_codes or partial_R.fullmatch(k) or partial_M.fullmatch(k)
+  return (k in keyboard_codes or partial_R.fullmatch(k) or partial_M.fullmatch(k)
+          or partial_SGR.fullmatch(k))
 
 def check(k):
   # Check for complete mouse sequence first (takes priority over ESC[M = ctrl_pgup)
   r = M.fullmatch(k)
   if r:
-    Cb = ord(r.group(0)[3])-32
-    return Eint(click, button=[left, middle, right, release][Cb & 3],
-                shift=bool(Cb & 4), alt=bool(Cb & 8), ctrl=bool(Cb & 16),
-                wheel=[None, up, down, None][(Cb >> 6) & 3],
-                motion=bool(Cb & 32),
-                col=ord(r.group(0)[4])-32, row=ord(r.group(0)[5])-32)
+    return _mouse_key(ord(r.group(0)[3]) - 32, col=ord(r.group(0)[4]) - 32,
+                      row=ord(r.group(0)[5]) - 32)
+  r = SGR.fullmatch(k)
+  if r:
+    return _mouse_key(int(r.group(1)), col=int(r.group(2)), row=int(r.group(3)),
+                      released=r.group(4) == "m")
   # If this is ESC[M, treat it as partial — could be start of a mouse sequence
   if k == "\x1b[M":
     return False

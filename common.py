@@ -252,6 +252,7 @@ class User:
     self.encoding = "cp437"   # default encoding, updated by detect_terminal
     self.ttype = "unknown"    # terminal type string from TTYPE negotiation
     self.file_transfers = True  # the terminal can do ZMODEM/YMODEM-G; set by detect_terminal
+    self.bright_bg = "blink"  # how bright backgrounds are asked for: SGR 5 ("blink") or 100-107 ("aixterm"); set by detect_terminal
     self.in_door = False      # True while user is in a door game
     self.mouse_reporting = False  # True when mouse button-event tracking (ESC[?1002h) is active
     self._pos_uncertain = False  # True when the terminal's cursor may not be where it is tracked
@@ -752,8 +753,10 @@ _CP437_TERMINALS = {"ansi", "ansi-bbs", "avatar", "pcansi"}
 _NO_TRANSFER_TERMINALS = {"jsterm"}
 
 async def detect_terminal(user):
-  """Detect terminal encoding from TTYPE negotiation (CP437 if unknown), and
-  whether the terminal can do file transfers (user.file_transfers).
+  """Detect terminal encoding from TTYPE negotiation (CP437 if unknown),
+  whether the terminal can do file transfers (user.file_transfers), and how
+  it shows bright backgrounds (user.bright_bg: xterm-family terminals blink
+  on SGR 5, so they get SGR 100-107).
   Any saved encoding preference in user.conf overrides this after login."""
   ttype = None
   try:
@@ -779,6 +782,7 @@ async def detect_terminal(user):
     for name in _UTF8_TERMINALS:
       if name in ttype_lower:
         user.encoding = "utf-8"
+        user.bright_bg = "aixterm"
         _set_connection_encoding(user)
         return
   else:

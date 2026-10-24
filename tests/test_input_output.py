@@ -39,12 +39,12 @@ class MouseReporting(unittest.IsolatedAsyncioTestCase):
         user = _setup.make_user()
         await io.ansi_mouse_reporting(user, True)
         await io.ansi_mouse_reporting(user, True)                 # on already: nothing sent
-        self.assertEqual(user.writer.text(), "\x1b[?1000h\x1b[?1002h")
+        self.assertEqual(user.writer.text(), "\x1b[?1000h\x1b[?1002h\x1b[?1006h")
         self.assertTrue(user.mouse_reporting)
         user.writer.out.clear()
         await io.ansi_mouse_reporting(user, False)
         await io.ansi_mouse_reporting(user, False, force=True)    # state unknown: sent anyway
-        self.assertEqual(user.writer.text(), "\x1b[?1002l\x1b[?1000l" * 2)
+        self.assertEqual(user.writer.text(), "\x1b[?1006l\x1b[?1002l\x1b[?1000l" * 2)
         self.assertFalse(user.mouse_reporting)
 
 
