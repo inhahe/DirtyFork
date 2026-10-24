@@ -722,8 +722,7 @@ def handle_webpages(ctx, source, conf, stats):
     for n in dirs:
       if n in sites:
         item = _made(lambda: _site_item(ctx, conf, os.path.join(folder, n),
-                                        _unique(used, f"{out_dir}/{names[n + '/']}"),
-                                        tags + ([n] if hierarchy else [])),
+                                        _unique(used, f"{out_dir}/{names[n + '/']}"), tags),
                      stats, os.path.join(folder, n))
         if item:
           yield item

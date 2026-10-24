@@ -191,6 +191,19 @@ class Discovery(Scratch):
     with_tags = self.items(S.handle_webpages, conf(dir=root, hierarchy_tags=True))
     self.assertEqual(with_tags["reviews/Film.html"].tags, ["reviews", "web", "webpage"])
 
+  def test_folder_tags_are_the_folders_a_page_or_site_is_in(self):
+    root = self.path("pages")
+    write(os.path.join(root, "Top.html"), page("top"))
+    write(os.path.join(root, "reviews", "Film.html"), page("film"))
+    write(os.path.join(root, "reviews", "old site", "index.html"), page("a site"))
+    write(os.path.join(root, "a site", "index.html"), page("another"))
+    items = self.items(S.handle_webpages, conf(dir=root, hierarchy_tags=True))
+    self.assertEqual({k: i.tags for k, i in items.items()}, {
+      "Top.html": ["web", "webpage"],
+      "reviews/Film.html": ["reviews", "web", "webpage"],
+      "reviews/old site": ["reviews", "web", "website"],  # (not its own name: it isn't in that folder)
+      "a site": ["web", "website"]})
+
   def test_a_page_changing_or_its_files_changing_is_a_change(self):
     root = self.path("pages")
     write(os.path.join(root, "One.html"), page("Page one"))
