@@ -253,7 +253,9 @@ async def _show_list(user, items, title, controls, selected=0):
     if not entries:
       return 20
     room = width - (2 + num_width + 2) - 8                     # (less number and size)
-    room -= max((len(_tag_text(e.tags)) + 2 for e in entries if e.tags), default=0)
+    # (tags take at most a third: a picture's folders can be long, and the
+    # name matters more; the line cuts them, and I shows them all)
+    room -= min(max((len(_tag_text(e.tags)) + 2 for e in entries if e.tags), default=0), width // 3)
     longest = max(len(e.name) for e in entries)
     if any(e.description for e in entries):
       room = min(room - 12, (width - num_width) * 2 // 5)
