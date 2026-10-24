@@ -436,5 +436,5 @@ menu_system:
         action: user_settings
       Vet Uploads:
         action: vet_uploads
-      Edit Files:
+      File Details:
         action: edit_files

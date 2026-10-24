@@ -8,7 +8,8 @@ Without SOURCE names it runs every source not marked "scheduled: false"
 (what the scheduled task runs, register-library-sync.ps1); --all runs every
 source. Each run first makes the catalogue agree with the library's own
 folders (library.reconcile_uploads). --dry-run says what would change and
-changes nothing. Its log is library_sync.log in the data directory.
+changes nothing (but the schema of a catalogue an older DirtyFork made,
+which changes no entry). Its log is library_sync.log in the data directory.
 
 Source types (library.SOURCE_TYPES), and what each lists:
 
@@ -44,11 +45,13 @@ How a source is synced (sync_source): its handler yields an Item for each
 file it would list; an item whose fingerprint (what the file is made from:
 size and time, or a tree of them, or a commit) is unchanged keeps its entry,
 with only its tags and description brought up to date; a new or changed one
-is built (zipped) if it is a zip, then catalogued. Entries the handler no
-longer yields are forgotten, and their zips deleted, but only once the
-handler has finished: a source that fails partway (a drive not mounted, the
-network down) forgets nothing. A zip is written under a temporary name and
-then put in place, so a caller never downloads half of one.
+is built (zipped) if it is a zip, then catalogued. A description and tags a
+sysop set are kept either way (library.set_details; the catalogue's writes
+see to it). Entries the handler no longer yields are forgotten, but only
+once the handler has finished: a source that fails partway (a drive not
+mounted, the network down) forgets nothing. Then the zips no entry lists
+are deleted. A zip is written under a temporary name and then put in place,
+so a caller never downloads half of one.
 """
 
 import argparse
@@ -1152,19 +1155,25 @@ def sync_source(ctx, source, conf):
       if (old is not None and (old.root, old.path) == (item.root, item.path)
               and (old.fingerprint == item.fingerprint if item.stamp is None
                    else (old.size, old.mtime) == item.stamp)):
-        if old.edited:
-          continue  # (a sysop set its details: they are kept)
+        if old.edited == library.EDITED:
+          continue  # (a sysop's details: kept)
+        description = item.description
+        if description is None:  # (only describe() can say, at a cost: kept unless the details were given back)
+          if old.edited != library.RESET:
+            description = old.description
+          elif item.describe:
+            description = item.describe()
+          else:
+            continue  # (unknown this time: the captions can't be read)
         tags = library.clean_tags(item.tags)
-        new_desc = item.description if item.description is not None else old.description
-        if tags != list(old.tags) or new_desc != old.description:
+        if old.edited == library.RESET or tags != list(old.tags) or description != old.description:
           stats.updated += 1
           if ctx.verbose:
             log.info("%s: %s: tags or description changed", source, item.key)
           if not ctx.dry_run:
-            if tags != list(old.tags):
-              library.set_tags(con, old.id, tags)
-            if new_desc != old.description:
-              library.set_description(con, old.id, new_desc)
+            # (old is as it was when the batch began; set_details doesn't
+            # write over a sysop's details set since)
+            library.set_details(con, old.id, description, tags)
         continue
       if old is None:
         stats.new += 1
@@ -1182,21 +1191,15 @@ def sync_source(ctx, source, conf):
           size, mtime = item.stamp
         else:
           size, mtime = library.file_stamp(os.path.join(ctx.lib.roots[item.root], *item.path.split("/")))
-        tags = item.tags
-        if old is not None and old.edited:  # (a sysop set its details: they are kept)
-          description, tags = old.description, list(old.tags)
-        else:
-          description = item.description if item.description is not None else (
-            item.describe() if item.describe else "")
+        description = item.description if item.description is not None else (
+          item.describe() if item.describe else "")
         if old is not None and (old.root, old.path) != (item.root, item.path):
-          library.remove(con, old.id)
-          if old.root == library.ZIPS:
-            _delete_zip(ctx, old.path)
-        file_id = library.put(con, root=item.root, path=item.path, size=size, mtime=mtime,
-                              description=description, uploader=uploader, tags=tags, source=source,
-                              source_key=item.key, fingerprint=item.fingerprint)
-        if old is not None and old.edited:  # (a new row, if it moved: the mark goes with it)
-          con.execute("UPDATE files SET edited = 1 WHERE id = ?", (file_id,))
+          # (the same entry, so a sysop's details stay; its old zip goes in _sweep_zips)
+          library.move(con, old.id, item.root, item.path)
+        # (put keeps a sysop's details, even ones set since old was read)
+        library.put(con, root=item.root, path=item.path, size=size, mtime=mtime, description=description,
+                    uploader=uploader, tags=item.tags, source=source, source_key=item.key,
+                    fingerprint=item.fingerprint)
       except sqlite3.Error:
         raise  # (the catalogue itself: the source fails, and is rolled back)
       except Exception as exc:
@@ -1212,10 +1215,10 @@ def sync_source(ctx, source, conf):
     log.warning("%s: not all of it could be read: nothing it lists is forgotten this time", source)
     gone = []
   elif linked:
-    gone = con.execute("SELECT id, root, path, path AS source_key FROM files WHERE root = ? AND path NOT IN "
+    gone = con.execute("SELECT id, path AS source_key FROM files WHERE root = ? AND path NOT IN "
                        "(SELECT key FROM temp.seen)", (source,)).fetchall()
   else:
-    gone = con.execute("SELECT id, root, path, source_key FROM files WHERE source = ? AND source_key IS NOT NULL "
+    gone = con.execute("SELECT id, source_key FROM files WHERE source = ? AND source_key IS NOT NULL "
                        "AND source_key NOT IN (SELECT key FROM temp.seen)", (source,)).fetchall()
   for row in gone:
     stats.removed += 1
@@ -1224,21 +1227,22 @@ def sync_source(ctx, source, conf):
     if ctx.dry_run:
       continue
     settle()
-    library.remove(con, row["id"])
-    if row["root"] == library.ZIPS:
-      _delete_zip(ctx, row["path"])
+    library.remove(con, row["id"])  # (its zip, if it has one, goes in _sweep_zips)
   if not ctx.dry_run:
     for write_state in ctx.after:
       write_state()
     con.commit()
-    if kind in ("websites", "webpages", "github"):
+    if not linked:
       _sweep_zips(ctx, source)
   return stats
 
 
 def _sweep_zips(ctx, source):
-  """Delete zips in the source's folder of zips that nothing lists (left by
-  an interrupted run, or a zip that could not be deleted when it went)."""
+  """Delete the zips in the source's folder of zips that no entry lists:
+  the zips of entries forgotten or moved (renamed), and any an interrupted
+  run left. (Every zip goes here, once the source is synced, rather than
+  as its entry goes: Windows' file names ignore case, so a page renamed
+  from x.htm to X.htm has a new zip, X.zip, that is the forgotten x.zip.)"""
   folder = os.path.join(ctx.lib.zips_dir, source)
   if not os.path.isdir(folder):
     return
@@ -1261,7 +1265,7 @@ def _sweep_zips(ctx, source):
 
 def _forget_source(ctx, source, kind):
   """Forget everything *source* lists as a source of type *kind*: its
-  entries, the zips it made and the clones it kept (a chunk at a time,
+  entries, then the zips it made and the clones it kept (a chunk at a time,
   committing between: the BBS waits for the lock only so long). Returns how
   many entries. The files of a linked source are never touched."""
   con = ctx.con
@@ -1269,13 +1273,11 @@ def _forget_source(ctx, source, kind):
   where = "root = ?" if kind in library.LINKED_TYPES else "source = ? AND source_key IS NOT NULL"
   n = 0
   while True:
-    rows = con.execute(f"SELECT id, root, path FROM files WHERE {where} LIMIT 5000", (source,)).fetchall()
+    rows = con.execute(f"SELECT id FROM files WHERE {where} LIMIT 5000", (source,)).fetchall()
     if not rows:
       break
     for row in rows:
       library.remove(con, row["id"])
-      if row["root"] == library.ZIPS:
-        _delete_zip(ctx, row["path"])
     con.commit()
     n += len(rows)
   if kind not in library.LINKED_TYPES:
@@ -1394,7 +1396,9 @@ def _run(args, paths):
   if args.dry_run and not os.path.isfile(lib.catalog):
     con = library.empty_catalogue()  # (a dry run makes nothing, not even the catalogue)
   else:
-    if not args.dry_run:
+    if args.dry_run:
+      library.update_schema(lib)  # (an older DirtyFork's catalogue can't be read as it is)
+    else:
       library.ensure_schema(lib)
     con = open_catalogue(lib, args.dry_run)
   seven_zip = find_seven_zip(str(cfg.file_library.seven_zip) if cfg.file_library.seven_zip else None)

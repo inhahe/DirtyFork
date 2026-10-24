@@ -393,31 +393,98 @@ class LibraryFiles(unittest.TestCase):
                 + [tab, tab, tab, tab, "\r"])            # back at the vetting screen: Back
         shown = self.press(keys, lambda: f._vet_one(sysop, self.entry(self.unvetted)))
         e = self.entry(self.unvetted)
-        self.assertEqual((e.description, e.tags, e.edited, e.root), ("a fine tool", ("utility",), True, "pending"))
+        self.assertEqual((e.description, e.tags, e.edited, e.root),
+                         ("a fine tool", ("utility",), self.library.EDITED, "pending"))
         self.assertIn("Saved the details of unvetted.zip.", shown)
 
-    def test_e_edits_from_a_list_for_a_sysop_only(self):
+    def listing(self, user, keys, **kwargs):
+        """_show_list of the game, with these keys pressed: what it returns."""
         from array import array
+        f = self.file
+        got = []
+
+        async def show():
+            got.append(await f._show_list(user, f._Items(array("q", [self.game])), "t", "controls", **kwargs))
+        self.press(keys, show)
+        return got[0]
+
+    def test_e_edits_from_a_list_for_a_sysop_only(self):
         from keyboard_codes import tab
         f = self.file
-        caller, sysop = self.user(), self.user("boss", {"sysop"})
-        self.press(["e", "q"], lambda: f._pick_files(caller, f._Items(array("q", [self.game])), "t"))
-        self.assertFalse(self.entry(self.game).edited)
-        self.press(["e"] + list("ok") + [tab, tab, "\r", "q"],
-                   lambda: f._pick_files(sysop, f._Items(array("q", [self.game])), "t"))
-        self.assertEqual((self.entry(self.game).description, self.entry(self.game).edited), ("ok", True))
+        edit = mock.AsyncMock(return_value=True)
+        with mock.patch.object(f, "_edit_details", edit):
+            self.assertEqual(self.listing(self.user(), ["e", "q"])[0], "quit")
+        edit.assert_not_awaited()
+        self.assertEqual(self.listing(self.user("boss", {"sysop"}), ["e"] + list("ok") + [tab, tab, "\r"])[0],
+                         "edited")
+        self.assertEqual((self.entry(self.game).description, self.entry(self.game).edited),
+                         ("ok", self.library.EDITED))
+
+    def test_enter_edits_where_the_list_is_for_editing(self):
+        from keyboard_codes import tab
+        sysop = self.user("boss", {"sysop"})
+        self.assertEqual(self.listing(sysop, ["\r"] + list("ok") + [tab, tab, "\r"], enter_edits=True)[0], "edited")
+        self.assertEqual(self.entry(self.game).description, "ok")
+        self.assertEqual(self.listing(sysop, ["\r"])[0], "open")  # (elsewhere: open)
 
     def test_edit_files_is_the_search_with_the_same_form(self):
         f = self.file
         seen = {}
 
-        async def search(user, open_file=None, heading=None):
-            seen["open_file"] = open_file
+        async def search(user, edit=False, heading=None):
+            seen["edit"] = edit
         with mock.patch.object(f, "_search_files", search):
             asyncio.run(f.edit_files(self.user("boss", {"sysop"})))
-            self.assertIs(seen.pop("open_file"), f._edit_details)
+            self.assertIs(seen.pop("edit"), True)
             asyncio.run(f.edit_files(self.user()))  # (not a sysop: nothing)
             self.assertEqual(seen, {})
+
+    def described(self, description):
+        con = self.library.connect(self.lib)
+        try:
+            self.library.set_details(con, self.game, description, ["old"])
+            con.commit()
+        finally:
+            con.close()
+
+    def test_the_edit_form_fits_a_small_screen(self):
+        from keyboard_codes import insert, tab
+        f = self.file
+        sysop = self.user("boss", {"sysop"})
+        self.described("line one\nline two")
+        for height in range(f._EDIT_FORM_ROWS + 3, 30):
+            sysop.screen_height = height
+            shown = self.press([tab, insert] + list(f"tag {height}") + ["\r", tab, "\r"],  # (a tag added; Save)
+                               lambda: f._edit_details(sysop, self.entry(self.game)))
+            self.assertEqual(shown, ["Saved the details of game.zip."], height)
+            e = self.entry(self.game)
+            # (the description untouched: kept as it was, line break and all)
+            self.assertEqual((e.description, e.tags[-1]), ("line one\nline two", f"tag {height}"), height)
+        sysop.screen_height = f._EDIT_FORM_ROWS + 2
+        shown = self.press([], lambda: f._edit_details(sysop, self.entry(self.game)))
+        self.assertIn("needs a screen of", shown[0])
+
+    def test_a_description_typed_is_trimmed_not_joined(self):
+        from keyboard_codes import tab
+        f = self.file
+        sysop = self.user("boss", {"sysop"})
+        self.described("line one\nline two")
+        self.press(list("  ") + [tab, tab, "\r"], lambda: f._edit_details(sysop, self.entry(self.game)))
+        self.assertEqual(self.entry(self.game).description, "line one\nline two")
+
+    def test_an_uploader_doesnt_write_over_a_sysops_details(self):
+        def sysop():  # (the sysop, quicker than the uploader, describes it in Vet Uploads)
+            e = self.catalogued("tool.exe")
+            con = self.library.connect(self.lib)
+            try:
+                self.library.set_details(con, e.id, "the sysop's", ["sysop"], by_sysop=True)
+                con.commit()
+            finally:
+                con.close()
+        _, messages = self.upload(self.user("mallory"), ["tool.exe"], ["useful", ""], during=sysop)
+        e = self.catalogued("tool.exe")
+        self.assertEqual((e.description, e.tags), ("the sysop's", ("sysop",)))
+        self.assertIn("Described by the sysop meanwhile", messages[-1])
 
     def test_a_list_keeps_the_rows_on_screen_when_its_cache_is_full(self):
         f = self.file

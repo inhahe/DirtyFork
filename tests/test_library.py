@@ -473,17 +473,55 @@ class Folders(unittest.TestCase):
       bbs.close()
     self.assertEqual(self.catalogued("uploads"), {"new.zip": ("alice", 1)})
 
+  def details(self, file_id):
+    e = library.get(self.con, file_id)
+    return e.description, e.tags, e.edited
+
   def test_a_sysops_details_and_giving_them_back(self):
     file_id = library.put(self.con, root="pics", path="x/y.jpg", size=1, tags=["pic", "x"], source="pics",
                           description="an AI caption")
-    self.con.commit()
-    library.set_details(self.con, file_id, "my words", ["mine", "pic"])
-    self.con.commit()
-    e = library.get(self.con, file_id)
-    self.assertEqual((e.description, e.tags, e.edited), ("my words", ("mine", "pic"), True))
+    self.assertTrue(library.set_details(self.con, file_id, "my words", ["mine", "pic"], by_sysop=True))
+    self.assertEqual(self.details(file_id), ("my words", ("mine", "pic"), library.EDITED))
+    self.assertTrue(library.reset_details(self.con, file_id))
+    self.assertEqual(self.details(file_id), ("my words", ("mine", "pic"), library.RESET))
+    self.assertFalse(library.reset_details(self.con, file_id))  # (not the sysop's now)
+    upload = library.put(self.con, root="uploads", path="up.zip", size=1)
+    library.set_details(self.con, upload, "theirs", [], by_sysop=True)
+    self.assertFalse(library.reset_details(self.con, upload))  # (no sync to give them to)
+
+  def test_nothing_writes_over_a_sysops_details(self):
+    file_id = library.put(self.con, root="pics", path="y.jpg", size=1, tags=["pic"], source="pics")
+    library.set_details(self.con, file_id, "mine", ["kept"], by_sysop=True)
+    self.assertFalse(library.set_details(self.con, file_id, "the sync's", ["pic"]))
+    library.put(self.con, root="pics", path="y.jpg", size=2, description="a caption", tags=["pic"], source="pics")
+    self.assertEqual(self.details(file_id), ("mine", ("kept",), library.EDITED))
+    self.assertEqual(library.get(self.con, file_id).size, 2)  # (the rest is the sync's)
     library.reset_details(self.con, file_id)
-    self.con.commit()
-    self.assertFalse(library.get(self.con, file_id).edited)
+    library.put(self.con, root="pics", path="y.jpg", size=2, description="a caption", tags=["pic"], source="pics")
+    self.assertEqual(self.details(file_id), ("a caption", ("pic",), library.SYNCED))  # (given back: the sync's)
+    self.assertTrue(library.set_details(self.con, file_id, "the uploader's", ["x"]))
+    self.assertEqual(self.details(file_id), ("the uploader's", ("x",), library.SYNCED))
+
+  def test_details_for_a_file_no_longer_catalogued(self):
+    file_id = library.put(self.con, root="uploads", path="gone.zip", size=1)
+    library.remove(self.con, file_id)
+    self.assertFalse(library.set_details(self.con, file_id, "words", ["a tag"], by_sysop=True))  # (no IntegrityError)
+    self.assertFalse(library.set_details(self.con, file_id, "words", []))
+    self.assertFalse(library.reset_details(self.con, file_id))
+    self.assertEqual(self.con.execute("SELECT COUNT(*) FROM file_tags").fetchone()[0], 0)
+
+  def test_a_moved_entry_is_the_same_entry(self):
+    file_id = library.put(self.con, root="zips", path="src/a.zip", size=1, tags=["web"], source="src",
+                          source_key="a.html")
+    library.set_details(self.con, file_id, "mine", ["kept"], by_sysop=True)
+    other = library.put(self.con, root="zips", path="src/b.zip", size=1, source="src", source_key="b.html")
+    self.assertTrue(library.move(self.con, file_id, "zips", "src/b.zip"))
+    e = library.get(self.con, file_id)
+    self.assertEqual((e.path, e.name, e.description, e.tags), ("src/b.zip", "b.zip", "mine", ("kept",)))
+    self.assertIsNone(library.get(self.con, other))  # (what was there: forgotten)
+    self.assertEqual(list(library.ids_named(self.con, "b.zip")), [file_id])  # (found by its new name)
+    library.remove(self.con, file_id)
+    self.assertFalse(library.move(self.con, file_id, "zips", "src/c.zip"))
 
   def test_reserved_names(self):
     self.assertEqual(self.lib.reserved_names(), {"catalog", "pending", "zips", "repos"})
@@ -495,44 +533,83 @@ class Folders(unittest.TestCase):
     self.assertEqual(library.reconcile_uploads(beside, self.con, ".upload-"), (0, 0))  # (never catalogued)
 
 
+def make_v1_catalogue(path, stamped=True):
+  """At *path*, a catalogue as schema 1 made it (before files.edited), with
+  one file, uploads/old.zip; *stamped*: with its version (without: stopped
+  between making the tables and stamping them)."""
+  os.makedirs(os.path.dirname(path), exist_ok=True)
+  if os.path.exists(path):
+    os.remove(path)
+  con = sqlite3.connect(path)
+  con.executescript("""
+    CREATE TABLE files (id INTEGER PRIMARY KEY, root TEXT NOT NULL, path TEXT NOT NULL,
+      size INTEGER NOT NULL, mtime INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '',
+      uploader TEXT NOT NULL DEFAULT '', added INTEGER NOT NULL, source TEXT, source_key TEXT,
+      fingerprint TEXT, tag_count INTEGER NOT NULL DEFAULT 0, name_norm TEXT NOT NULL, desc_norm TEXT NOT NULL,
+      uploader_norm TEXT NOT NULL, UNIQUE (root, path));
+    CREATE TABLE file_tags (file_id INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
+      tag_norm TEXT NOT NULL, tag TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (file_id, tag_norm))
+      WITHOUT ROWID;
+    CREATE TABLE sync_state (source TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+      PRIMARY KEY (source, key)) WITHOUT ROWID;
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);""")
+  if stamped:
+    con.execute("INSERT INTO settings (key, value) VALUES ('schema', '1')")
+  con.execute("INSERT INTO files (root, path, size, added, name_norm, desc_norm, uploader_norm) "
+              "VALUES ('uploads', 'old.zip', 1, 0, 'old.zip', '', '')")
+  con.commit()
+  con.close()
+
+
 class Schema(unittest.TestCase):
-  # The files table as schema 1 had it: what a catalogue made before
-  # schema 2 holds.
-  V1_FILES = """CREATE TABLE files (id INTEGER PRIMARY KEY, root TEXT NOT NULL, path TEXT NOT NULL,
-    size INTEGER NOT NULL, mtime INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '',
-    uploader TEXT NOT NULL DEFAULT '', added INTEGER NOT NULL, source TEXT, source_key TEXT,
-    fingerprint TEXT, tag_count INTEGER NOT NULL DEFAULT 0, name_norm TEXT NOT NULL, desc_norm TEXT NOT NULL,
-    uploader_norm TEXT NOT NULL, UNIQUE (root, path))"""
+  def setUp(self):
+    self.top = tempfile.mkdtemp(prefix="library-")
+    self.lib = make_library(self.top)
+
+  def tearDown(self):
+    shutil.rmtree(self.top, ignore_errors=True)
+
+  def make_v1(self, stamped=True):
+    make_v1_catalogue(self.lib.catalog, stamped)
+
+  def check_up_to_date(self):
+    con = library.connect(self.lib)
+    try:
+      self.assertEqual(library._schema_version(con), library.SCHEMA_VERSION)
+      e = library.fetch(con, library.all_ids(con))[0]
+      self.assertEqual((e.name, e.edited), ("old.zip", library.SYNCED))
+    finally:
+      con.close()
 
   def test_an_older_catalogue_is_brought_up_to_date(self):
-    top = tempfile.mkdtemp(prefix="library-")
+    self.make_v1()
+    library.ensure_schema(self.lib)
+    self.check_up_to_date()
+    library.ensure_schema(self.lib)  # (and once up to date, left be)
+    self.check_up_to_date()
+
+  def test_tables_without_their_version_are_the_first_schemas(self):
+    self.make_v1(stamped=False)
+    library.ensure_schema(self.lib)
+    self.check_up_to_date()
+
+  def test_a_new_catalogue_is_made_in_one_transaction(self):
+    os.remove(self.lib.catalog)
+    real = library._SCHEMA
+    with mock.patch.object(library, "_SCHEMA", real + "\nCREATE TABLE files (x);"):  # (fails: files exists)
+      with self.assertRaises(sqlite3.OperationalError):
+        library.ensure_schema(self.lib)
+    con = library.connect(self.lib)
     try:
-      lib = make_library(top)
-      os.remove(lib.catalog)
-      con = sqlite3.connect(lib.catalog)
-      con.executescript(self.V1_FILES + """;
-        CREATE TABLE file_tags (file_id INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
-          tag_norm TEXT NOT NULL, tag TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (file_id, tag_norm))
-          WITHOUT ROWID;
-        CREATE TABLE sync_state (source TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
-          PRIMARY KEY (source, key)) WITHOUT ROWID;
-        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);""")
-      con.execute("INSERT INTO settings (key, value) VALUES ('schema', '1')")
-      con.execute("INSERT INTO files (root, path, size, added, name_norm, desc_norm, uploader_norm) "
-                  "VALUES ('uploads', 'old.zip', 1, 0, 'old.zip', '', '')")
-      con.commit()
-      con.close()
-      library.ensure_schema(lib)
-      con = library.connect(lib)
-      try:
-        self.assertEqual(library._schema_version(con), library.SCHEMA_VERSION)
-        e = library.fetch(con, library.all_ids(con))[0]
-        self.assertEqual((e.name, e.edited), ("old.zip", False))
-        library.ensure_schema(lib)  # (and once up to date, left be)
-      finally:
-        con.close()
+      self.assertIsNone(library._schema_version(con))  # (nothing made: tried afresh next time)
     finally:
-      shutil.rmtree(top, ignore_errors=True)
+      con.close()
+    library.ensure_schema(self.lib)
+    con = library.connect(self.lib)
+    try:
+      self.assertEqual(library._schema_version(con), library.SCHEMA_VERSION)
+    finally:
+      con.close()
 
 
 class Config(unittest.TestCase):

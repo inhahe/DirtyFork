@@ -233,13 +233,15 @@ class _Items:
     return len(self.head) + number - 1
 
 
-async def _show_list(user, items, title, controls, selected=0):
+async def _show_list(user, items, title, controls, selected=0, enter_edits=False):
   """Show *items* (an _Items) in a scrolling full-screen list.
 
   Up/Down/PgUp/PgDn/Home/End move, digits then Enter go to a file by
-  number, I shows a file's details. Returns (action, item, index): action
-  'open' (Enter on an item), 'edit' (E on a file, for a sysop), 'back'
-  (Backspace or Esc) or 'quit' (Q)."""
+  number, I shows a file's details, and E (a sysop's; Enter too, with
+  *enter_edits*) edits them (_edit_details). Returns (action, item, index):
+  action 'open' (Enter on an item), 'edited' (a file's details saved, item
+  None: what the list shows may have changed), 'back' (Backspace or Esc)
+  or 'quit' (Q)."""
   header_rows, footer_rows = 2, 2
   height = max(1, user.screen_height - header_rows - footer_rows)
   width = user.screen_width
@@ -356,6 +358,15 @@ async def _show_list(user, items, title, controls, selected=0):
     top = selected if selected < top else selected - height + 1
     await draw_rows()
 
+  async def edit():
+    """Edit the selected file's details: True if they were saved."""
+    entry = items.item(selected)[1]
+    if await _edit_details(user, entry):
+      items.forget(entry.id)
+      return True
+    await draw_all()
+    return False
+
   if total == 0:
     await show_message_box(user, "No files here.")
     return "back", None, 0
@@ -397,7 +408,10 @@ async def _show_list(user, items, title, controls, selected=0):
     elif key == end:
       await move_to(total - 1)
     elif key in ("\r", "\n"):
-      return "open", items.item(selected), selected
+      if not (enter_edits and items.item(selected)[0] == "file"):
+        return "open", items.item(selected), selected
+      if await edit():
+        return "edited", None, selected
     elif key in (back, "\x7f", "esc"):
       return "back", None, selected
     elif isinstance(key, str) and key.lower() == "q":
@@ -408,7 +422,8 @@ async def _show_list(user, items, title, controls, selected=0):
         await show_message_box(user, _info_text(item[1]), title="File Information")
         await draw_all()
     elif isinstance(key, str) and key.lower() == "e" and _is_sysop(user) and items.item(selected)[0] == "file":
-      return "edit", items.item(selected), selected
+      if await edit():
+        return "edited", None, selected
 
 
 def _controls(user, enter, more=""):
@@ -417,22 +432,18 @@ def _controls(user, enter, more=""):
   return f" Arrows: move  Enter: {enter}  I: info{edit}{more}"
 
 
-async def _pick_files(user, items, title, selected=0, open_file=None):
-  """A list of files where Enter downloads one (or does open_file(user,
-  entry)) and E edits one (a sysop); until Q or Backspace."""
-  open_file = open_file or _do_download
-  enter = "edit" if open_file is _edit_details else "download"
-  controls = _controls(user, enter, "  Digits: go to #  Q: back")
+async def _pick_files(user, items, title, edit=False):
+  """A list of files where Enter downloads one, or with *edit* edits its
+  details (a sysop's; E does anywhere); until Q or Backspace."""
+  controls = _controls(user, "edit" if edit else "download", "  Digits: go to #  Q: back")
+  selected = 0
   while True:
-    action, item, selected = await _show_list(user, items, title, controls, selected)
-    if action not in ("open", "edit"):
+    action, item, selected = await _show_list(user, items, title, controls, selected, enter_edits=edit)
+    if action == "open":
+      if item[0] == "file":
+        await _do_download(user, item[1])
+    elif action != "edited":
       return action
-    if item[0] == "file":
-      if action == "edit" or open_file is _edit_details:
-        if await _edit_details(user, item[1]):
-          items.forget(item[1].id)
-      else:
-        await open_file(user, item[1])
 
 
 # ---------------------------------------------------------------------------
@@ -580,10 +591,10 @@ async def _search_form(user, query, count, heading="Search the File Library"):
       return query.strip()
 
 
-async def _search_files(user, open_file=None, heading="Search the File Library"):
+async def _search_files(user, edit=False, heading="Search the File Library"):
   """Search with the query language (library.parse_query); refine and repeat
-  until an empty search. Enter on a file found downloads it, or does
-  open_file(user, entry)."""
+  until an empty search. Enter on a file found downloads it, or with *edit*
+  edits its details (_pick_files)."""
   query = getattr(user, 'file_search', "")
   count = await _db(library.listed_count)  # (once: it doesn't change while they search)
   while True:
@@ -601,7 +612,7 @@ async def _search_files(user, open_file=None, heading="Search the File Library")
     if not ids:
       await show_message_box(user, "No files match that search.")
       continue
-    await _pick_files(user, _Items(ids), f"Search: {query}", open_file=open_file)  # (Q, Backspace: back here)
+    await _pick_files(user, _Items(ids), f"Search: {query}", edit=edit)  # (Q, Backspace: back here)
 
 
 # ---------------------------------------------------------------------------
@@ -630,13 +641,13 @@ async def _browse_files(user):
     action, item, selected = await _show_list(user, items, title, controls, selected)
     if action == "quit":
       return
-    if action == "back" or (action == "open" and item[0] == "parent"):
+    if action == "edited":
+      continue  # (its tags may have moved the file: the level is read again)
+    if action == "back" or item[0] == "parent":
       if not path:
         return
       path.pop()
       selected = selections.pop()
-    elif action == "edit":
-      await _edit_details(user, item[1])  # (its tags may move it: the level is read again)
     elif item[0] == "dir":
       path.append(item[1])
       selections.append(selected)
@@ -763,7 +774,7 @@ async def _upload_file(user):
   if not ids:
     await show_message_box(user, "\n".join(lines))
     return
-  gone = []  # (rejected while the uploader typed its details)
+  gone, kept = [], []  # (the sysop dealt with them meanwhile: rejected; gave them details)
   try:
     await show_message_box(user, "\n".join(lines))
     await ansi_cls(user)
@@ -775,17 +786,16 @@ async def _upload_file(user):
 
       def details(con, file_id=file_id):
         # (the sysop may have dealt with it meanwhile: approved, it is the
-        # same entry in the library; rejected, it is gone)
-        if con.execute("SELECT 1 FROM files WHERE id = ?", (file_id,)).fetchone() is None:
-          return False
-        library.set_description(con, file_id, desc)
-        library.set_tags(con, file_id, tags)
+        # same entry in the library; rejected, it is gone; given it
+        # details, those stay)
+        done = library.set_details(con, file_id, desc, tags)
         con.commit()
-        return True
-      if await _db(details):
+        return "set" if done else "gone" if library.get(con, file_id) is None else "kept"
+      outcome = await _db(details)
+      if outcome == "set":
         log.info("User %s uploaded %s with tags=%s", user.handle, fname, tags)
       else:
-        gone.append(fname)
+        (gone if outcome == "gone" else kept).append(fname)
   finally:
     # The sysops hear of it once its details are in, or when the uploader
     # leaves without giving them.
@@ -794,12 +804,15 @@ async def _upload_file(user):
       await _tell_sysops(f"{user.handle} uploaded {', '.join(waiting)}. "
                          "It is waiting for your approval in Sysop > Vet Uploads.")
 
-  if not gone:
+  if not gone and not kept:
     await show_message_box(user, "File(s) catalogued successfully.")
   else:
-    kept = [n for n in ids if n not in gone]
-    await show_message_box(user, (f"Catalogued: {', '.join(kept)}.\n" if kept else "")
-                           + f"No longer in the library (the sysop dealt with it meanwhile): {', '.join(gone)}.")
+    done = [n for n in ids if n not in gone and n not in kept]
+    await show_message_box(user, "\n".join(
+      ([f"Catalogued: {', '.join(done)}."] if done else [])
+      + ([f"Described by the sysop meanwhile, whose description and tags stay: {', '.join(kept)}."]
+         if kept else [])
+      + ([f"No longer in the library (the sysop dealt with it meanwhile): {', '.join(gone)}."] if gone else [])))
 
 
 # ---------------------------------------------------------------------------
@@ -813,19 +826,34 @@ async def _valid_tag(text):
   return True, None
 
 
+_EDIT_FORM_ROWS = 13  # the edit form's rows but the description's and the tag list's
+_EDIT_NOTES = {
+  library.SYNCED: "Saving makes them yours: the sync keeps them from then on.",
+  library.EDITED: "These are your details: the sync keeps them (Reset gives them back to it).",
+  library.RESET: "Given back to the sync, which sets them afresh at its next run (saving makes them yours).",
+}
+
+
 async def _edit_details(user, entry):
   """A sysop's form for a file's description and tags, the one screen for
   editing them: from any file list (E), from vetting an upload (Edit) and
-  from Sysop > Edit Files. Saving marks a synced file's details as the
+  from Sysop > File Details. Saving makes a synced file's details the
   sysop's (library.set_details: the sync keeps them); Reset gives them back
   to the sync. Returns True when something was saved."""
   if not _is_sysop(user):
+    return False
+  width, height = user.screen_width, user.screen_height
+  room = height - _EDIT_FORM_ROWS  # (for the description, 1 to 4 rows, and the tag list, 2 to 5: the list's first)
+  desc_rows = max(1, min(4, room - 5))
+  list_rows = min(5, room - desc_rows)
+  if list_rows < 2:
+    await show_message_box(user, f"Editing a file's details needs a screen of {_EDIT_FORM_ROWS + 3} rows "
+                                 f"or more; this one has {height}.")
     return False
   entry = await _db(library.get, entry.id)  # (as it is now, not as the list was drawn)
   if entry is None:
     await show_message_box(user, "That file is no longer in the library.")
     return False
-  width, height = user.screen_width, user.screen_height
   await ansi_cls(user)
   ansi_color(user, fg=cyan, fg_br=True, bg=black)
   await send(user, "Edit File Details"[:width] + cr + lf, drain=False)
@@ -834,39 +862,37 @@ async def _edit_details(user, entry):
            else f"uploaded by {entry.uploader or '(unknown)'}")
   await send(user, f"{entry.name}  {_format_size(entry.size)}  {where}"[:width - 1] + cr + lf, drain=False)
   if entry.source:
-    note = ("These are your details: the sync keeps them (Reset gives them back to it)." if entry.edited
-            else "Saving makes them yours: the sync keeps them from then on.")
     ansi_color(user, fg=cyan, fg_br=False, bg=black)
-    await send(user, note[:width - 1] + cr + lf, drain=False)
+    await send(user, _EDIT_NOTES[entry.edited][:width - 1] + cr + lf, drain=False)
     ansi_color(user, fg=white, fg_br=False, bg=black)
-  desc_rows = max(2, min(4, height - 18))
   await ansi_move(user, 5, 1, drain=False)
   await send(user, "Description (Tab moves on):", drain=False)
   fields = InputFields(user)
   await ansi_move(user, 6, 2, drain=True)
-  await fields.add_field(conf=config.input_fields.input_field, width=width - 3, height=desc_rows,
-                         word_wrap=True, max_length=2000, content=entry.description)
+  described = await fields.add_field(conf=config.input_fields.input_field, width=width - 3, height=desc_rows,
+                                     word_wrap=True, max_length=2000, content=entry.description)
+  shown = described.get_text()  # (the description as the field holds it, to see whether it was changed)
   row = 6 + desc_rows + 1
   await ansi_move(user, row, 1, drain=False)
   await send(user, "Tags (Insert adds one, Delete removes the one highlighted):"[:width - 1], drain=False)
   await ansi_move(user, row + 1, 2, drain=True)
-  tags = await fields.add_list(items=list(entry.tags), width=min(52, width - 3), height=5,
+  tags = await fields.add_list(items=list(entry.tags), width=min(52, width - 3), height=list_rows,
                                validate=_valid_tag, title=" Tags ")
   # (a row under the list for its "Add:" line, then the buttons)
   await ansi_move(user, tags.row_offset + tags.height + 2, 1, drain=True)
-  buttons = [("save", "Save"), ("cancel", "Cancel")] + ([("reset", "Reset")] if entry.source and entry.edited else [])
-  await _button_row(user, fields, buttons)
+  reset = entry.source and entry.edited == library.EDITED
+  await _button_row(user, fields, [("save", "Save"), ("cancel", "Cancel")] + ([("reset", "Reset")] if reset else []))
   r = await fields.run()
   if r.button == "save":
-    description = " ".join(r.fields[0].content.split())
+    typed = r.fields[0].content
+    # (unchanged, the description is kept as it was: line breaks and all)
+    description = entry.description if typed == shown else typed.strip()
     chosen = library.clean_tags(tags.items)
 
     def save(con):
-      if library.get(con, entry.id) is None:
-        return False
-      library.set_details(con, entry.id, description, chosen)
+      done = library.set_details(con, entry.id, description, chosen, by_sysop=True)
       con.commit()
-      return True
+      return done
     if not await _db(save):
       await show_message_box(user, "That file is no longer in the library.")
       return False
@@ -875,12 +901,16 @@ async def _edit_details(user, entry):
     await show_message_box(user, f"Saved the details of {entry.name}.")
     return True
   if r.button == "reset":
-    def reset(con):
-      library.reset_details(con, entry.id)
+    def give_back(con):
+      done = library.reset_details(con, entry.id)
       con.commit()
-    await _db(reset)
+      return done
+    if not await _db(give_back):
+      await show_message_box(user, f"{entry.name} is no longer in the library, or its details are no longer "
+                                   "yours to give back.")
+      return False
     log.info("Sysop %s gave the details of %s back to the %s source", user.handle, entry.name, entry.source)
-    await show_message_box(user, f"The sync sets the details of {entry.name} again, at its next run.")
+    await show_message_box(user, f"The sync sets the details of {entry.name} afresh, at its next run.")
     return True
   return False
 
@@ -955,19 +985,17 @@ async def vet_uploads(user):
       return
     action, item, selected = await _show_list(user, _Items(ids), "Uploads Awaiting Approval",
                                               controls, selected)
-    if action == "edit":
-      await _edit_details(user, item[1])
-    elif action != "open":
-      return
-    elif item[0] == "file":
+    if action == "open" and item[0] == "file":
       await _vet_one(user, item[1])
+    elif action not in ("open", "edited"):
+      return
 
 
 async def edit_files(user):
-  """Sysop > Edit Files: find files with the library's search, and edit one's
-  description and tags (_edit_details) with Enter."""
+  """Sysop > File Details: find files with the library's search, and edit
+  one's description and tags (_edit_details) with Enter."""
   if _is_sysop(user):
-    await _search_files(user, open_file=_edit_details, heading="Edit Files: find them")
+    await _search_files(user, edit=True, heading="File Details: find the files to edit")
 
 
 # ---------------------------------------------------------------------------

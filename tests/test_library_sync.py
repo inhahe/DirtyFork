@@ -15,7 +15,7 @@ import _setup  # noqa: F401  (paths, config)
 import library
 import library_sync as S
 from config import Config, ConfigView
-from test_library import make_library
+from test_library import make_library, make_v1_catalogue
 
 SEVEN_ZIP = S.find_seven_zip()
 GIT = shutil.which("git")
@@ -386,18 +386,112 @@ class Syncing(Scratch):
     c = conf(type="samples", dir=data)
     S.sync_source(self.ctx, "src", c)
     file_id = library.source_entries(self.con, "src")["a.flac"].id
-    library.set_details(self.con, file_id, "a kick drum", ["drums"])
+    library.set_details(self.con, file_id, "a kick drum", ["drums"], by_sysop=True)
     self.con.commit()
     S.sync_source(self.ctx, "src", c)                       # unchanged
     S.sync_source(self.ctx, "src", conf(type="samples", dir=data, tags=["new"]))  # its tags would change
     write(path, "22")
     S.sync_source(self.ctx, "src", c)                       # the file changed
     e = library.get(self.con, file_id)
-    self.assertEqual((e.description, e.tags, e.edited, e.size), ("a kick drum", ("drums",), True, 2))
+    self.assertEqual((e.description, e.tags, e.edited, e.size), ("a kick drum", ("drums",), library.EDITED, 2))
     library.reset_details(self.con, file_id)
     self.con.commit()
     S.sync_source(self.ctx, "src", c)
     self.assertEqual(self.listed(), {"a.flac": (("sample",), 2, "")})
+
+  def pages(self, *names):
+    """A webpages source "pg" of these pages (each titled by its name);
+    sync() syncs it, its zips made by zip_files (default: an empty file)."""
+    pages = self.path("pages")
+    for name in names:
+      write(os.path.join(pages, name), page(f"title of {name}"))
+
+    def sync(zip_files=None, **more):
+      def make(ctx, final, cwd, names):
+        if zip_files:
+          zip_files(names)
+        write(final, "zip")
+      with mock.patch.object(S, "zip_files", make):
+        return S.sync_source(self.ctx, "pg", conf(type="webpages", dir=pages, **more))
+    return pages, sync
+
+  def test_details_given_back_are_described_afresh(self):
+    # (a page's description is its title, read only when the page is new
+    # or changed: given back, it is read again though the page is not)
+    pages, sync = self.pages("Film.html")
+    sync()
+    file_id = library.source_entries(self.con, "pg")["Film.html"].id
+    library.set_details(self.con, file_id, "my notes", ["mine"], by_sysop=True)
+    library.reset_details(self.con, file_id)
+    self.con.commit()
+    stats = sync()
+    self.assertEqual((stats.changed, stats.updated), (0, 1))
+    e = library.get(self.con, file_id)
+    self.assertEqual((e.description, e.tags, e.edited), ("title of Film.html", ("web", "webpage"), library.SYNCED))
+    self.assertEqual(sync().updated, 0)  # (and then left be)
+
+  def test_details_given_back_wait_for_a_description_that_cant_be_read(self):
+    pics = self.path("data")  # (the root of source "src")
+    write(os.path.join(pics, "a.jpg"))
+    c = conf(type="gallery", dir=pics, captions=self.path("no such thumbsup.db"))
+    S.sync_source(self.ctx, "src", c)
+    file_id = library.source_entries(self.con, "src")["a.jpg"].id
+    library.set_details(self.con, file_id, "my words", ["mine"], by_sysop=True)
+    library.reset_details(self.con, file_id)
+    self.con.commit()
+    S.sync_source(self.ctx, "src", c)  # (no captions to describe it with: given back at the next run that has them)
+    self.assertEqual(library.get(self.con, file_id).edited, library.RESET)
+
+  def test_a_sysop_editing_during_the_batch(self):
+    # The sync reads a batch's entries once, then releases the write lock
+    # for every zip it makes: a sysop's edits meanwhile must hold.
+    pages, sync = self.pages("A.html", "B.html", "C.html", "D.html")
+    sync()
+    ids = {k: e.id for k, e in library.source_entries(self.con, "pg").items()}
+    library.set_details(self.con, ids["D.html"], "mine", ["mine"], by_sysop=True)
+    self.con.commit()
+    write(os.path.join(pages, "A.html"), page("A, changed"))  # (A is zipped again: B, C and D come after)
+    write(os.path.join(pages, "C.html"), page("C, changed"))
+    write(os.path.join(pages, "D.html"), page("D, changed"))
+
+    def sysop(names):
+      if names[0] != "A.html":
+        return
+      bbs = library.connect(self.lib)
+      try:
+        library.set_details(bbs, ids["B.html"], "B, mine", ["mine"], by_sysop=True)  # (B: only retagged)
+        library.set_details(bbs, ids["C.html"], "C, mine", ["mine"], by_sysop=True)  # (C: changed)
+        library.reset_details(bbs, ids["D.html"])                                     # (D: changed)
+        bbs.commit()
+      finally:
+        bbs.close()
+    sync(sysop, tags=["more"])
+    got = {k: (e.description, e.tags, e.edited) for k, e in library.source_entries(self.con, "pg").items()}
+    self.assertEqual(got["B.html"], ("B, mine", ("mine",), library.EDITED))
+    self.assertEqual(got["C.html"], ("C, mine", ("mine",), library.EDITED))
+    self.assertEqual(got["D.html"], ("D, changed", ("web", "webpage", "more"), library.SYNCED))
+
+  def test_a_renamed_zip_is_the_same_entry(self):
+    pages, sync = self.pages("x.htm", "x.html")  # (x.htm.zip and x.html.zip)
+    sync()
+    file_id = library.source_entries(self.con, "pg")["x.htm"].id
+    library.set_details(self.con, file_id, "mine", ["mine"], by_sysop=True)
+    self.con.commit()
+    os.remove(os.path.join(pages, "x.html"))  # (x.htm is x.zip now)
+    sync()
+    e = library.get(self.con, file_id)
+    self.assertEqual((e.path, e.description), ("pg/x.zip", "mine"))
+    self.assertEqual(sorted(os.listdir(os.path.join(self.lib.zips_dir, "pg"))), ["x.zip"])
+
+  def test_a_page_renamed_in_case_keeps_its_zip(self):
+    # (on Windows X.zip is the forgotten x.zip: deleting that would delete it)
+    pages, sync = self.pages("x.html")
+    sync()
+    os.rename(os.path.join(pages, "x.html"), os.path.join(pages, "X.html"))
+    stats = sync()
+    self.assertEqual((stats.new, stats.removed), (1, 1))
+    e = library.source_entries(self.con, "pg")["X.html"]
+    self.assertIsNotNone(library.resolve(self.lib, e), e.path)  # (None: no such file)
 
   def test_the_handler_starts_without_the_write_lock(self):
     # (fetching repositories, fingerprinting sites: slow, and the BBS must
@@ -476,9 +570,10 @@ class Syncing(Scratch):
     os.makedirs(mods)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
       z.writestr("bad.xm", b"Extended Module: " + os.urandom(4000))
-    data = bytearray(open(path, "rb").read())
+    with open(path, "rb") as f:
+      data = bytearray(f.read())
     data[40:80] = b"\xff" * 40  # (the deflate stream, just after the member's header)
-    open(path, "wb").write(bytes(data))
+    write(path, bytes(data))
     self.assertEqual(S.mod_description(path, "xm"), "")
     stats = S.sync_source(self.ctx, "src", conf(type="mods", dir=mods))
     self.assertEqual((stats.new, stats.failed), (1, 0))
@@ -734,6 +829,21 @@ class CommandLine(Scratch):
       self.assertEqual(S.main([cfg, "--dry-run", "--all", "--data-dir", self.top]), 0)
     self.assertFalse(os.path.exists(files))
     self.assertTrue(any("s: 1 listed, 1 new" in line for line in logs.output), logs.output)
+
+  def test_a_dry_run_reads_an_older_catalogue(self):
+    files, data = self.path("files"), self.path("data")
+    write(os.path.join(data, "a.flac"))
+    make_v1_catalogue(os.path.join(files, "catalog", "library.db"))
+    cfg = write(self.path("bbs.yaml"), f"files_dir: '{files}'\nfile_library:\n  sources:\n"
+                                       f"    s: {{type: samples, dir: '{data}'}}\n")
+    with self.assertLogs("library_sync", "INFO") as logs:
+      self.assertEqual(S.main([cfg, "--dry-run", "--all", "--data-dir", self.top]), 0)
+    self.assertTrue(any("s: 1 listed, 1 new" in line for line in logs.output), logs.output)
+    con = sqlite3.connect(os.path.join(files, "catalog", "library.db"))
+    try:
+      self.assertEqual(con.execute("SELECT path, edited FROM files").fetchall(), [("old.zip", 0)])  # (no entry changed)
+    finally:
+      con.close()
 
   def test_a_dry_run_needs_no_7zip(self):
     files, pages = self.path("files"), self.path("pages")

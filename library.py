@@ -46,6 +46,11 @@ SOURCE_TYPES = LINKED_TYPES | {"websites", "webpages", "github"}
 DEFAULT_UPLOAD_KEY = "trusted_uploader"
 SYNC_LOCK = "library_sync.lock"
 SCHEMA_VERSION = 2
+# Whose a file's description and tags are (files.edited): the sync's or the
+# uploader's; a sysop's (set_details), which nothing else writes over; or
+# a sysop's given back to the sync (reset_details), which sets them afresh
+# at its next run, even if the file hasn't changed.
+SYNCED, EDITED, RESET = 0, 1, 2
 _SOURCE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -403,7 +408,7 @@ CREATE TABLE IF NOT EXISTS files (
   source TEXT,                         -- the library_sync source listing it; NULL for uploads
   source_key TEXT,                     -- what it is in that source; NULL when that is its path
   fingerprint TEXT,                    -- what the source made it from, to see a change (zips)
-  edited INTEGER NOT NULL DEFAULT 0,   -- 1: a sysop set its tags and description; the sync keeps them
+  edited INTEGER NOT NULL DEFAULT 0,   -- whose its description and tags are: SYNCED, EDITED or RESET
   tag_count INTEGER NOT NULL DEFAULT 0,
   name_norm TEXT NOT NULL,             -- norm(name): searched, and the order lists are in
   desc_norm TEXT NOT NULL,
@@ -449,14 +454,18 @@ def connect(lib):
 
 
 def _schema_version(con):
-  if not con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'").fetchone():
+  """The catalogue's schema version, or None if it has no tables yet."""
+  tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+  if "files" not in tables:
     return None
-  row = con.execute("SELECT value FROM settings WHERE key = 'schema'").fetchone()
-  return int(row[0]) if row else None
+  row = con.execute("SELECT value FROM settings WHERE key = 'schema'").fetchone() if "settings" in tables else None
+  # (No version: made by the first schema, which created its tables and
+  # then stamped them in separate steps, and was stopped in between.)
+  return int(row[0]) if row else 1
 
 
 # What each schema version adds to the one before: a catalogue an older
-# DirtyFork made is brought up to date by ensure_schema. (_SCHEMA is the
+# DirtyFork made is brought up to date by update_schema. (_SCHEMA is the
 # latest, for a new catalogue.)
 _MIGRATIONS = {
   2: ["ALTER TABLE files ADD COLUMN edited INTEGER NOT NULL DEFAULT 0"],
@@ -465,10 +474,16 @@ _MIGRATIONS = {
 
 def ensure_schema(lib):
   """Create the catalogue and its folders if need be, or bring an older
-  one's schema up to date (at startup). A catalogue that is up to date is
-  only read: writing takes the write lock, which a sync may be holding."""
+  one's schema up to date (at startup)."""
   for d in (lib.files_dir, lib.pending_dir, os.path.dirname(os.path.abspath(lib.catalog))):
     os.makedirs(d, exist_ok=True)
+  update_schema(lib)
+
+
+def update_schema(lib):
+  """Create the catalogue's tables if it has none, or bring an older one's
+  schema up to date (which changes no entry). One that is up to date is
+  only read: writing takes the write lock, which a sync may be holding."""
   con = connect(lib)
   try:
     version = _schema_version(con)
@@ -478,15 +493,18 @@ def ensure_schema(lib):
       return
     if version is None:
       con.execute("PRAGMA journal_mode = WAL")
-      con.executescript(_SCHEMA)
-    else:
-      con.execute("BEGIN IMMEDIATE")
-      if _schema_version(con) != version:  # (another process migrated it meanwhile)
-        con.rollback()
-        return
-      for step in range(version + 1, SCHEMA_VERSION + 1):
-        for statement in _MIGRATIONS[step]:
-          con.execute(statement)
+      # One transaction, so the tables never exist without their version.
+      # (Another process doing the same meanwhile: this one then does nothing.)
+      con.executescript(f"BEGIN IMMEDIATE;\n{_SCHEMA}\nINSERT OR IGNORE INTO settings (key, value) "
+                        f"VALUES ('schema', '{SCHEMA_VERSION}');\nCOMMIT;")
+      return
+    con.execute("BEGIN IMMEDIATE")
+    if _schema_version(con) != version:  # (another process migrated it meanwhile)
+      con.rollback()
+      return
+    for step in range(version + 1, SCHEMA_VERSION + 1):
+      for statement in _MIGRATIONS[step]:
+        con.execute(statement)
     con.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema', ?)", (str(SCHEMA_VERSION),))
     con.commit()
   finally:
@@ -509,7 +527,7 @@ class Entry:
   source_key: str
   fingerprint: str
   tags: tuple
-  edited: bool = False  # a sysop set its details (set_details): the sync leaves them be
+  edited: int = SYNCED  # whose its description and tags are
 
   @property
   def pending(self):
@@ -603,7 +621,7 @@ def _entry(row, tags):
   return Entry(id=row["id"], root=row["root"], path=row["path"], name=_name(row["path"]), size=row["size"],
                mtime=row["mtime"], description=row["description"], uploader=row["uploader"],
                added=row["added"], source=row["source"], source_key=row["source_key"] or row["path"],
-               fingerprint=row["fingerprint"], tags=tuple(tags), edited=bool(row["edited"]))
+               fingerprint=row["fingerprint"], tags=tuple(tags), edited=row["edited"])
 
 
 def fetch(con, ids):
@@ -636,32 +654,48 @@ def source_entries(con, source):
 
 
 def put(con, *, root, path, size, mtime=0, description="", uploader="", tags=(), source=None,
-        source_key=None, fingerprint=None, replace=True):
+        source_key=None, fingerprint=None, replace=True, edited=SYNCED):
   """Catalogue the file at *path* under *root* (or, with replace, update it
   if it is catalogued already; without, leave it be). source_key, what the
-  file is in its source, is stored only when it isn't *path*. Returns its
-  id, or None when it was there already and replace is false. The caller
-  commits."""
+  file is in its source, is stored only when it isn't *path*. *edited*:
+  whose the description and tags are; a sysop's that it has already are
+  kept, unless these are a sysop's too. Returns its id, or None when it was
+  there already and replace is false. The caller commits."""
   name = _name(path)
   if source_key == path:
     source_key = None
   now = int(time.time())
+  keep = f"files.edited = {EDITED} AND excluded.edited != {EDITED}"
   conflict = ("DO UPDATE SET size = excluded.size, mtime = excluded.mtime, "
-              "description = excluded.description, uploader = excluded.uploader, "
-              "source = excluded.source, source_key = excluded.source_key, "
+              f"description = CASE WHEN {keep} THEN files.description ELSE excluded.description END, "
+              f"desc_norm = CASE WHEN {keep} THEN files.desc_norm ELSE excluded.desc_norm END, "
+              f"edited = CASE WHEN {keep} THEN files.edited ELSE excluded.edited END, "
+              "uploader = excluded.uploader, source = excluded.source, source_key = excluded.source_key, "
               "fingerprint = excluded.fingerprint, name_norm = excluded.name_norm, "
-              "desc_norm = excluded.desc_norm, uploader_norm = excluded.uploader_norm"
+              "uploader_norm = excluded.uploader_norm"
               if replace else "DO NOTHING")
   row = con.execute(
     "INSERT INTO files (root, path, size, mtime, description, uploader, added, source, source_key, "
-    "fingerprint, name_norm, desc_norm, uploader_norm) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-    f"ON CONFLICT (root, path) {conflict} RETURNING id",
-    (root, path, size, mtime, description, uploader, now, source, source_key, fingerprint,
+    "fingerprint, edited, name_norm, desc_norm, uploader_norm) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+    f"ON CONFLICT (root, path) {conflict} RETURNING id, edited",
+    (root, path, size, mtime, description, uploader, now, source, source_key, fingerprint, edited,
      norm(name), norm(description), norm(uploader))).fetchone()
   if row is None:
     return None
-  set_tags(con, row[0], tags)
+  if not (row[1] == EDITED and edited != EDITED):  # (a sysop's tags, kept)
+    set_tags(con, row[0], tags)
   return row[0]
+
+
+def move(con, file_id, root, path):
+  """Catalogue file *file_id* under a new root and path, as the same entry
+  (its details, and when it was added, kept). An entry there already is
+  forgotten: it is the file that was there. Returns whether *file_id* is
+  still catalogued. The caller commits."""
+  con.execute("DELETE FROM files WHERE root = ? AND path = ? AND id != ?", (root, path, file_id))
+  return con.execute("UPDATE files SET root = ?, path = ?, name_norm = ? WHERE id = ?",
+                     (root, path, norm(_name(path)), file_id)).rowcount > 0
 
 
 def set_tags(con, file_id, tags):
@@ -673,24 +707,30 @@ def set_tags(con, file_id, tags):
   con.execute("UPDATE files SET tag_count = ? WHERE id = ?", (len(tags), file_id))
 
 
-def set_details(con, file_id, description, tags):
-  """A sysop's description and tags for a file, kept from then on: the sync
-  no longer sets them (reset_details lets it again). The caller commits."""
-  set_description(con, file_id, description)
+def set_details(con, file_id, description, tags, by_sysop=False):
+  """Give a file a description and tags: a sysop's (*by_sysop*), which
+  nothing else writes over from then on, or the sync's or the uploader's,
+  which are never written over a sysop's. Returns whether they were set
+  (not if the file is no longer catalogued, or these would be written over
+  a sysop's). The caller commits."""
+  # (One write, which takes the write lock before anything is checked:
+  # nothing can change the file between the check and the rest.)
+  cur = con.execute("UPDATE files SET description = ?, desc_norm = ?, edited = ? WHERE id = ?"
+                    + ("" if by_sysop else f" AND edited != {EDITED}"),
+                    (description, norm(description), EDITED if by_sysop else SYNCED, file_id))
+  if not cur.rowcount:
+    return False
   set_tags(con, file_id, tags)
-  con.execute("UPDATE files SET edited = 1 WHERE id = ?", (file_id,))
+  return True
 
 
 def reset_details(con, file_id):
-  """Let the sync set the file's description and tags again (at its next
-  run). The caller commits."""
-  con.execute("UPDATE files SET edited = 0 WHERE id = ?", (file_id,))
-
-
-def set_description(con, file_id, description):
-  """The caller commits."""
-  con.execute("UPDATE files SET description = ?, desc_norm = ? WHERE id = ?",
-              (description, norm(description), file_id))
+  """Give a file's details back to the sync (a file a source lists, whose
+  details a sysop set): it sets them afresh at its next run. Returns
+  whether it did (not if the file is no longer catalogued, or its details
+  aren't a sysop's). The caller commits."""
+  return con.execute(f"UPDATE files SET edited = {RESET} WHERE id = ? AND edited = {EDITED} "
+                     "AND source IS NOT NULL", (file_id,)).rowcount > 0
 
 
 def remove(con, file_id):
@@ -857,15 +897,13 @@ def approve(lib, con, file_id, temp_prefix):
   except OSError as exc:
     return f"{entry.name} could not be moved into the library: {exc}"
   try:
-    # The name was free on disk, so a row for it is stale (a file deleted
-    # by hand, not yet reconciled).
-    con.execute("DELETE FROM files WHERE root = ? AND path = ?", (UPLOADS, entry.name))
-    moved = con.execute("UPDATE files SET root = ?, path = ?, added = ? WHERE id = ?",
-                        (UPLOADS, entry.name, int(time.time()), file_id)).rowcount
-    if not moved:  # (forgotten meanwhile, by a sync that saw the pending folder without it)
-      again = put(con, root=UPLOADS, path=entry.name, size=entry.size, mtime=entry.mtime,
-                  description=entry.description, uploader=entry.uploader, tags=entry.tags)
-      con.execute("UPDATE files SET edited = ? WHERE id = ?", (int(entry.edited), again))
+    # (The name was free on disk, so an entry of that name is stale, for a
+    # file deleted by hand and not yet reconciled: move forgets it.)
+    if move(con, file_id, UPLOADS, entry.name):
+      con.execute("UPDATE files SET added = ? WHERE id = ?", (int(time.time()), file_id))
+    else:  # (forgotten meanwhile, by a sync that saw the pending folder without it)
+      put(con, root=UPLOADS, path=entry.name, size=entry.size, mtime=entry.mtime, description=entry.description,
+          uploader=entry.uploader, tags=entry.tags, edited=entry.edited)
     con.commit()
   except sqlite3.Error as exc:
     con.rollback()
@@ -940,8 +978,7 @@ def apply_legacy_meta(con, details):
                          (UPLOADS,)).fetchall():
     tags, description = details.get(row["path"], ([], ""))
     if tags or description:
-      set_tags(con, row["id"], tags)
-      set_description(con, row["id"], description)
+      set_details(con, row["id"], description, tags)
       n += 1
   con.commit()
   return n

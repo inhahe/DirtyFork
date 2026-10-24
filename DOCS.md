@@ -277,7 +277,7 @@ After an upload the caller is asked for a description and tags (from `file_tags`
 
 **Vetting uploads.** A caller with the `upload_key` key (default `trusted_uploader`), or a sysop, has uploads listed at once. Anyone else's go to `files/pending` and are listed to no one, the uploader included, until a sysop deals with them in **Sysop > Vet Uploads**: the list of uploads awaiting approval, oldest first, where Enter shows one with **Approve** (moved into the library, listed), **Reject** (deleted, after a confirmation), **Edit** (its description and tags, below) and **Download** (to look at it first). Sysops online get a popup once the uploader has given its description and tags (whatever their paging settings), and a sysop logging in is told how many are waiting. Grant the key in Sysop > Keys, or through a key group.
 
-**Editing a file's details.** A sysop edits a file's description and tags in one form, reached three ways: **E** on a file in any list, **Edit** while vetting an upload, and **Sysop > Edit Files** (the library's search, where Enter edits the file picked). In the form, Tab moves between the description, the tag list (Insert adds a tag, Delete removes the one highlighted; a tag may hold commas and spaces) and the buttons. Saving a file `library_sync.py` lists makes its details the sysop's: the sync keeps them from then on, even when the file changes. **Reset** (shown for such a file) gives them back to the sync, which sets them again at its next run.
+**Editing a file's details.** A sysop edits a file's description and tags in one form, reached three ways: **E** on a file in any list, **Edit** while vetting an upload, and **Sysop > File Details** (the library's search, where Enter edits the file picked). In the form, Tab moves between the description, the tag list (Insert adds a tag, Delete removes the one highlighted; a tag may hold commas and spaces) and the buttons; it needs a screen of 16 rows. Saving a file `library_sync.py` lists makes its details the sysop's: the sync keeps them from then on, even when the file changes. **Reset** (shown for such a file) gives them back to the sync, which sets them afresh at its next run (a picture's caption waits until thumbsup2's database can be read). If a sysop saves an upload's details while its uploader is still typing theirs, the sysop's are kept.
 
 Files you put in the library's folder yourself are catalogued (as yours, `sysop_handle`, untagged) when the BBS starts and whenever `library_sync.py` runs; files gone from it are forgotten. A `meta.yaml` from before the catalogue (`files_meta`) is read once, at startup: its keys and descriptions go to those files, and once that is done it is moved to `files/catalog/meta.yaml.imported`.
 
@@ -372,7 +372,7 @@ The sysop panel is a menu with five management tools:
 - **Groups**: Edit key group definitions in the config YAML (using ruamel.yaml to preserve comments). Changes reload into the live config and re-expand all online users' keys
 - **Settings**: Edit any user's settings using the same settings page code
 - **Vet Uploads**: approve, reject, edit or download the uploads awaiting approval (see File Library)
-- **Edit Files**: find any file in the library (the library's search) and edit its description and tags
+- **File Details**: find any file in the library (the library's search) and edit its description and tags
 
 Access requires the `sysop` key group (configured in `white_keys`).
 
