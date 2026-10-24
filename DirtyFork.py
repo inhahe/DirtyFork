@@ -218,9 +218,9 @@ async def main():
     loop.default_exception_handler(context)
   loop.set_exception_handler(_quiet_exception_handler)
 
-  # Uploads cut short by a crash leave temporary files in the file library
+  # The file library's catalogue, and what a crash left in its folders
   import file as file_library
-  file_library.remove_stale_uploads()
+  file_library.startup()
 
   # Telnet server
   server = await telnetlib3.create_server(host=config.hostname, port=config.port, shell=user_loop, encoding='cp437', encoding_errors='surrogateescape', timeout=0)

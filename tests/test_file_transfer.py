@@ -64,6 +64,27 @@ class UploadNames(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_nor_takes_a_name_that_arrived_in_the_other_folder(self):
+        # (a trusted and an untrusted upload of one name, at once: one goes to
+        # the library, the other to the pending folder)
+        top = tempfile.mkdtemp(prefix="publish-")
+        try:
+            mine, other = os.path.join(top, "pending"), os.path.join(top, "files")
+            os.makedirs(mine)
+            os.makedirs(other)
+            policy = file_transfer.UploadPolicy(directory=mine, others=(other,), keep_free=0)
+            self.assertEqual(policy.check("x.bin", 3), "x.bin")
+            with open(os.path.join(other, "x.bin"), "wb") as f:
+                f.write(b"theirs")
+            temp = os.path.join(mine, ".upload-1.part")
+            with open(temp, "wb") as f:
+                f.write(b"new")
+            self.assertFalse(policy.publish(temp, "x.bin"))
+            self.assertEqual(os.listdir(mine), [])
+            self.assertEqual(policy.refused, [("x.bin", "a file with that name arrived meanwhile")])
+        finally:
+            shutil.rmtree(top, ignore_errors=True)
+
 
 class UploadRoom(unittest.TestCase):
     def test_an_upload_that_fills_the_disk_is_stopped(self):
@@ -138,22 +159,26 @@ class TransferSession(unittest.TestCase):
 
 
 class LibraryFiles(unittest.TestCase):
-    """file.py: what a caller can download, and the catalogue."""
+    """file.py: what a caller can download, uploads, and vetting them."""
 
     def setUp(self):
         import file
-        self.file = file
+        import library
+        from test_library import make_library
+        self.file, self.library = file, library
         self.dir = tempfile.mkdtemp(prefix="library-")
-        self.lib = os.path.join(self.dir, "files")
-        os.makedirs(self.lib)
-        with open(os.path.join(self.lib, "game.zip"), "wb") as f:
-            f.write(b"a game")
-        with open(os.path.join(self.lib, ".upload-x.part"), "wb") as f:
-            f.write(b"someone's upload in progress")
-        with open(os.path.join(self.dir, "secret.db"), "wb") as f:
-            f.write(b"password hashes")
-        self.patches = [mock.patch.object(file, "_files_dir", lambda: self.lib),
-                        mock.patch.object(file, "_meta_path", lambda: os.path.join(self.lib, "meta.yaml"))]
+        self.lib = make_library(self.dir)
+        os.makedirs(self.lib.pending_dir, exist_ok=True)
+        self.write(self.lib.files_dir, "game.zip", b"a game")
+        self.write(self.lib.pending_dir, "unvetted.zip", b"not approved")
+        self.write(self.lib.files_dir, ".upload-x.part", b"someone's upload in progress")
+        self.write(self.dir, "secret.db", b"password hashes")
+        con = library.connect(self.lib)
+        self.game = library.put(con, root="uploads", path="game.zip", size=6, uploader="a")
+        self.unvetted = library.put(con, root="pending", path="unvetted.zip", size=12, uploader="b")
+        con.commit()
+        con.close()
+        self.patches = [mock.patch.object(file, "_library", lambda: self.lib)]
         for p in self.patches:
             p.start()
 
@@ -162,51 +187,116 @@ class LibraryFiles(unittest.TestCase):
             p.stop()
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def test_only_files_the_library_lists_can_be_downloaded(self):
-        f = self.file
-        self.assertEqual(f._library_path("game.zip"), os.path.realpath(os.path.join(self.lib, "game.zip")))
-        for name in ("../secret.db", "..\\secret.db", os.path.join(self.dir, "secret.db"),
-                     ".upload-x.part", "meta.yaml", "nothing.zip", ""):
-            self.assertIsNone(f._library_path(name), name)
+    def write(self, folder, name, data):
+        with open(os.path.join(folder, name), "wb") as f:
+            f.write(data)
 
-    def test_a_typed_path_out_of_the_library_sends_nothing(self):
-        f = self.file
+    def entry(self, file_id):
+        return asyncio.run(self.file._db(self.library.get, file_id))
+
+    def user(self, handle="caller", keys=()):
         user = _setup.make_user()
+        user.handle, user.keys = handle, set(keys)
+        return user
+
+    def test_what_can_be_sent(self):
+        f = self.file
+        caller, sysop = self.user(), self.user("boss", {"sysop"})
+        self.assertEqual(f._download_path(caller, self.entry(self.game)),
+                         os.path.realpath(os.path.join(self.lib.files_dir, "game.zip")))
+        self.assertIsNone(f._download_path(caller, self.entry(self.unvetted)))  # (awaiting approval)
+        self.assertIsNotNone(f._download_path(sysop, self.entry(self.unvetted)))
+
+    def test_a_typed_name_is_looked_up_never_joined_to_a_folder(self):
+        f = self.file
+        user = self.user()
         shown, sent = mock.AsyncMock(), mock.AsyncMock()
-        with mock.patch.object(f, "show_message_box", shown), \
-                mock.patch.object(f, "send_files_zmodem", sent), \
-                mock.patch.object(f, "send_files_ymodem", sent), \
-                mock.patch.object(f, "_choose_protocol", mock.AsyncMock(return_value="zmodem")):
-            asyncio.run(f._do_download(user, "../secret.db"))
-        sent.assert_not_awaited()
-        self.assertIn("File not found", shown.await_args.args[1])
+        for typed in ("../secret.db", "..\\secret.db", os.path.join(self.dir, "secret.db"),
+                      ".upload-x.part", "unvetted.zip", "library.db"):
+            with mock.patch.object(f, "show_message_box", shown), \
+                    mock.patch.object(f, "send_files_zmodem", sent), \
+                    mock.patch.object(f, "send_files_ymodem", sent), \
+                    mock.patch.object(f, "_transfers_refused", mock.AsyncMock(return_value=False)), \
+                    mock.patch.object(f, "ansi_cls", mock.AsyncMock()), \
+                    mock.patch.object(f, "_read_line", mock.AsyncMock(return_value=typed)):
+                asyncio.run(f._download_file(user))
+            sent.assert_not_awaited()
+            self.assertIn("No file in the library", shown.await_args.args[1], typed)
 
-    def test_cataloguing_keeps_what_others_catalogued_meanwhile(self):
+    def upload(self, user, names, answers):
+        """_upload_file, as if *names* arrived and the caller typed *answers*."""
         f = self.file
-        user = _setup.make_user()
-        user.handle = "A"
-        with open(os.path.join(self.lib, "mine.bin"), "wb") as fh:
-            fh.write(b"x")
+        popups = []
 
         async def receive(user, policy):
-            policy.saved.append("mine.bin")
+            for name in names:
+                if policy.check(name, 1):
+                    self.write(policy.directory, name, b"data")
+                    policy.saved.append(name)
             return f.RetVals(status=f.success, message="Transfer complete.")
-        answers = iter(["my description", ""])
+        answers = iter(answers)
 
         async def read_line(user, max_len=200):
-            # While caller A types, caller B catalogues their own upload
-            meta = f._load_meta()
-            meta["theirs.zip"] = {"keys": [], "description": "B's file"}
-            f._save_meta(meta)
             return next(answers)
+
+        async def tell_sysops(text):
+            popups.append(text)
         with mock.patch.object(f, "_choose_protocol", mock.AsyncMock(return_value="zmodem")), \
                 mock.patch.object(f, "receive_files_zmodem", receive), \
                 mock.patch.object(f, "show_message_box", mock.AsyncMock()), \
+                mock.patch.object(f, "_tell_sysops", tell_sysops), \
                 mock.patch.object(f, "_read_line", read_line):
             asyncio.run(f._upload_file(user))
-        meta = f._load_meta()
-        self.assertEqual(meta["mine.bin"]["description"], "my description")
-        self.assertEqual(meta["theirs.zip"]["description"], "B's file")
+        return popups
+
+    def catalogued(self, name):
+        con = self.library.connect(self.lib)
+        try:
+            row = con.execute("SELECT id FROM files WHERE path = ?", (name,)).fetchone()
+            return self.library.get(con, row[0]) if row else None
+        finally:
+            con.close()
+
+    def test_a_trusted_upload_is_listed_at_once(self):
+        user = self.user("alice", {"trusted_uploader"})
+        valid = self.file._valid_tags()
+        popups = self.upload(user, ["mine.bin"], ["my description", f"2, {valid[0].upper()}, nonesuch, 2"])
+        e = self.catalogued("mine.bin")
+        self.assertEqual((e.root, e.uploader, e.description), ("uploads", "alice", "my description"))
+        self.assertEqual(e.tags, (valid[1], valid[0]))
+        self.assertTrue(os.path.isfile(os.path.join(self.lib.files_dir, "mine.bin")))
+        self.assertEqual(popups, [])
+
+    def test_anyone_elses_waits_for_approval_and_the_sysops_are_told(self):
+        user = self.user("mallory")
+        popups = self.upload(user, ["tool.exe"], ["useful", ""])
+        e = self.catalogued("tool.exe")
+        self.assertEqual((e.root, e.uploader, e.description), ("pending", "mallory", "useful"))
+        self.assertTrue(os.path.isfile(os.path.join(self.lib.pending_dir, "tool.exe")))
+        self.assertFalse(os.path.exists(os.path.join(self.lib.files_dir, "tool.exe")))
+        self.assertIsNone(self.file._download_path(self.user(), e))
+        self.assertEqual(len(popups), 1)
+        self.assertIn("mallory uploaded tool.exe", popups[0])
+
+    def test_an_upload_may_not_take_a_name_in_either_folder(self):
+        user = self.user("mallory")
+        self.upload(user, ["game.zip", "unvetted.zip", "catalog", "zips"], [])
+        con = self.library.connect(self.lib)
+        try:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM files").fetchone()[0], 2)
+        finally:
+            con.close()
+        with open(os.path.join(self.lib.files_dir, "game.zip"), "rb") as fh:
+            self.assertEqual(fh.read(), b"a game")
+
+    def test_a_sysop_logging_in_hears_of_uploads_waiting(self):
+        f = self.file
+        sent = mock.AsyncMock()
+        with mock.patch("bbs_msg.send_popup", sent):
+            asyncio.run(f.tell_sysop_of_pending(self.user("boss", {"sysop"})))
+            asyncio.run(f.tell_sysop_of_pending(self.user("caller")))
+        sent.assert_awaited_once()
+        self.assertIn("1 upload is waiting", sent.await_args.args[1])
 
 
 if __name__ == "__main__":

@@ -1,354 +1,400 @@
 """
-File Library — browse, search, upload, and download files via ZMODEM or YMODEM-G.
+File Library: search, browse, list, download and upload files (ZMODEM or YMODEM-G).
 
-Files live in `config.files_dir` (default "files").
-Metadata (keys + description per file) lives in `config.files_meta` (default "files/meta.yaml").
-Valid tags are defined in `config.file_tags`.
+What the library lists is in its catalogue (library.py): uploads, which live
+in the library folder (files_dir), and the files library_sync.py lists,
+which are zips it makes or files linked where they are (H:, a picture
+gallery, ...). Callers are sent only files the catalogue lists, from inside
+their roots (library.resolve).
+
+Uploads by holders of the upload key (file_library.upload_key, and sysops)
+are listed at once. Anyone else's wait in the pending folder, listed to no
+one, until a sysop approves (moves it into the library) or rejects (deletes)
+it in Sysop > Vet Uploads; online sysops get a popup when one arrives, and
+a sysop logging in is told how many are waiting.
+
+Valid tags for uploads are config.file_tags. Searching uses the language in
+library.QUERY_HELP.
 """
 
+import asyncio
 import os
-from ruamel.yaml import YAML
-_yaml = YAML()
-_yaml.default_flow_style = False
+import sqlite3
+import time
 
 from definitions import (RetVals, Disconnected, success,
                          cr, lf, null,
-                         white, black, green, cyan, red, blue, brown, magenta)
-from input_output import send, ansi_color, ansi_move_deferred, ansi_wrap, ansi_cls, get_input_key
-from input_fields import show_message_box, InputFields
+                         white, black, green, cyan, red, blue)
+from input_output import send, ansi_color, ansi_move, ansi_move_deferred, ansi_wrap, ansi_cls, get_input_key
+from input_fields import show_message_box, InputField, InputFields
 from file_transfer import (send_files_zmodem, receive_files_zmodem,
                            send_files_ymodem, receive_files_ymodem,
                            get_available_protocols, parse_size, UploadPolicy, TEMP_PREFIX)
 import file_transfer
+import library
 from keyboard_codes import up, down, pgup, pgdn, home, end, back
 from config import get_config
 from logger import log
-import paths
 
 config = get_config()
 
-# ---------------------------------------------------------------------------
-# Box-drawing helpers (CP437)
-# ---------------------------------------------------------------------------
-_TL  = bytes([218]).decode('cp437')  # top-left
-_TR  = bytes([191]).decode('cp437')  # top-right
-_BL  = bytes([192]).decode('cp437')  # bottom-left
-_BR  = bytes([217]).decode('cp437')  # bottom-right
-_H   = bytes([196]).decode('cp437')  # horizontal
-_V   = bytes([179]).decode('cp437')  # vertical
-_ARR_UP   = bytes([30]).decode('cp437')   # arrow up
-_ARR_DOWN = bytes([31]).decode('cp437')   # arrow down
-_THUMB    = bytes([219]).decode('cp437')  # scroll thumb
-_TRACK    = bytes([176]).decode('cp437')  # scroll track
+_H = bytes([196]).decode('cp437')  # horizontal line
 
 
 # ---------------------------------------------------------------------------
-# Config accessors
+# The catalogue
 # ---------------------------------------------------------------------------
 
-def _files_dir():
-  """Return the file library directory, creating it if needed."""
-  d = paths.resolve_project(str(config.files_dir) if config.files_dir else "files")
-  os.makedirs(d, exist_ok=True)
-  return d
+_lib = None
 
 
-def _meta_path():
-  """Return the path to the metadata YAML file."""
-  p = str(config.files_meta) if config.files_meta else os.path.join(_files_dir(), "meta.yaml")
-  return paths.resolve_project(p)
+def _library():
+  """The library's settings (library.Library), read from the config once."""
+  global _lib
+  if _lib is None:
+    _lib = library.from_config(config)
+  return _lib
 
 
-def _valid_keys():
-  """Return the list of sysop-defined valid file keys."""
-  keys = config.file_tags
-  if keys and keys is not null:
-    return list(keys)
+async def _db(work, *args):
+  """work(connection, *args) in a thread, on a connection of its own, so a
+  search over millions of files never holds up other callers."""
+  lib = _library()
+
+  def run():
+    con = library.connect(lib)
+    try:
+      return work(con, *args)
+    finally:
+      con.close()
+  return await asyncio.to_thread(run)
+
+
+def startup():
+  """At BBS startup: create the catalogue if need be, delete what uploads
+  cut short by a crash left behind (later, it could be an upload in
+  progress), and catalogue what is in the library folders without being
+  catalogued (library.reconcile_uploads)."""
+  lib = _library()
+  library.ensure_schema(lib)
+  for folder in (lib.files_dir, lib.pending_dir):
+    file_transfer.remove_stale_uploads(folder)
+  con = library.connect(lib)
+  try:
+    added, forgotten = library.reconcile_uploads(lib, con, TEMP_PREFIX)
+  except sqlite3.OperationalError as exc:  # (a sync holding the catalogue: it reconciles too)
+    log.warning("File library: could not check its folders against the catalogue: %s", exc)
+    return
+  finally:
+    con.close()
+  if added or forgotten:
+    log.info("File library: catalogued %d file(s) found in its folders, forgot %d gone", added, forgotten)
+
+
+def _valid_tags():
+  """The sysop-defined tags an uploader may choose from."""
+  tags = config.file_tags
+  if tags and tags is not null:
+    return [str(t) for t in tags]
   return []
 
 
-# ---------------------------------------------------------------------------
-# Metadata I/O
-# ---------------------------------------------------------------------------
-
-def _load_meta():
-  """Load metadata from the YAML file. Returns a dict of filename -> {keys, description}."""
-  path = _meta_path()
-  if os.path.isfile(path):
-    try:
-      with open(path, 'r', encoding='utf-8') as f:
-        data = _yaml.load(f)
-      if isinstance(data, dict):
-        return data
-    except Exception as exc:
-      log.warning("Failed to load file metadata from %s: %s", path, exc)
-  return {}
+def _is_sysop(user):
+  return 'sysop' in getattr(user, 'keys', ())
 
 
-def _save_meta(meta):
-  """Save metadata dict to the YAML file."""
-  path = _meta_path()
-  os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-  try:
-    with open(path, 'w', encoding='utf-8') as f:
-      _yaml.dump(meta, f)
-  except Exception as exc:
-    log.error("Failed to save file metadata to %s: %s", path, exc)
+def _trusted(user):
+  """True when the user's uploads are listed without the sysop's approval."""
+  keys = getattr(user, 'keys', ())
+  return 'sysop' in keys or _library().upload_key in keys
 
 
 # ---------------------------------------------------------------------------
-# File listing helpers
+# Showing files
 # ---------------------------------------------------------------------------
 
 def _format_size(size):
-  """Human-readable file size string, right-justified to 10 chars."""
+  """A short size: 512 B, 37 KB, 12 MB, 3.4 GB."""
   if size < 1024:
     return f"{size} B"
-  elif size < 1024 * 1024:
+  if size < 1024 * 1024:
     return f"{size // 1024} KB"
-  else:
+  if size < 1024 ** 3:
     return f"{size // (1024 * 1024)} MB"
+  return f"{size / 1024 ** 3:.1f} GB"
 
 
-def _get_all_files():
-  """Return a list of (filename, size, keys, description) for every file on disk.
-
-  Files present on disk but missing from meta.yaml get empty keys and no description.
-  """
-  files_dir = _files_dir()
-  meta = _load_meta()
-  result = []
-  if not os.path.isdir(files_dir):
-    return result
-
-  for name in sorted(os.listdir(files_dir)):
-    path = os.path.join(files_dir, name)
-    if name.startswith(TEMP_PREFIX) or not os.path.isfile(path):
-      continue  # (an upload in progress)
-    # Skip the metadata file itself if it lives inside files_dir
-    if os.path.abspath(path) == os.path.abspath(_meta_path()):
-      continue
-    size = os.path.getsize(path)
-    entry = meta.get(name, {})
-    if not isinstance(entry, dict):
-      entry = {}
-    keys = entry.get('keys', []) or []
-    desc = entry.get('description', '') or ''
-    result.append((name, size, list(keys), str(desc)))
-  return result
+def _fit(text, width):
+  """*text* in at most *width* columns: its middle replaced by ~ if too long
+  (a file's name keeps its start and its extension)."""
+  if len(text) <= width:
+    return text
+  if width < 4:
+    return text[:width]
+  head = (width - 1) * 2 // 3
+  return text[:head] + "~" + text[len(text) - (width - 1 - head):]
 
 
-def _filter_files(files, include_keys, exclude_keys):
-  """Filter a files list by include/exclude key sets.
-
-  include_keys: file must have ALL of these keys (empty = no filter).
-  exclude_keys: file must have NONE of these keys (empty = no filter).
-  """
-  result = []
-  for fname, size, keys, desc in files:
-    key_set = set(keys)
-    if include_keys and not include_keys.issubset(key_set):
-      continue
-    if exclude_keys and exclude_keys.intersection(key_set):
-      continue
-    result.append((fname, size, keys, desc))
-  return result
+def _tag_text(tags):
+  return "".join(f"[{t}]" for t in tags)
 
 
-# ---------------------------------------------------------------------------
-# Scrollable file list display
-# ---------------------------------------------------------------------------
+def _file_line(entry, number, num_width, name_width, width):
+  """A list's line for *entry*: number, name (padded to *name_width*), size,
+  tags and description, cut to *width*."""
+  text = f"  {number:>{num_width}}. {_fit(entry.name, name_width):<{name_width}} {_format_size(entry.size):>7}"
+  if entry.tags:
+    text += "  " + _tag_text(entry.tags)
+  if entry.description:
+    text += "  " + " ".join(entry.description.split())
+  return text[:width]
 
-async def _show_file_list(user, files_with_meta, title):
-  """Display files in a scrollable full-screen list.
 
-  files_with_meta: list of (filename, size, keys, description) tuples.
-  Returns the selected filename (str) or None if user pressed Q.
-  """
-  if not files_with_meta:
-    await show_message_box(user, "No files found.")
-    return None
+def _info_text(entry):
+  """Everything the catalogue knows about a file, for its info popup."""
+  lines = [f"Name: {entry.name}",
+           f"Size: {entry.size:,} bytes ({_format_size(entry.size)})"]
+  if entry.tags:
+    lines.append("Tags: " + ", ".join(entry.tags))
+  lines.append(f"Uploader: {entry.uploader or '(unknown)'}")
+  lines.append("Added: " + time.strftime("%Y-%m-%d %H:%M", time.localtime(entry.added)))
+  if entry.pending:
+    lines.append("Waiting for the sysop's approval.")
+  if entry.description:
+    lines += ["", entry.description]
+  return "\n".join(lines)
 
-  # Layout constants
-  header_rows = 3   # title line + column header + separator
-  footer_rows = 2   # separator + controls line
-  list_height = user.screen_height - header_rows - footer_rows
-  if list_height < 1:
-    list_height = 1
 
-  total = len(files_with_meta)
-  scroll_offset = 0
-  selected = 0  # cursor index into files_with_meta
+class _Items:
+  """What a list shows: maybe a parent row and directory rows (browsing),
+  then files, as catalogue ids whose entries are fetched as they come on
+  screen. An item is ('parent',), ('dir', tag, count), ('file', Entry), or
+  ('gone', id) for a file no longer catalogued."""
 
-  # Pre-format lines
-  num_width = len(str(total))
-  avail_width = user.screen_width - 2  # left margin
+  CACHE = 5000  # entries kept before the cache is emptied
 
-  def _build_line(idx):
-    fname, size, keys, desc = files_with_meta[idx]
-    num_str = f"{idx + 1:>{num_width}}."
-    size_str = _format_size(size)
-    key_str = "[" + ", ".join(keys) + "]" if keys else ""
-    # Truncate description to fit
-    fixed = len(num_str) + 1 + len(size_str) + 2
-    if key_str:
-      fixed += len(key_str) + 1
-    max_fname = max(10, avail_width - fixed - len(desc) - 2)
-    if len(fname) > max_fname:
-      fname = fname[:max_fname - 1] + "~"
-    max_desc = avail_width - len(num_str) - 1 - len(fname) - 2 - len(size_str) - 2 - (len(key_str) + 1 if key_str else 0)
-    if max_desc < 0:
-      max_desc = 0
-    d = desc[:max_desc] if len(desc) > max_desc else desc
-    return num_str, fname, size_str, key_str, d
+  def __init__(self, ids, dirs=(), parent=False):
+    self.head = ([("parent",)] if parent else []) + [("dir", tag, n) for tag, n in dirs]
+    self.ids = ids
+    self.cache = {}
 
-  async def _draw():
-    # Clear screen
-    await ansi_cls(user)
+  def __len__(self):
+    return len(self.head) + len(self.ids)
 
+  @property
+  def files(self):
+    return len(self.ids)
+
+  async def load(self, start, stop):
+    """Fetch the entries of items start..stop-1 that aren't fetched yet."""
+    first = max(start, len(self.head)) - len(self.head)
+    last = min(stop, len(self)) - len(self.head)
+    want = [self.ids[i] for i in range(first, last) if self.ids[i] not in self.cache]
+    if not want:
+      return
+    if len(self.cache) + len(want) > self.CACHE:
+      self.cache.clear()
+    for e in await _db(library.fetch, want):
+      self.cache[e.id] = e
+    for i in want:  # (no longer catalogued: don't ask again)
+      self.cache.setdefault(i, None)
+
+  def item(self, i):
+    if i < len(self.head):
+      return self.head[i]
+    file_id = self.ids[i - len(self.head)]
+    e = self.cache.get(file_id)
+    return ("file", e) if e is not None else ("gone", file_id)
+
+  def number(self, i):
+    """The file number shown for item i (files only, from 1)."""
+    return i - len(self.head) + 1
+
+  def index_of_number(self, number):
+    return len(self.head) + number - 1
+
+
+async def _show_list(user, items, title, controls, selected=0):
+  """Show *items* (an _Items) in a scrolling full-screen list.
+
+  Up/Down/PgUp/PgDn/Home/End move, digits then Enter go to a file by
+  number, I shows a file's details. Returns (action, item, index): action
+  'open' (Enter on an item), 'back' (Backspace or Esc) or 'quit' (Q)."""
+  header_rows, footer_rows = 2, 2
+  height = max(1, user.screen_height - header_rows - footer_rows)
+  width = user.screen_width
+  total = len(items)
+  num_width = len(str(max(1, items.files)))
+  selected = min(max(0, selected), max(0, total - 1))
+  top = max(0, min(selected - height // 2, total - height))
+  number = ""  # digits typed, to go to a file by its number
+  name_width = 20
+
+  def page_name_width():
+    """Names get what the page's tags and descriptions leave: all of it
+    when nothing on the page has a description (samples: the name says it
+    all), else at most two fifths, so descriptions show too."""
+    entries = [it[1] for it in (items.item(i) for i in range(top, min(top + height, total))) if it[0] == "file"]
+    if not entries:
+      return 20
+    room = width - (2 + num_width + 2) - 8                     # (less number and size)
+    room -= max((len(_tag_text(e.tags)) + 2 for e in entries if e.tags), default=0)
+    longest = max(len(e.name) for e in entries)
+    if any(e.description for e in entries):
+      room = min(room - 12, (width - num_width) * 2 // 5)
+    return max(12, min(longest, room))
+
+  async def draw_row(i):
+    row = header_rows + 1 + (i - top)
+    await ansi_move_deferred(user, row=row, col=1, drain=False)
+    if i >= total:
+      ansi_color(user, fg=white, fg_br=False, bg=black)
+      await send(user, " " * width, drain=False)
+      return
+    item = items.item(i)
+    chosen = i == selected
+    if item[0] == "parent":
+      text = "  ../  (up one level)"
+    elif item[0] == "dir":
+      text = f"  {item[1]}/  ({item[2]:,} file{'s' if item[2] != 1 else ''})"
+    elif item[0] == "gone":
+      text = f"  {items.number(i):>{num_width}}. (no longer in the library)"
+    else:
+      text = _file_line(item[1], items.number(i), num_width, name_width, width)
+    text = text[:width].ljust(width)
+    if chosen:
+      ansi_color(user, fg=white, fg_br=True, bg=blue)
+      await send(user, text, drain=False)
+    elif item[0] in ("parent", "dir"):
+      ansi_color(user, fg=cyan, fg_br=True, bg=black)
+      await send(user, text, drain=False)
+    elif item[0] == "file" and item[1].tags:
+      # the tags in cyan: they start after the size
+      entry = item[1]
+      head = len(f"  {items.number(i):>{num_width}}. {'':<{name_width}} {'':>7}")
+      tags = _tag_text(entry.tags)
+      ansi_color(user, fg=white, fg_br=False, bg=black)
+      await send(user, text[:head + 2], drain=False)
+      ansi_color(user, fg=cyan, fg_br=False, bg=black)
+      await send(user, text[head + 2:head + 2 + len(tags)], drain=False)
+      ansi_color(user, fg=white, fg_br=False, bg=black)
+      await send(user, text[head + 2 + len(tags):], drain=False)
+    else:
+      ansi_color(user, fg=white, fg_br=False, bg=black)
+      await send(user, text, drain=False)
+
+  async def draw_footer():
+    ansi_color(user, fg=cyan, fg_br=True, bg=black)
+    await ansi_move_deferred(user, row=header_rows + height + 2, col=1, drain=False)
+    text = f" Go to file number: {number}_   (Enter: go, Esc: cancel)" if number else controls
+    await send(user, text[:width].ljust(width), drain=False)
+
+  async def draw_rows():
+    nonlocal name_width
+    await items.load(top, top + height)
+    name_width = page_name_width()
     ansi_wrap(user, False)
-
-    # Title
-    ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move_deferred(user, row=1, col=1, drain=False)
-    padded_title = title[:user.screen_width].center(user.screen_width)
-    await send(user, padded_title, drain=False)
-
-    # Column header
-    ansi_color(user, fg=white, fg_br=True, bg=black)
-    await ansi_move_deferred(user, row=2, col=1, drain=False)
-    hdr = f"  {'#':>{num_width}}  {'Filename':<20} {'Size':>10}  {'Keys':<16} Description"
-    await send(user, hdr[:user.screen_width].ljust(user.screen_width), drain=False)
-
-    # Separator
-    ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move_deferred(user, row=3, col=1, drain=False)
-    await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
-
-    # File lines
-    for i in range(list_height):
-      file_idx = scroll_offset + i
-      row = header_rows + i + 1
-      await ansi_move_deferred(user, row=row, col=1, drain=False)
-
-      if file_idx >= total:
-        ansi_color(user, fg=white, fg_br=False, bg=black)
-        await send(user, " " * user.screen_width, drain=False)
-        continue
-
-      num_str, fname, size_str, key_str, desc = _build_line(file_idx)
-      is_selected = (file_idx == selected)
-
-      # Number
-      if is_selected:
-        ansi_color(user, fg=white, fg_br=True, bg=blue)
-      else:
-        ansi_color(user, fg=white, fg_br=False, bg=black)
-
-      line_parts = []
-
-      # Build the line as a single padded string for background highlighting
-      line_text = f"  {num_str} {fname:<20} {size_str:>10}"
-      if key_str:
-        line_text += f"  {key_str}"
-      if desc:
-        line_text += f"  {desc}"
-
-      padded = line_text[:user.screen_width].ljust(user.screen_width)
-
-      if is_selected:
-        # Highlight entire line
-        ansi_color(user, fg=white, fg_br=True, bg=blue)
-        await send(user, padded, drain=False)
-      else:
-        # Build with color segments
-        # Number + filename in normal
-        seg1 = f"  {num_str} {fname:<20} {size_str:>10}"
-        ansi_color(user, fg=white, fg_br=False, bg=black)
-        await send(user, seg1, drain=False)
-        # Keys in cyan
-        if key_str:
-          ansi_color(user, fg=cyan, fg_br=False, bg=black)
-          await send(user, f"  {key_str}", drain=False)
-        # Description in normal
-        if desc:
-          ansi_color(user, fg=white, fg_br=False, bg=black)
-          await send(user, f"  {desc}", drain=False)
-        # Pad rest
-        used = len(seg1) + (len(f"  {key_str}") if key_str else 0) + (len(f"  {desc}") if desc else 0)
-        remaining = user.screen_width - used
-        if remaining > 0:
-          ansi_color(user, fg=white, fg_br=False, bg=black)
-          await send(user, " " * remaining, drain=False)
-
-    # Bottom separator
-    sep_row = header_rows + list_height + 1
-    ansi_color(user, fg=green, fg_br=False, bg=black)
-    await ansi_move_deferred(user, row=sep_row, col=1, drain=False)
-    await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
-
-    # Controls
-    ctrl_row = sep_row + 1
-    ansi_color(user, fg=cyan, fg_br=True, bg=black)
-    await ansi_move_deferred(user, row=ctrl_row, col=1, drain=False)
-    ctrl_text = " Up/Down: scroll  PgUp/PgDn: page  Enter/#: download  Q: back"
-    await send(user, ctrl_text[:user.screen_width].ljust(user.screen_width), drain=False)
-
+    for i in range(top, top + height):
+      await draw_row(i)
     ansi_wrap(user, True)
     await user.writer.drain()
 
-  # Initial draw
-  await _draw()
+  async def draw_all():
+    await items.load(top, top + height)
+    await ansi_cls(user)
+    ansi_wrap(user, False)
+    ansi_color(user, fg=cyan, fg_br=True, bg=black)
+    await ansi_move_deferred(user, row=1, col=1, drain=False)
+    folders = sum(1 for h in items.head if h[0] == "dir")
+    counts = ([f"{folders:,} folder{'s' if folders != 1 else ''}"] if folders else []) \
+      + [f"{items.files:,} file{'s' if items.files != 1 else ''}"]
+    shown = f"{title}  ({', '.join(counts)})"
+    await send(user, shown[:width].center(width), drain=False)
+    ansi_color(user, fg=green, fg_br=False, bg=black)
+    for row in (2, header_rows + height + 1):
+      await ansi_move_deferred(user, row=row, col=1, drain=False)
+      await send(user, _H * width, drain=False)
+    await draw_footer()
+    ansi_wrap(user, True)
+    await draw_rows()
 
-  # Input loop
+  async def move_to(i):
+    nonlocal selected, top
+    i = min(max(0, i), total - 1)
+    if i == selected:
+      return
+    old, selected = selected, i
+    if top <= selected < top + height:
+      ansi_wrap(user, False)
+      await draw_row(old)
+      await draw_row(selected)
+      ansi_wrap(user, True)
+      await user.writer.drain()
+      return
+    top = selected if selected < top else selected - height + 1
+    await draw_rows()
+
+  if total == 0:
+    await show_message_box(user, "No files here.")
+    return "back", None, 0
+  await draw_all()
   while True:
     key = await get_input_key(user)
-
+    if isinstance(key, str) and key.isdigit() and len(number) < 9:
+      number += key
+      ansi_wrap(user, False)
+      await draw_footer()
+      ansi_wrap(user, True)
+      await user.writer.drain()
+      continue
+    if number:
+      if key in (back, "\x7f"):
+        number = number[:-1]
+      elif key in ("\r", "\n"):
+        n, number = int(number), ""
+        if 1 <= n <= items.files:
+          await move_to(items.index_of_number(n))
+      else:
+        number = ""
+      ansi_wrap(user, False)
+      await draw_footer()
+      ansi_wrap(user, True)
+      await user.writer.drain()
+      continue
     if key == up:
-      if selected > 0:
-        selected -= 1
-        if selected < scroll_offset:
-          scroll_offset = selected
-        await _draw()
+      await move_to(selected - 1)
     elif key == down:
-      if selected < total - 1:
-        selected += 1
-        if selected >= scroll_offset + list_height:
-          scroll_offset = selected - list_height + 1
-        await _draw()
+      await move_to(selected + 1)
     elif key == pgup:
-      selected = max(0, selected - list_height)
-      if selected < scroll_offset:
-        scroll_offset = selected
-      await _draw()
+      await move_to(selected - height)
     elif key == pgdn:
-      selected = min(total - 1, selected + list_height)
-      if selected >= scroll_offset + list_height:
-        scroll_offset = selected - list_height + 1
-      await _draw()
+      await move_to(selected + height)
     elif key == home:
-      selected = 0
-      scroll_offset = 0
-      await _draw()
+      await move_to(0)
     elif key == end:
-      selected = total - 1
-      scroll_offset = max(0, total - list_height)
-      await _draw()
-    elif key == "\r" or key == "\x0d":
-      return files_with_meta[selected][0]
+      await move_to(total - 1)
+    elif key in ("\r", "\n"):
+      return "open", items.item(selected), selected
+    elif key in (back, "\x7f", "esc"):
+      return "back", None, selected
     elif isinstance(key, str) and key.lower() == "q":
-      return None
-    elif isinstance(key, str) and key.isdigit():
-      # Accumulate multi-digit number entry
-      num_str = key
-      # Give a brief moment for more digits (simple approach: just use single digit for now)
-      # Actually, for multi-digit: read characters until a non-digit or timeout
-      try:
-        idx = int(num_str) - 1
-        if 0 <= idx < total:
-          return files_with_meta[idx][0]
-      except (ValueError, TypeError):
-        pass
+      return "quit", None, selected
+    elif isinstance(key, str) and key.lower() == "i":
+      item = items.item(selected)
+      if item[0] == "file":
+        await show_message_box(user, _info_text(item[1]), title="File Information")
+        await draw_all()
+
+
+async def _pick_files(user, items, title, selected=0):
+  """A list of files where Enter downloads one; until Q or Backspace."""
+  controls = " Arrows/PgUp/PgDn: move  Enter: download  I: info  Digits: go to #  Q: back"
+  while True:
+    action, item, selected = await _show_list(user, items, title, controls, selected)
+    if action != "open":
+      return action
+    if item[0] == "file":
+      await _do_download(user, item[1])
 
 
 # ---------------------------------------------------------------------------
@@ -404,380 +450,262 @@ async def _choose_protocol(user):
 
 
 # ---------------------------------------------------------------------------
-# Transfer helpers
+# Downloads
 # ---------------------------------------------------------------------------
 
-def _library_path(name):
-  """The path of the library file *name*, or None unless it is one the
-  library lists. The name may come from the caller (Download asks for it),
-  so it is never joined to the folder unchecked: "../DirtyFork.db", an
-  absolute path or an upload still in progress would be sent otherwise."""
-  if name not in {entry[0] for entry in _get_all_files()}:
-    return None
-  directory = os.path.realpath(_files_dir())
-  path = os.path.realpath(os.path.join(directory, name))
-  if os.path.dirname(path) != directory or not os.path.isfile(path):
-    return None
-  return path
+def _download_path(user, entry):
+  """The path to send for *entry*, or None. Only a file inside its root
+  (library.resolve); an upload awaiting approval only to a sysop."""
+  return library.resolve(_library(), entry, allow_pending=_is_sysop(user))
 
 
-async def _do_download(user, filename):
-  """Download a single file to the user."""
-  file_path = _library_path(filename)
+async def _do_download(user, entry):
+  """Send one catalogued file to the user."""
+  file_path = _download_path(user, entry)
   if file_path is None:
-    await show_message_box(user, f"File not found: {filename}")
+    await show_message_box(user, f"File not found: {entry.name}")
     return
 
   protocol = await _choose_protocol(user)
   if not protocol:
     return
 
-  log.info("User %s downloading %s via %s", user.handle, filename, protocol)
+  log.info("User %s downloading %s (%s) via %s", user.handle, entry.name, file_path, protocol)
   send_files = send_files_zmodem if protocol == "zmodem" else send_files_ymodem
   result = await send_files(user, [file_path])
 
   if result.status == success:
-    log.info("Download complete: %s for %s", filename, user.handle)
-    await show_message_box(user, f"Transfer of {filename} complete!")
+    log.info("Download complete: %s for %s", entry.name, user.handle)
+    await show_message_box(user, f"Transfer of {entry.name} complete!")
   else:
-    log.warning("Download failed: %s for %s: %s", filename, user.handle, result.message)
+    log.warning("Download failed: %s for %s: %s", entry.name, user.handle, result.message)
     await show_message_box(user, result.message)
 
 
-# ---------------------------------------------------------------------------
-# Search mode (S)
-# ---------------------------------------------------------------------------
-
-async def _search_files(user):
-  """Prompt for include/exclude keys and display matching files."""
-  all_files = _get_all_files()
-  valid = _valid_keys()
-
-  # Clear screen for prompts
-  await ansi_cls(user)
-
-  ansi_color(user, fg=cyan, fg_br=True, bg=black)
-  await send(user, "Search Files by Keys" + cr + lf, drain=False)
-  ansi_color(user, fg=white, fg_br=False, bg=black)
-
-  if valid:
-    await send(user, cr + lf + "Available keys: " + ", ".join(valid) + cr + lf, drain=False)
-
-  await send(user, cr + lf + "Include keys (comma-separated, or blank for all): ", drain=True)
-
-  # Read include keys (simple line input via get_input_key)
-  inc_str = await _read_line(user, max_len=200)
-  include_keys = set()
-  if inc_str.strip():
-    for k in inc_str.split(","):
-      k = k.strip().lower()
-      if k:
-        include_keys.add(k)
-
-  await send(user, cr + lf + "Exclude keys (comma-separated, or blank): ", drain=True)
-  exc_str = await _read_line(user, max_len=200)
-  exclude_keys = set()
-  if exc_str.strip():
-    for k in exc_str.split(","):
-      k = k.strip().lower()
-      if k:
-        exclude_keys.add(k)
-
-  filtered = _filter_files(all_files, include_keys, exclude_keys)
-  title = "Search Results"
-  if include_keys:
-    title += f" [+{','.join(sorted(include_keys))}]"
-  if exclude_keys:
-    title += f" [-{','.join(sorted(exclude_keys))}]"
-
-  chosen = await _show_file_list(user, filtered, title)
-  if chosen:
-    await _do_download(user, chosen)
-
-
-# ---------------------------------------------------------------------------
-# Hierarchy/Browse mode (B)
-# ---------------------------------------------------------------------------
-
-async def _browse_files(user):
-  """Virtual directory tree built from file keys. Navigate with arrow keys and Enter."""
-  path_keys = []  # current "directory" path as a list of keys
-
-  while True:
-    all_files = _get_all_files()
-
-    # Files matching all path_keys
-    path_set = set(path_keys)
-    matching = [(f, s, k, d) for f, s, k, d in all_files if path_set.issubset(set(k))]
-
-    # Subdirectories: remaining keys that any matching file has, excluding path_keys
-    sub_keys = {}
-    for fname, size, keys, desc in matching:
-      for k in keys:
-        if k not in path_set:
-          if k not in sub_keys:
-            sub_keys[k] = 0
-          sub_keys[k] += 1
-
-    sub_list = sorted(sub_keys.items(), key=lambda x: x[0])
-
-    # Build a unified list of items: ("dir", key, count) or ("file", fname, size, keys, desc)
-    items = []
-    if path_keys:
-      items.append(("parent", "..", 0))
-    for key, count in sub_list:
-      items.append(("dir", key, count))
-    for fname, size, keys, desc in matching:
-      items.append(("file", fname, size, keys, desc))
-
-    if not items:
-      await show_message_box(user, "No files or subdirectories here.")
-      break
-
-    # Layout
-    header_rows = 2   # path + separator
-    footer_rows = 2   # separator + controls
-    list_height = user.screen_height - header_rows - footer_rows
-    if list_height < 1:
-      list_height = 1
-
-    total = len(items)
-    scroll_offset = 0
-    selected = 0
-
-    async def _draw():
-      await ansi_cls(user)
-      ansi_wrap(user, False)
-
-      # Header
-      path_str = "/" + "/".join(path_keys) + "/" if path_keys else "/"
-      ansi_color(user, fg=cyan, fg_br=True, bg=black)
-      await ansi_move_deferred(user, row=1, col=1, drain=False)
-      await send(user, f"Browse: {path_str}".ljust(user.screen_width), drain=False)
-
-      ansi_color(user, fg=green, fg_br=False, bg=black)
-      await ansi_move_deferred(user, row=2, col=1, drain=False)
-      await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
-
-      # Items
-      for i in range(list_height):
-        item_idx = scroll_offset + i
-        row = header_rows + i + 1
-        await ansi_move_deferred(user, row=row, col=1, drain=False)
-
-        if item_idx >= total:
-          ansi_color(user, fg=white, fg_br=False, bg=black)
-          await send(user, " " * user.screen_width, drain=False)
-          continue
-
-        item = items[item_idx]
-        is_sel = (item_idx == selected)
-
-        if item[0] == "parent":
-          if is_sel:
-            ansi_color(user, fg=white, fg_br=True, bg=blue)
-          else:
-            ansi_color(user, fg=cyan, fg_br=True, bg=black)
-          line = "  ../ (up one level)"
-          await send(user, line[:user.screen_width].ljust(user.screen_width), drain=False)
-
-        elif item[0] == "dir":
-          key, count = item[1], item[2]
-          if is_sel:
-            ansi_color(user, fg=white, fg_br=True, bg=blue)
-            line = f"  {key}/ ({count} file{'s' if count != 1 else ''})"
-            await send(user, line[:user.screen_width].ljust(user.screen_width), drain=False)
-          else:
-            ansi_color(user, fg=cyan, fg_br=True, bg=black)
-            await send(user, f"  {key}/", drain=False)
-            ansi_color(user, fg=white, fg_br=False, bg=black)
-            rest = f" ({count} file{'s' if count != 1 else ''})"
-            await send(user, rest, drain=False)
-            used = 2 + len(key) + 1 + len(rest)
-            if used < user.screen_width:
-              await send(user, " " * (user.screen_width - used), drain=False)
-
-        elif item[0] == "file":
-          fname, size, keys, desc = item[1], item[2], item[3], item[4]
-          size_str = _format_size(size)
-          key_str = "[" + ", ".join(keys) + "]" if keys else ""
-          if is_sel:
-            ansi_color(user, fg=white, fg_br=True, bg=blue)
-            line = f"  {fname:<20} {size_str:>10}"
-            if key_str:
-              line += f"  {key_str}"
-            if desc:
-              line += f"  {desc}"
-            await send(user, line[:user.screen_width].ljust(user.screen_width), drain=False)
-          else:
-            ansi_color(user, fg=white, fg_br=False, bg=black)
-            seg1 = f"  {fname:<20} {size_str:>10}"
-            await send(user, seg1, drain=False)
-            used = len(seg1)
-            if key_str:
-              ansi_color(user, fg=cyan, fg_br=False, bg=black)
-              await send(user, f"  {key_str}", drain=False)
-              used += 2 + len(key_str)
-            if desc:
-              ansi_color(user, fg=white, fg_br=False, bg=black)
-              await send(user, f"  {desc}", drain=False)
-              used += 2 + len(desc)
-            if used < user.screen_width:
-              ansi_color(user, fg=white, fg_br=False, bg=black)
-              await send(user, " " * (user.screen_width - used), drain=False)
-
-      # Footer
-      sep_row = header_rows + list_height + 1
-      ansi_color(user, fg=green, fg_br=False, bg=black)
-      await ansi_move_deferred(user, row=sep_row, col=1, drain=False)
-      await send(user, (_H * user.screen_width)[:user.screen_width], drain=False)
-
-      ctrl_row = sep_row + 1
-      ansi_color(user, fg=cyan, fg_br=True, bg=black)
-      await ansi_move_deferred(user, row=ctrl_row, col=1, drain=False)
-      ctrl = " Up/Down: navigate  Enter: open/download  Backspace: up  Q: quit"
-      await send(user, ctrl[:user.screen_width].ljust(user.screen_width), drain=False)
-
-      ansi_wrap(user, True)
-      await user.writer.drain()
-
-    await _draw()
-
-    # Input loop
-    redraw_needed = False
-    while True:
-      key = await get_input_key(user)
-
-      if key == up:
-        if selected > 0:
-          selected -= 1
-          if selected < scroll_offset:
-            scroll_offset = selected
-          await _draw()
-      elif key == down:
-        if selected < total - 1:
-          selected += 1
-          if selected >= scroll_offset + list_height:
-            scroll_offset = selected - list_height + 1
-          await _draw()
-      elif key == pgup:
-        selected = max(0, selected - list_height)
-        if selected < scroll_offset:
-          scroll_offset = selected
-        await _draw()
-      elif key == pgdn:
-        selected = min(total - 1, selected + list_height)
-        if selected >= scroll_offset + list_height:
-          scroll_offset = selected - list_height + 1
-        await _draw()
-      elif key == home:
-        selected = 0
-        scroll_offset = 0
-        await _draw()
-      elif key == end:
-        selected = total - 1
-        scroll_offset = max(0, total - list_height)
-        await _draw()
-      elif key == "\r" or key == "\x0d":
-        item = items[selected]
-        if item[0] == "parent":
-          path_keys.pop()
-          redraw_needed = True
-          break
-        elif item[0] == "dir":
-          path_keys.append(item[1])
-          redraw_needed = True
-          break
-        elif item[0] == "file":
-          await _do_download(user, item[1])
-          redraw_needed = True
-          break
-      elif key == back or key == "esc":
-        if path_keys:
-          path_keys.pop()
-          redraw_needed = True
-          break
-        else:
-          return  # at root, exit browse
-      elif isinstance(key, str) and key.lower() == "q":
-        return
-
-    if not redraw_needed:
-      break
-
-
-# ---------------------------------------------------------------------------
-# List all files (L)
-# ---------------------------------------------------------------------------
-
-async def _list_all_files(user):
-  """Show all files in a scrollable list."""
-  files = _get_all_files()
-  chosen = await _show_file_list(user, files, "All Files")
-  if chosen:
-    await _do_download(user, chosen)
-
-
-# ---------------------------------------------------------------------------
-# Download (D)
-# ---------------------------------------------------------------------------
-
 async def _download_file(user):
-  """Prompt for a filename and download it."""
+  """Download by name: ask for it; with several of that name, pick one."""
   if await _transfers_refused(user):
     return
   await ansi_cls(user)
-
   ansi_color(user, fg=cyan, fg_br=True, bg=black)
   await send(user, "Download a File" + cr + lf, drain=False)
   ansi_color(user, fg=white, fg_br=False, bg=black)
-  await send(user, cr + lf + "Enter filename (or Q to cancel): ", drain=True)
-
-  name = await _read_line(user, max_len=200)
-  name = name.strip()
+  await send(user, cr + lf + "Enter its name (or Q to cancel): ", drain=True)
+  name = (await _read_line(user, max_len=200)).strip()
   if not name or name.lower() == "q":
     return
-  await _do_download(user, name)  # (which accepts only names the library lists)
+  ids = await _db(library.ids_named, name)  # (only names the catalogue lists: never a path)
+  if not ids:
+    await show_message_box(user, f"No file in the library is called {name}. Search for it instead.")
+  elif len(ids) == 1:
+    entries = await _db(library.fetch, ids)
+    if entries:
+      await _do_download(user, entries[0])
+  else:
+    await _pick_files(user, _Items(ids), f"Files called {name}")
+
+
+# ---------------------------------------------------------------------------
+# Search (S)
+# ---------------------------------------------------------------------------
+
+async def _search_form(user, query):
+  """Ask for a search, with help and examples under the field. Returns what
+  was typed (stripped), "" to go back."""
+  width = user.screen_width
+  await ansi_cls(user)
+  count = await _db(library.listed_count)
+  ansi_color(user, fg=cyan, fg_br=True, bg=black)
+  await send(user, f"Search the File Library  ({count:,} files)"[:width] + cr + lf + cr + lf, drain=False)
+  ansi_color(user, fg=white, fg_br=False, bg=black)
+  await send(user, "Search for (Enter searches; leave it empty to go back):", drain=False)
+
+  lines = list(library.QUERY_HELP) + ["", "Examples:"] + ["  " + e for e in library.QUERY_EXAMPLES]
+  first = 7
+  for i, line in enumerate(lines[:max(0, user.screen_height - first)]):
+    await ansi_move_deferred(user, row=first + i, col=1, drain=False)
+    if line == "Examples:":
+      ansi_color(user, fg=cyan, fg_br=True, bg=black)
+    elif line.startswith("  "):
+      ansi_color(user, fg=green, fg_br=True, bg=black)
+    else:
+      ansi_color(user, fg=white, fg_br=False, bg=black)
+    await send(user, line[:width], drain=False)
+  ansi_color(user, fg=white, fg_br=False, bg=black)
+
+  while True:
+    await ansi_move(user, 4, 2, drain=True)
+    r = await InputField.create(user=user, conf=config.input_fields.input_field,
+                                width=max(10, width - 3), max_length=500, content=query)
+    query = r.content if hasattr(r, 'content') else str(r)
+    if getattr(r, 'key', cr) == cr:
+      return query.strip()
+
+
+async def _search_files(user):
+  """Search with the query language (library.parse_query); refine and repeat
+  until an empty search."""
+  query = getattr(user, 'file_search', "")
+  while True:
+    query = await _search_form(user, query)
+    if not query:
+      return
+    try:
+      node = library.parse_query(query)
+    except library.QueryError as exc:
+      await show_message_box(user, str(exc), title="Can't search for that",
+                             outline_fg=red, outline_fg_br=True)
+      continue
+    user.file_search = query
+    ids = await _db(library.search_ids, node)
+    if not ids:
+      await show_message_box(user, "No files match that search.")
+      continue
+    if await _pick_files(user, _Items(ids), f"Search: {query}") == "quit":
+      return
+
+
+# ---------------------------------------------------------------------------
+# Browse (B): the tag tree
+# ---------------------------------------------------------------------------
+
+async def _browse_files(user):
+  """Tags as directories: in a directory are the further tags of its files
+  (subdirectories) and the files whose tags are exactly the path; at the
+  top, the untagged files. Enter opens or downloads; Backspace goes up."""
+  path = []        # tags chosen so far
+  selections = []  # where the selection was in each level above
+  selected = 0
+  controls = " Arrows: move  Enter: open/download  I: info  Backspace: up  Q: quit"
+  while True:
+    dirs, ids = await _db(library.browse, path)
+    items = _Items(ids, dirs=dirs, parent=bool(path))
+    if not len(items):
+      await show_message_box(user, "The library is empty." if not path else "Nothing here.")
+      if not path:
+        return
+      path.pop()
+      selected = selections.pop()
+      continue
+    title = "Browse: /" + "".join(t + "/" for t in path)
+    action, item, selected = await _show_list(user, items, title, controls, selected)
+    if action == "quit":
+      return
+    if action == "back" or (action == "open" and item[0] == "parent"):
+      if not path:
+        return
+      path.pop()
+      selected = selections.pop()
+    elif item[0] == "dir":
+      path.append(item[1])
+      selections.append(selected)
+      selected = 0
+    elif item[0] == "file":
+      await _do_download(user, item[1])
+
+
+# ---------------------------------------------------------------------------
+# List all (L)
+# ---------------------------------------------------------------------------
+
+async def _list_all_files(user):
+  ids = await _db(library.all_ids)
+  if not ids:
+    await show_message_box(user, "The library is empty.")
+    return
+  await _pick_files(user, _Items(ids), "All Files")
 
 
 # ---------------------------------------------------------------------------
 # Upload (U)
 # ---------------------------------------------------------------------------
 
-def remove_stale_uploads():
-  """Delete what uploads cut short by a crash left behind (at startup only:
-  later, it could be someone's upload in progress)."""
-  file_transfer.remove_stale_uploads(_files_dir())
-
-
-def _upload_policy():
-  """What uploads may be (file_transfer.UploadPolicy): the library folder,
-  the catalogue's name kept free when it lives there, and the size limits
-  from the config (upload_max_size, upload_keep_free)."""
-  directory = _files_dir()
-  meta = _meta_path()
-  reserved = set()
-  if os.path.dirname(os.path.abspath(meta)) == os.path.abspath(directory):
-    reserved.add(os.path.basename(meta).lower())
-  return UploadPolicy(directory=directory, reserved=frozenset(reserved),
+def _upload_policy(trusted):
+  """What uploads may be (file_transfer.UploadPolicy): into the library
+  folder for a trusted uploader, else into the pending folder, a name taken
+  in neither (approving moves a file from one to the other) and none the
+  library keeps for itself, within the size limits from the config
+  (upload_max_size, upload_keep_free)."""
+  lib = _library()
+  directory, other = (lib.files_dir, lib.pending_dir) if trusted else (lib.pending_dir, lib.files_dir)
+  os.makedirs(directory, exist_ok=True)
+  return UploadPolicy(directory=directory, reserved=lib.reserved_names(), others=(other,),
                       max_bytes=parse_size(config.upload_max_size, 100 * 1024 * 1024),
                       keep_free=parse_size(config.upload_keep_free, 500 * 1024 * 1024))
 
 
+async def _tell_sysops(text):
+  """A popup for every sysop online (each as their own settings allow)."""
+  from common import global_data
+  from bbs_msg import send_popup
+  for u in list(global_data.users.values()):
+    if _is_sysop(u):
+      await send_popup(u, text, title="File Library")
+
+
+async def tell_sysop_of_pending(user):
+  """At a sysop's login: a popup saying how many uploads await approval."""
+  if not _is_sysop(user):
+    return
+  n = await _db(library.pending_count)
+  if n:
+    from bbs_msg import send_popup
+    await send_popup(user, f"{n} upload{'s are' if n != 1 else ' is'} waiting for your approval "
+                           "in Sysop > Vet Uploads.", title="File Library", skip_checks=True)
+
+
+async def _ask_tags(user):
+  """Ask for an upload's tags from config.file_tags, by number or name."""
+  valid = _valid_tags()
+  if not valid:
+    return []
+  await send(user, cr + lf + "Available tags:" + cr + lf, drain=False)
+  ansi_color(user, fg=cyan, fg_br=False, bg=black)
+  for i, k in enumerate(valid, 1):
+    await send(user, f"  {i:3}. {k}" + cr + lf, drain=False)
+  ansi_color(user, fg=white, fg_br=False, bg=black)
+  await send(user, cr + lf + "Enter tag numbers or names (comma-separated, or blank for none): ", drain=True)
+  chosen = []
+  for part in (await _read_line(user, max_len=200)).split(","):
+    part = part.strip()
+    if part.isdigit() and 1 <= int(part) <= len(valid):
+      tag = valid[int(part) - 1]
+    else:
+      tag = next((v for v in valid if v.lower() == part.lower()), None)
+    if tag and tag not in chosen:
+      chosen.append(tag)
+  return chosen
+
+
 async def _upload_file(user):
-  """Receive files, then ask for a description and keys for each one saved."""
+  """Receive files, catalogue each one saved, then ask for its description
+  and tags. A trusted uploader's are listed at once; anyone else's wait for
+  a sysop's approval, and the sysops online are told."""
   protocol = await _choose_protocol(user)
   if not protocol:
     return
 
-  policy = _upload_policy()
-  log.info("User %s uploading via %s", user.handle, protocol)
+  trusted = _trusted(user)
+  policy = _upload_policy(trusted)
+  root = library.UPLOADS if trusted else library.PENDING
+  log.info("User %s uploading via %s (%s)", user.handle, protocol, "listed at once" if trusted else "for approval")
   receive = receive_files_zmodem if protocol == "zmodem" else receive_files_ymodem
   result = await receive(user, policy)
+
+  def catalogue(con):
+    ids = {}
+    for name in policy.saved:
+      size, mtime = library.file_stamp(os.path.join(policy.directory, name))
+      ids[name] = library.put(con, root=root, path=name, size=size, mtime=mtime, uploader=user.handle)
+    con.commit()
+    return ids
+  ids = await _db(catalogue) if policy.saved else {}
 
   lines = []
   if policy.saved:
     lines.append("Received: " + ", ".join(policy.saved) + ".")
+    if not trusted:
+      lines.append("They will be listed once the sysop has approved them.")
   for name, why in policy.refused:
     lines.append(f"Not kept: {name}: {why}.")
   if result.status != success:
@@ -789,52 +717,97 @@ async def _upload_file(user):
   await show_message_box(user, "\n".join(lines))
   if not policy.saved:
     return
+  if not trusted:
+    await _tell_sysops(f"{user.handle} uploaded {', '.join(policy.saved)}. "
+                       "It is waiting for your approval in Sysop > Vet Uploads.")
 
   await ansi_cls(user)
   for fname in policy.saved:
     await send(user, cr + lf + f"Cataloguing: {fname}" + cr + lf, drain=False)
-
-    # Description
     await send(user, "Enter description (or blank for none): ", drain=True)
-    desc = await _read_line(user, max_len=200)
-    desc = desc.strip()
+    desc = (await _read_line(user, max_len=200)).strip()
+    tags = await _ask_tags(user)
 
-    # Key assignment
-    valid = _valid_keys()
-    assigned_keys = []
-    if valid:
-      await send(user, cr + lf + "Available keys:" + cr + lf, drain=False)
-      ansi_color(user, fg=cyan, fg_br=False, bg=black)
-      for i, k in enumerate(valid, 1):
-        await send(user, f"  {i:3}. {k}" + cr + lf, drain=False)
-      ansi_color(user, fg=white, fg_br=False, bg=black)
-      await send(user, cr + lf + "Enter key numbers (comma-separated, or blank for none): ", drain=True)
-      key_input = await _read_line(user, max_len=200)
-      if key_input.strip():
-        for part in key_input.split(","):
-          part = part.strip()
-          try:
-            idx = int(part) - 1
-            if 0 <= idx < len(valid) and valid[idx] not in assigned_keys:
-              assigned_keys.append(valid[idx])
-          except (ValueError, TypeError):
-            # Try matching by name
-            part_lower = part.lower()
-            for vk in valid:
-              if vk.lower() == part_lower and vk not in assigned_keys:
-                assigned_keys.append(vk)
-
-    # Save to meta: read again just before writing (no await in between), so
-    # what others catalogued while this caller was typing is kept
-    meta = _load_meta()
-    meta[fname] = {
-      'keys': assigned_keys,
-      'description': desc,
-    }
-    _save_meta(meta)
-    log.info("User %s uploaded %s with keys=%s", user.handle, fname, assigned_keys)
+    def details(con, file_id=ids[fname]):
+      library.set_description(con, file_id, desc)
+      library.set_tags(con, file_id, tags)
+      con.commit()
+    await _db(details)
+    log.info("User %s uploaded %s with tags=%s", user.handle, fname, tags)
 
   await show_message_box(user, "File(s) catalogued successfully.")
+
+
+# ---------------------------------------------------------------------------
+# Vetting uploads (Sysop > Vet Uploads)
+# ---------------------------------------------------------------------------
+
+async def _button_row(user, fields, buttons):
+  """Add *buttons* ((name, label) pairs) to *fields* side by side, from the
+  cursor's row and column 1. (Drawing a button moves the cursor: the row is
+  taken once.)"""
+  row, col = user.cur_row, 1
+  for name, label in buttons:
+    await ansi_move_deferred(user, row=row, col=col, drain=True)
+    btn = await fields.add_button(name, content=label)
+    col = btn.col_offset + btn.width + (1 if btn.outline else 0) + 1
+
+
+async def _vet_one(user, entry):
+  """Show an upload awaiting approval, and approve, reject or download it."""
+  lib = _library()
+  while True:
+    await ansi_cls(user)
+    ansi_color(user, fg=cyan, fg_br=True, bg=black)
+    await send(user, "Vet an Upload" + cr + lf + cr + lf, drain=False)
+    ansi_color(user, fg=white, fg_br=False, bg=black)
+    for line in _info_text(entry).split("\n")[:max(1, user.screen_height - 8)]:
+      await send(user, line[:user.screen_width - 1] + cr + lf, drain=False)
+    await send(user, cr + lf, drain=False)
+    fields = InputFields(user)
+    await _button_row(user, fields, (("approve", "Approve"), ("reject", "Reject"), ("download", "Download"),
+                                     ("back", "Back")))
+    r = await fields.run()
+    if r.button == "approve":
+      why = await _db(lambda con: library.approve(lib, con, entry.id))
+      log.info("Sysop %s approved upload %s by %s%s", user.handle, entry.name, entry.uploader,
+               f": not done: {why}" if why else "")
+      await show_message_box(user, why or f"{entry.name} is now in the library.")
+      return
+    if r.button == "reject":
+      confirm = InputFields(user)
+      await ansi_cls(user)
+      await send(user, f"Delete {entry.name}, uploaded by {entry.uploader or '(unknown)'}?" + cr + lf + cr + lf,
+                 drain=True)
+      await _button_row(user, confirm, (("delete", "Delete"), ("keep", "Keep")))
+      if (await confirm.run()).button == "delete":
+        await _db(lambda con: library.reject(lib, con, entry.id))
+        log.info("Sysop %s rejected upload %s by %s", user.handle, entry.name, entry.uploader)
+        await show_message_box(user, f"{entry.name} was deleted.")
+        return
+    elif r.button == "download":
+      await _do_download(user, entry)
+    else:
+      return
+
+
+async def vet_uploads(user):
+  """The uploads awaiting approval, oldest first; Enter vets one."""
+  if not _is_sysop(user):
+    return
+  controls = " Arrows: move  Enter: approve, reject or download  I: info  Q: back"
+  selected = 0
+  while True:
+    ids = await _db(library.pending_ids)
+    if not ids:
+      await show_message_box(user, "No uploads are waiting for approval.")
+      return
+    action, item, selected = await _show_list(user, _Items(ids), "Uploads Awaiting Approval",
+                                              controls, selected)
+    if action != "open":
+      return
+    if item[0] == "file":
+      await _vet_one(user, item[1])
 
 
 # ---------------------------------------------------------------------------
@@ -867,8 +840,6 @@ async def _read_line(user, max_len=200):
 # ---------------------------------------------------------------------------
 
 async def run(user, destination, menu_item=None):
-  from common import Destinations
-
   # Determine which action to run from the menu_item
   action = None
   if menu_item and menu_item is not None:

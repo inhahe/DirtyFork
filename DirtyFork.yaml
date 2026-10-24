@@ -55,8 +55,45 @@ idle_warning: 30
 #   # port: COM1
 
 database: DirtyFork.db
-files_dir: files
-files_meta: files/meta.yaml   # maps filename -> {keys: [...], description: "..."}
+files_dir: files               # the file library's folder: uploads, and files you put there yourself
+file_library:                  # (see DOCS.md, File Library; paths are project-relative)
+  # catalog: files/catalog/library.db   # the catalogue: every file listed, its tags and description
+  # pending_dir: files/pending     # uploads waiting for a sysop's approval (Sysop > Vet Uploads)
+  # zips_dir: files/zips           # zips library_sync.py makes of websites, webpages and repos
+  # repos_dir: files/repos         # its clones of GitHub repositories
+  upload_key: trusted_uploader     # uploads by holders of this key (and sysops) are listed at once
+  # Sources for library_sync.py: folders and accounts whose files the library
+  # lists. Linked types (gallery, videos, samples, mods) are listed where they
+  # are; the rest are zipped into zips_dir. Every type, and its options:
+  sources:
+  #   websites:                    # each folder in dir is a website, zipped whole;
+  #     type: websites             # loose .htm(l) files in it are webpages
+  #     dir: D:/websites
+  #     containers: [Organelle]    # folders whose subfolders are websites
+  #     skip: [YouTube - Organelle]
+  #   pages:
+  #     type: webpages             # each .htm(l) with its _files folder, in all subfolders
+  #     dir: D:/webpages
+  #   github:
+  #     type: github               # every public repository of an account
+  #     user: someone
+  #     include_forks: false
+  #   pics:
+  #     type: gallery              # pictures and videos, tagged by folder
+  #     dir: D:/pictures
+  #     captions: D:/gallery/thumbsup.db   # thumbsup2's AI captions as descriptions
+  #   videos:
+  #     type: videos               # yt-dlp downloads: the title becomes the description
+  #     dir: D:/videos
+  #     tags: [youtube]
+  #   samples:
+  #     type: samples              # samples and instruments, by extension
+  #     dir: D:/samples
+  #     hierarchy_tags: true       # tag each by the folders it is in
+  #     scheduled: false           # only with --all (or by name): too big to rescan hourly
+  #   mods:
+  #     type: mods                 # tracker modules, zipped one per file
+  #     dir: D:/modarchive
 file_tags:                     # sysop-defined list of valid file tags
   - game
   - utility
@@ -117,7 +154,7 @@ user_defaults:
   keys:
     - doors  # all users can access doors by default; add 'banned' key to block individuals
 
-# Known keys: sysop, debug, doors, banned
+# Known keys: sysop, debug, doors, banned, trusted_uploader (file_library.upload_key)
 # Key groups: a key that grants all keys in its list.
 # Groups can include other groups (resolved recursively).
 # Example: a user with "sysop" effectively has doors, debug, etc.
@@ -397,3 +434,5 @@ menu_system:
         action: key_groups
       Edit User:
         action: user_settings
+      Vet Uploads:
+        action: vet_uploads

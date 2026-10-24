@@ -8,7 +8,7 @@ A modern async Python BBS supporting telnet and dial-up modem connections, with 
 - **Forums** with threaded replies, quoting, and search
 - **Private messages** with threading
 - **Teleconference** — split-screen multi-channel real-time chat
-- **File library** with ZMODEM (our own implementation) and YMODEM-G upload and download, cancellable, with uploads kept to safe names and size limits
+- **File library** with ZMODEM (our own implementation) and YMODEM-G upload and download, cancellable, with uploads kept to safe names and size limits and vetted by the sysop; a search language (tags, names, descriptions, uploaders, wildcards, and/or/not), browsing by tag, and `library_sync.py` to list websites, webpages and GitHub repositories as zips and picture, video, sample and module collections where they are, on a schedule; see [DOCS.md](DOCS.md#file-library)
 - **Full ANSI/CP437 and UTF-8** with automatic encoding detection
 - **Per-user settings** — profile, preferences, encoding, start destination
 - **Access control** via white/black key system with recursive key groups
@@ -119,8 +119,10 @@ DirtyFork.yaml        # main config (copy to your data dir)
 DirtyFork.db          # SQLite database (auto-created)
 DirtyFork.log         # log file (auto-created)
 user_configs/         # per-user YAML profiles
-files/                # file library
-files/meta.yaml       # file metadata (keys, descriptions)
+files/                # file library: uploads
+files/catalog/        # its catalogue (tags, descriptions, where each file is)
+files/pending/        # uploads awaiting the sysop's approval
+files/zips/           # zips library_sync.py makes; files/repos/: its clones
 doors/                # door game directories
 doors/dosbox.conf     # shared DOSBox-X base config
 doors/dropfiles/      # dropfile format defaults

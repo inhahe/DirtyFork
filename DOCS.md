@@ -42,6 +42,7 @@ The web terminal needs no rule of its own: its callers come in through the web s
 ### Database vs YAML
 
 - **SQLite database**: credentials (handle, password_hash), keys (USER_KEYS table), messages, forum posts — anything queried across users
+- **The file library's catalogue** is a database of its own (`files/catalog/library.db`), beside the files it lists, written by the BBS (uploads) and by `library_sync.py`
 - **User YAML** (`user_configs/{handle}.yaml`): profile (email, age, bio), preferences (encoding, scroll_step, allow_door_popups, blocked_users, start_destination, show_stars) — loaded only for the logged-in user
 
 ### Path Resolution: Project vs Data Directory
@@ -50,8 +51,7 @@ When using `--data-dir`, paths are resolved relative to either the **project dir
 
 **Project-relative** (shared installation, same for all instances):
 - `doors/` — door game binaries and configs
-- `files/` — file library for download
-- `files/meta.yaml` — file metadata
+- `files/` — file library for download, with its catalogue (`files/catalog/`), uploads awaiting approval (`files/pending`), and what `library_sync.py` makes (`files/zips`, `files/repos`)
 - `register.yaml` — registration form definition
 - `input_fields.yaml` — input field styles
 - ANSI/BIN screen files (`bbs_info_screen`, etc.)
@@ -239,20 +239,72 @@ Multi-channel real-time chat with split-screen display. Users can join channels 
 
 ### File Library
 
-File management with search, browse, list, upload, and download capabilities. Files are tagged with keys and descriptions via `files/meta.yaml`.
+Search, browse, list, download and upload files. What the library lists is in its **catalogue** (`files/catalog/library.db`, SQLite): each file's name, size, tags, description, uploader and where it is. Files are either in the library's folder (`files_dir`: uploads, and files you put there yourself), zips that `library_sync.py` makes (of websites, webpages and GitHub repositories, in `files/zips`), or files listed **where they are**, never copied (a picture gallery, a folder of videos, samples, modules on another drive). A caller is sent only a file the catalogue lists, and only from inside the folder it is listed in; uploads only ever go to the library's folder or the folder of uploads awaiting approval.
+
+```yaml
+files_dir: files
+file_library:
+  # catalog: files/catalog/library.db     pending_dir: files/pending
+  # zips_dir: files/zips          repos_dir: files/repos       (all project-relative)
+  upload_key: trusted_uploader    # holders' uploads (and sysops') are listed at once
+  sources: { ... }                # what library_sync.py lists: see Library Sources below
+file_tags: [game, utility, ...]   # the tags an uploader may choose from
+```
+
+**Search** takes one line, with its help and examples under the field (an empty search goes back; after the results, the search comes back to be refined):
+
+- A word finds files whose **tags**, **name** or **description** have it: `space`. Words side by side must all match: `space nebula`.
+- `tag:pic`, `filename:dirtyfork`, `description:knight`, `uploader:inhahe` look in one field (also `tags:`, `name:`, `file:`, `desc:`, `by:`). A field before parentheses applies inside them: `tag:(art or nature)`.
+- `and`, `or` and `not`, nested with parentheses: `(tag:mod or tag:sample) and not tag:xm`. `and` binds tighter than `or`; `not` applies to what follows it.
+- Quotes keep words together: `filename:"dirty fork"`. Case, spaces and punctuation don't count, so that is the same as `filename:dirtyfork`, and either finds `DirtyFork.zip` and `Dirty Fork.txt`.
+- Without `*`, a tag or uploader must be the word, and a name or description must contain it. `*` matches anything, and then the pattern must match the whole value: `filename:*.zip`, `filename:dirty*`, `description:*knight*`, `tag:s*`.
+- A word alone doesn't match uploaders (an uploader's handle would otherwise pull in everything they uploaded): use `uploader:`.
+
+**Browse** treats tags as folders. In a folder are the further tags of its files (with how many files have them), then the files whose tags are exactly the folder's path; at the top, the untagged files. Enter opens a folder or downloads a file, Backspace goes up.
+
+**Lists** (search results, browsing, List All) show number, name, size, tags and description, a page at a time however many files match. Up/Down, PgUp/PgDn and Home/End move; typing a number and Enter goes to that file; **I** shows everything about the selected file (full description, tags, uploader, date added). **Download** asks for a name and looks it up in the catalogue (with several of that name, it lists them to choose from); it is never joined to a folder.
 
 **Transfers** use ZMODEM (`zmodem.py`, DirtyFork's own) or YMODEM-G (`lib/ymodem`). A caller is asked which only when their terminal can run both; the web terminal runs ZMODEM only, so it is used without asking. A download starts by itself in terminals that watch for ZMODEM (SyncTERM, the web terminal); in others the caller starts receiving. For an upload the BBS waits (up to two minutes) for the caller's terminal to start sending. Pressing **Ctrl+X five times** cancels either. Afterwards the screen is redrawn as it was.
 
 **Uploads** go into the library only whole and under a safe name:
 
 - The name the caller's terminal sends is cut to its last part (no folders), without characters Windows forbids, leading dots or device names (`CON`, `NUL`, `COM1` ...), and at most 120 characters.
-- A file never replaces another: a name already in the library (or the catalogue's own, `meta.yaml`) is refused, and the caller is told why.
+- A file never replaces another: a name already in the library's folder or among the uploads awaiting approval, or one the library keeps for itself (the catalogue's files, its folders), is refused, and the caller is told why.
 - A file is received under a temporary name (`.upload-*.part`, never listed) and published only when it has arrived whole; an interrupted one is deleted (and any left by a crash, at the next start).
 - `upload_max_size` (default `100 MB`) is the largest file taken, and `upload_keep_free` (default `500 MB`) the free disk space an upload must leave (`0`: none); sizes take B, KB, MB or GB. Both are checked as the data arrives, not only against the size the caller's terminal announces. An upload takes at most 20 files.
 
-A download can only be a file the library lists: a name typed at Download is looked up there, never joined to a folder.
+After an upload the caller is asked for a description and tags (from `file_tags`) for each file saved.
 
-After an upload the caller is asked for a description and keys for each file saved.
+**Vetting uploads.** A caller with the `upload_key` key (default `trusted_uploader`), or a sysop, has uploads listed at once. Anyone else's go to `files/pending` and are listed to no one, the uploader included, until a sysop deals with them in **Sysop > Vet Uploads**: the list of uploads awaiting approval, oldest first, where Enter shows one with **Approve** (moved into the library, listed), **Reject** (deleted, after a confirmation) and **Download** (to look at it first). Sysops online get a popup when such an upload arrives, and a sysop logging in is told how many are waiting. Grant the key in Sysop > Keys, or through a key group.
+
+Files you put in the library's folder yourself are catalogued (as yours, `sysop_handle`, untagged) when the BBS starts and whenever `library_sync.py` runs; files gone from it are forgotten.
+
+#### Library Sources
+
+`library_sync.py` fills the catalogue from `file_library.sources` and keeps it up to date: new files are listed, changed ones refreshed, vanished ones forgotten (and their zips deleted). Each source has a name (letters, digits, `-`, `_`), a `type` and options; every type also takes `tags` (more tags for all its files) and `scheduled` (`false`: only with `--all` or by name).
+
+| Type | Lists | Tags | Description |
+|---|---|---|---|
+| `websites` | each folder in `dir`, zipped whole (but HTTrack's cache, log, cookies and project files); `containers`: folders whose subfolders are the websites; `skip`: folders to leave out. Loose `.htm(l)` files are webpages. | web, website | the title of its index page, past HTTrack's own index and redirect pages; without one, the mirrored hosts' folder names |
+| `webpages` | every `.htm(l)` (also `.mht` etc.) in `dir` and its subfolders, zipped with its `<name>_files` folder (browsers save one). A subfolder that is a site of its own (an HTTrack mirror, an index or default page, or pages only in subfolders with no `_files` folder) is zipped whole as a website instead. `hierarchy_tags: true` adds the subfolders as tags. | web, webpage | the page's title |
+| `github` | every public repository of `user` (`include_forks: false`), each kept cloned in `files/repos`; a change is fetched and only the files git says changed are replaced in its zip | github | its GitHub description |
+| `gallery` | pictures and videos in `dir`, in place | pic or video, and each folder it is in | a picture's AI caption from thumbsup2 (`captions`: its `thumbsup.db`) |
+| `videos` | videos in `dir`, in place | video | the title from a yt-dlp file name (`Title [id].webm`) |
+| `samples` | samples and instruments in `dir`, in place; `sample_types` (default flac, xi, wav, mp3, ogg, aif(f), au, 8svx, iff, its) and `instrument_types` (ins, s3i, sbi, iti, pat, sf2, sfz, ibk, op2); other files are left out. `hierarchy_tags: true` adds the folders as tags. | sample; or instrument and the extension | none (the names say it) |
+| `mods` | tracker modules in `dir`, in place: a zip of one module (`song.xm.zip`), or a bundle of them | mod and the format (xm, it, s3m...); a bundle: mod, collection | the song title inside; a bundle: what it holds |
+
+Run it from the project directory, with the BBS's data directory:
+
+```
+python library_sync.py --data-dir me              # the scheduled sources
+python library_sync.py --data-dir me --all        # every source (the first time, and after changing samples/mods)
+python library_sync.py --data-dir me github pics  # just these
+python library_sync.py --data-dir me --dry-run    # what would change; changes nothing
+```
+
+It logs to `library_sync.log` in the data directory, needs 7-Zip (found on PATH or in Program Files; `file_library.seven_zip` to say where) for the zipped types and git for `github`, and runs one at a time. A source that can't be read (a drive not mounted, GitHub unreachable) is skipped and forgets nothing; a zip that can't be made, or replaced because a caller is downloading it, is tried again next time. A zip is made under a temporary name and put in place whole.
+
+**The scheduled task**: `register-library-sync.ps1` (`powershell -NoProfile -ExecutionPolicy Bypass -File register-library-sync.ps1 -DataDir me`) registers "DirtyFork library sync" with Task Scheduler. Unless given `-Minutes`, it first runs the sync to bring the library up to date, then times a second run, and repeats the task every 30 times that long (a slower sync runs less often), between every 15 minutes and once a day. Run it again after the sources grow, to recalibrate.
 
 ### Registration
 
@@ -310,11 +362,12 @@ Changes apply immediately to the user's live session if they're online.
 
 ### Sysop Panel
 
-The sysop panel is a menu with three management tools:
+The sysop panel is a menu with four management tools:
 
 - **Keys**: Look up a user by handle, view and edit their keys (comma-separated)
 - **Groups**: Edit key group definitions in the config YAML (using ruamel.yaml to preserve comments). Changes reload into the live config and re-expand all online users' keys
 - **Settings**: Edit any user's settings using the same settings page code
+- **Vet Uploads**: approve, reject or download the uploads awaiting approval (see File Library)
 
 Access requires the `sysop` key group (configured in `white_keys`).
 

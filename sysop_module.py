@@ -1,5 +1,6 @@
 """
-Sysop module — user key management and key group editing.
+Sysop module — user key management, key group editing, user settings, and
+vetting uploads to the file library (file.vet_uploads).
 Accessible only to users with the 'sysop' key.
 """
 
@@ -75,7 +76,7 @@ async def _lookup_handle(user, style_conf, title):
 
 async def _edit_user_keys(user, style_conf, global_data):
     """Look up a user and edit their keys."""
-    from common import Destinations, expand_keys
+    from common import expand_keys
 
     while True:
         handle, user_id = await _lookup_handle(user, style_conf, "Sysop - User Key Management")
@@ -138,7 +139,6 @@ async def _edit_user_keys(user, style_conf, global_data):
 
 async def _edit_key_groups(user, style_conf, global_data):
     """Edit key groups defined in the main config yaml."""
-    from common import expand_keys
 
     while True:
         yml, data = _load_yaml()
@@ -274,7 +274,7 @@ async def _edit_user_settings(user, style_conf):
 
 
 async def run(user, dest_conf, menu_item=None):
-    from common import Destinations, global_data
+    from common import global_data
 
     style_conf = config.input_fields.input_field
     action = None
@@ -295,5 +295,8 @@ async def run(user, dest_conf, menu_item=None):
         await _edit_key_groups(user, style_conf, global_data)
     elif action == "user_settings":
         await _edit_user_settings(user, style_conf)
+    elif action == "vet_uploads":
+        import file
+        await file.vet_uploads(user)
 
     return RetVals(status=success, next_destination=null, next_menu_item=null)

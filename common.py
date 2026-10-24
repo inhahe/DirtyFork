@@ -601,6 +601,19 @@ def setup_user_session(user, handle, user_id, time_created):
     _set_connection_encoding(user)
 
 
+async def _tell_of_pending_uploads(user):
+  """After a sysop logs in: a popup if uploads are waiting for approval. A
+  catalogue that can't be read doesn't stop the login."""
+  if 'sysop' not in user.keys:
+    return
+  try:
+    import file
+    await file.tell_sysop_of_pending(user)
+  except Exception as exc:
+    from logger import log as _log
+    _log.warning("Could not count the uploads awaiting approval: %s", exc)
+
+
 def expand_keys(keys):
   """Expand a set of keys through key_groups, resolving recursively."""
   groups = config.key_groups
@@ -918,6 +931,7 @@ class _DestinationRegistry:
           _log.info("Banned user '%s' blocked at login", user_in_db["handle"])
           await send(user, cr+lf+cr+lf + "Your account has been banned." + cr+lf, drain=True)
           return RetVals(status=fail, next_destination=self.logout, next_menu_item=null)
+        await _tell_of_pending_uploads(user)
         # Check for user-defined start destination
         start_dest = self.main
         start_item = null

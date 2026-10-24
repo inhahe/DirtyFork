@@ -224,12 +224,16 @@ def _size_text(n):
 class UploadPolicy:
   """Where uploads go and what is allowed.
 
-  directory: the library folder. reserved: names (any case) that may not be
-  taken (the catalogue, meta.yaml). max_bytes: the largest file accepted.
-  keep_free: bytes the disk must keep free after a file is stored.
+  directory: the folder uploads are saved to. reserved: names (any case)
+  that may not be taken (the catalogue's files). others: folders whose
+  files' names may not be taken either (the library folder and the folder
+  of uploads awaiting approval, between which approval moves a file).
+  max_bytes: the largest file accepted. keep_free: bytes the disk must keep
+  free after a file is stored.
   """
   directory: str
   reserved: frozenset = frozenset()
+  others: tuple = ()
   max_bytes: int = 100 * 1024 * 1024
   keep_free: int = 500 * 1024 * 1024
   saved: list = field(default_factory=list)      # names published this session
@@ -245,7 +249,8 @@ class UploadPolicy:
     if name.lower() in self.reserved:
       self.refused.append((sent_name, "that name is reserved"))
       return None
-    if os.path.exists(os.path.join(self.directory, name)) or name in self.saved:
+    if (name in self.saved
+            or any(os.path.lexists(os.path.join(d, name)) for d in (self.directory, *self.others))):
       self.refused.append((sent_name, "a file with that name is already in the library"))
       return None
     if size is not None and size > self.max_bytes:
@@ -268,6 +273,12 @@ class UploadPolicy:
     """Move a whole upload from *temp_path* into the library as *name*,
     never replacing a file. True on success."""
     final = os.path.join(self.directory, name)
+    # The other folders again: another caller's upload of this name may have
+    # arrived there since check() (approving one would then be refused).
+    if any(os.path.lexists(os.path.join(d, name)) for d in self.others):
+      self.refused.append((name, "a file with that name arrived meanwhile"))
+      os.remove(temp_path)
+      return False
     try:
       os.link(temp_path, final)  # fails if *final* exists, on every system
     except FileExistsError:
