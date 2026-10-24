@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DirtyFork BBS</title>
+<!-- xterm.js and zmodem.js from the jsDelivr CDN (bbs-local.html: the copies in bbs-term/vendor) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css"
+      integrity="sha384-n2n7twoohnW+d3myBKaUgl7DSiwidw6MkQy9oesGzkPpMjejKRR3XlnD+5yCdtBD" crossorigin="anonymous">
+<link rel="stylesheet" href="bbs-term/bbs.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.js"
+        integrity="sha384-f/1U6Z9wM4D71a5eRXEZnyOTMOvjqxr2XLwh+Go1OvIl3L3tOcvUrzudnhbECwl4" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.19.0/lib/addon-webgl.js"
+        integrity="sha384-8/2DNT7OeuMQVc7wBPoMHAQ+NmEoYSx27k7IdbsItiomGC5D9+LTrbo8jtY6YZv8" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/zmodem.js@0.1.10/dist/zmodem.js"
+        integrity="sha384-6Qiccbi3eHPw7xNX28Q+34R4wx73mn283QzX5FPxwxoAWEezH2TqDoNNJg1rz2g4" crossorigin="anonymous"></script>
+<script src="bbs-term/bbs.js"></script>
+</head>
+<body>
+<div id="bar">
+  <h1>DirtyFork BBS</h1>
+  <span id="status">Loading...</span>
+  <button id="connect" hidden>Connect again</button>
+  <label>Screen
+    <select id="size">
+      <option value="80x25">80 &times; 25</option>
+      <option value="80x43">80 &times; 43</option>
+      <option value="80x50">80 &times; 50</option>
+      <option value="132x37">132 &times; 37</option>
+      <option value="132x52">132 &times; 52</option>
+      <option value="fill">Fill the window</option>
+    </select>
+  </label>
+  <span id="pending" hidden>The new size needs a new connection (you log in again).
+    <button id="reconnect">Reconnect now</button></span>
+  <label><input type="checkbox" id="sharp"> Sharp pixels</label>
+  <button id="fullscreen">Full screen</button>
+</div>
+<div id="screen"></div>
+<div id="xfer" hidden>
+  <h2 id="xfer-title"></h2>
+  <div id="xfer-name"></div>
+  <progress id="xfer-bar" value="0" max="1"></progress>
+  <div id="xfer-count"></div>
+  <div class="buttons">
+    <label id="xfer-choose" hidden><input type="file" id="xfer-files" multiple></label>
+    <button id="xfer-cancel">Cancel</button>
+  </div>
+</div>
+</body>
+</html>

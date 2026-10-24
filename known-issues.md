@@ -22,8 +22,8 @@ Unsolved bugs and debt that couldn't be fixed when found. Fix and remove entries
 
 ## Web callers all appear to come from 127.0.0.1
 
-- **Where:** `web/jsterm_bridge.py` opens the telnet connection for each web caller, so the BBS's peer address (logs, and anything that ever uses it) is the bridge's.
-- **What:** the caller's real address reaches only the bridge (nginx's `X-Real-IP`), which logs it in `web/jsterm_bridge.log`.
+- **Where:** `web/terminal_bridge.py` opens the telnet connection for each web caller, so the BBS's peer address (logs, and anything that ever uses it) is the bridge's.
+- **What:** the caller's real address reaches only the bridge (nginx's `X-Real-IP`), which logs it in `web/terminal_bridge.log`.
 - **Fix:** have the bridge announce the caller on the connection (a PROXY protocol v1 line, or a telnet NEW-ENVIRON variable such as `IPADDRESS`), and have `DirtyFork.py` accept it only from 127.0.0.1 and record it as the caller's address.
 
 ## Modem support is untested
@@ -31,6 +31,12 @@ Unsolved bugs and debt that couldn't be fixed when found. Fix and remove entries
 - **Where:** `modem.py`, `DirtyFork.py` (`modem_listener`).
 - **What:** written against the AT command set but never run with a modem.
 - **Fix:** test with real hardware, or a null-modem pair and a terminal program that emulates one.
+
+## The screen size is read only at login
+
+- **Where:** `common.setup_terminal` (`get_screen_size`), once per connection; telnet NAWS updates are ignored.
+- **What:** a terminal resized during a session keeps the layout of its first size: growing leaves the new room unused, shrinking cuts the screen off. The web terminal therefore fixes its size for a connection (a new size needs a new one) and only scales its font with the window.
+- **Fix:** take NAWS updates (telnetlib3's `on_naws`), resize `user.screen` and the tracking, and have the activity on screen redraw itself for the new size (its `redraw_hook`, which every activity would need; menus, forms, popups and the teleconference lay themselves out from `screen_width`/`screen_height` when drawn).
 
 ## YMODEM-G uploads are untested against a real sender
 

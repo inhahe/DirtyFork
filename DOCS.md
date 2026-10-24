@@ -241,7 +241,7 @@ Multi-channel real-time chat with split-screen display. Users can join channels 
 
 File management with search, browse, list, upload, and download capabilities. Files are tagged with keys and descriptions via `files/meta.yaml`.
 
-**Transfers** use ZMODEM (`zmodem.py`, DirtyFork's own) or YMODEM-G (`lib/ymodem`). A caller is asked which only when their terminal can run both; one whose terminal runs neither (the web terminal) is told so. A download starts by itself in terminals that watch for ZMODEM (SyncTERM); in others the caller starts receiving. For an upload the BBS waits (up to two minutes) for the caller's terminal to start sending. Pressing **Ctrl+X five times** cancels either. Afterwards the screen is redrawn as it was.
+**Transfers** use ZMODEM (`zmodem.py`, DirtyFork's own) or YMODEM-G (`lib/ymodem`). A caller is asked which only when their terminal can run both; the web terminal runs ZMODEM only, so it is used without asking. A download starts by itself in terminals that watch for ZMODEM (SyncTERM, the web terminal); in others the caller starts receiving. For an upload the BBS waits (up to two minutes) for the caller's terminal to start sending. Pressing **Ctrl+X five times** cancels either. Afterwards the screen is redrawn as it was.
 
 **Uploads** go into the library only whole and under a safe name:
 
@@ -329,7 +329,7 @@ During connection setup, the BBS detects the terminal type via telnet TTYPE nego
 - Unknown terminals default to CP437
 - User's saved encoding preference overrides auto-detection after login
 
-The terminal type also decides how bright backgrounds are asked for: the blink attribute for BBS terminals (CP437, SyncTERM), the codes for bright background colours for xterm-family ones (which would blink instead); and which file transfer protocols are offered.
+The terminal type also decides how bright backgrounds are asked for: the blink attribute for BBS terminals (CP437, SyncTERM), the codes for bright background colours for xterm-family ones (which would blink instead); and which file transfer protocols are offered (the web terminal, `XTERMJS`, runs ZMODEM only).
 
 ### Mouse
 
@@ -343,23 +343,24 @@ Menus, forms and popups take clicks. The BBS asks for mouse reports in SGR form 
 
 ## Web Terminal
 
-Callers without a telnet program can use the BBS from a web page: a browser terminal (jsTerm, an ANSI/CP437 terminal drawn on a canvas) that reaches the BBS on its ordinary telnet port. A browser cannot open a telnet connection itself, so the page talks WebSocket to a small bridge, `web/jsterm_bridge.py`, which telnets to the BBS for it. The BBS needs no change and no restart: to it, a web caller is one more telnet caller.
+Callers without a telnet program can use the BBS from a web page: a full terminal in the browser (xterm.js, with the IBM VGA font) that reaches the BBS on its ordinary telnet port, with the mouse, file transfers (ZMODEM, by zmodem.js) and a choice of screen sizes. A browser cannot open a telnet connection itself, so the page talks WebSocket to a small bridge, `web/terminal_bridge.py`, which telnets to the BBS for it. To the BBS, a web caller is one more telnet caller.
 
 ```
-browser (bbs.html, jsTerm) --wss://host/bbs-ws--> nginx --> web/jsterm_bridge.py (127.0.0.1:8023) --telnet--> BBS (127.0.0.1:23)
+browser (bbs.html: xterm.js, zmodem.js) --wss://host/bbs-ws--> nginx --> web/terminal_bridge.py (127.0.0.1:8023) --telnet--> BBS (127.0.0.1:23)
 ```
 
 **On inhahe.com** (the sysop's own setup):
 
-- **The page**: `https://inhahe.com/bbs.html`, from `D:\mypage\inhahe.com`: `bbs.html`, and `jsterm\` for jsTerm itself, its font, and the page's script (`jsterm\bbs.js`). `jsterm\README.txt` says where jsTerm came from and what was changed in it. The page connects as soon as it loads, shows whether it is connected, and offers to connect again after a disconnect.
-- **jQuery**, the one file jsTerm takes from the web: `bbs.html` loads it from `code.jquery.com` (with an integrity hash). `bbs-local.html` is the same page using the copy in `jsterm\vendor\` instead, for when the web copy is unwanted or unreachable; copy it over `bbs.html` to switch.
+- **The page**: `https://inhahe.com/bbs.html`. Its files live in this project, `web/site/` (the page, `bbs-term/` with its script, style sheet, font and vendored libraries, and `bbs-term/README.txt` on where each came from), and `web\deploy-site.ps1` copies them into the site, `D:\mypage\inhahe.com`; run it again after changing them.
+- **The libraries**: `bbs.html` loads xterm.js and zmodem.js from the jsDelivr CDN (with integrity hashes). `bbs-local.html` is the same page using the copies in `bbs-term/vendor/` instead, for when the CDN is unwanted or unreachable; copy it over `bbs.html` to switch. (`tests/test_web_site.py` checks that the two stay the same page and that the copies are the CDN's files.)
 - **nginx** (in WSL, `/etc/nginx/sites-enabled/inhahe.com`) passes `/bbs-ws` to the bridge, upgrading it to a WebSocket, so the page works over both `https` (as `wss://`) and `http`, through the site's own certificate and port.
-- **The bridge** runs from logon as the Task Scheduler task "DirtyFork web bridge", registered (and started) by `web\register-bridge.ps1` with the project's own Python (`env\`); the task also fires every 5 minutes, so a bridge that stopped is back within 5 minutes. It runs independently of the BBS: while the BBS is down, web callers are told so. It accepts pages from inhahe.com and www.inhahe.com only. It logs to `web\jsterm_bridge.log`, why it stopped included.
+- **The bridge** runs from logon as the Task Scheduler task "DirtyFork web bridge", registered (and started) by `web\register-bridge.ps1` with the project's own Python (`env\`); the task also fires every 5 minutes, so a bridge that stopped is back within 5 minutes. It runs independently of the BBS: while the BBS is down, web callers are told so. It accepts pages from inhahe.com and www.inhahe.com only. It logs to `web\terminal_bridge.log`, why it stopped included.
+- **Trying changes** to the page without nginx: `python web/preview.py --bbs 127.0.0.1:23` serves `web/site` and the bridge on one port, `http://127.0.0.1:8099/bbs.html`.
 
 **To set it up elsewhere:**
 
-1. `pip install "websockets>=13"` (it is in `requirements.txt`).
-2. Run the bridge: `powershell -NoProfile -ExecutionPolicy Bypass -File web\register-bridge.ps1 -Origins https://your.site` (it uses `env\`'s Python when there is one, else the `python` on PATH; also `-Listen 127.0.0.1:8023 -Bbs 127.0.0.1:23`; re-running it applies new settings to the running bridge), or by hand: `python web/jsterm_bridge.py --listen ... --bbs ... [--origin URL ...] [--max-clients 50] [--max-per-address 4] [--log path]`.
+1. `pip install -r requirements.txt` (the bridge needs `websockets` 13 or later).
+2. Run the bridge: `powershell -NoProfile -ExecutionPolicy Bypass -File web\register-bridge.ps1 -Origins https://your.site` (it uses `env\`'s Python when there is one, else the `python` on PATH; also `-Listen 127.0.0.1:8023 -Bbs 127.0.0.1:23`; re-running it applies new settings to the running bridge), or by hand: `python web/terminal_bridge.py --listen ... --bbs ... [--origin URL ...] [--max-clients 50] [--max-per-address 4] [--log path]`.
 3. Proxy a path to it in the web server, as a WebSocket:
 
    ```nginx
@@ -375,13 +376,19 @@ browser (bbs.html, jsTerm) --wss://host/bbs-ws--> nginx --> web/jsterm_bridge.py
    }
    ```
 
-4. Put `bbs.html` and `jsterm/` in the site. The page connects to `/bbs-ws` on its own host, and only there: an address taken from the page's URL would let a crafted link send a caller's typing, password included, to someone else's server.
+4. Run `web\deploy-site.ps1 -Root <the site's folder>` (or copy `web/site/` there). The page connects to `/bbs-ws` on its own host, and only there: an address taken from the page's URL would let a crafted link send a caller's typing, password included, to someone else's server.
 
-**What callers get**: an 80x25 CP437 ANSI terminal (it reports its type as `ANSI-JSTERM`, which the BBS reads as CP437, and its size on request), typing as on a keyboard (letters, punctuation and accented letters CP437 has; arrows, Home/End, PgUp/PgDn, Insert/Delete, F1-F10, Ctrl+letter; Ctrl+V pastes). F11 and F12 stay with the browser (full screen, developer tools).
+**What callers get**:
 
-**Limits**: no file transfers (the browser terminal has no ZMODEM; a web caller who picks Upload or Download is told to connect with a terminal program instead), and no mouse (it sends no clicks). The BBS sees every web caller as coming from the bridge (see `known-issues.md`); the bridge's log records their real addresses.
+- An xterm-compatible terminal reporting its type as `XTERMJS`, which the BBS reads as UTF-8 (so any character can be typed and shown), with bright backgrounds as colours, and ZMODEM as its only transfer protocol. Keys are an xterm's; Ctrl+V pastes, and Ctrl+C copies when text is selected (shift-drag selects while the BBS has the mouse).
+- **Mouse**: clicks in menus, forms and popups, as in SyncTERM.
+- **Screen size**: 80x25 (the default), 80x43, 80x50, 132x37, 132x52, or *Fill the window* (as many rows and columns as fit, at least 80x25). The size is fixed for a connection, since the BBS reads it at login: changing it offers to reconnect. The font is scaled to fill the window whenever it changes size, in whole screen pixels when *Sharp pixels* is on (the default). The choices are remembered in the browser.
+- **File transfers**: a download is saved by the browser as soon as it arrives. For an upload a panel opens to choose the files (or drop them on it). The panel shows progress and can cancel; so can Ctrl+X five times.
+- **Full screen** button; the bar above says whether it is connected and offers to connect again after a disconnect.
 
-**What the bridge guards against**: it connects only to the BBS it was started for, whatever the page asks, so it relays nowhere else. It takes at most `--max-clients` web callers at once (default 50) and `--max-per-address` from one address (default 4; behind nginx the address is `X-Real-IP`, trusted only from this machine); the next is asked to try later. A socket that says nothing for 10 seconds is closed, so idle sockets cannot hold every slot. With `--origin` given, pages from other sites are refused, so they cannot use their visitors' browsers to fill it.
+**Limits**: the BBS sees every web caller as coming from the bridge (see `known-issues.md`); the bridge's log records their real addresses. A download is held in the browser's memory until saved whole, so the upload limit is a sensible bound for files offered too.
+
+**What the bridge guards against**: it connects only to the BBS it was started for, so it relays nowhere else, and a page must use its WebSocket subprotocol (`dirtyfork-terminal`) and send a screen size within limits first. It takes at most `--max-clients` web callers at once (default 50) and `--max-per-address` from one address (default 4; behind nginx the address is `X-Real-IP`, trusted only from this machine); the next is asked to try later. A socket that says nothing for 10 seconds is closed, so idle sockets cannot hold every slot. With `--origin` given, pages from other sites are refused, so they cannot use their visitors' browsers to fill it.
 
 ---
 

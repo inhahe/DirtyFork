@@ -5,11 +5,11 @@
 #   Stop-ScheduledTask -TaskName 'DirtyFork web bridge'          # stop it (it comes back within 5 minutes)
 #   Unregister-ScheduledTask -TaskName 'DirtyFork web bridge' -Confirm:$false   # remove it
 #
-# The bridge (web\jsterm_bridge.py) carries the browser terminal at inhahe.com/bbs.html
+# The bridge (web\terminal_bridge.py) carries the web terminal at inhahe.com/bbs.html
 # to the BBS: nginx hands it wss://inhahe.com/bbs-ws, and it telnets to the BBS. It runs
 # from logon, independently of the BBS: while the BBS is down, callers are told so.
 # It runs as the current user, only while logged on (no stored password), with pythonw
-# so no console window appears, and logs to web\jsterm_bridge.log.
+# so no console window appears, and logs to web\terminal_bridge.log.
 #
 # Task Scheduler's "restart on failure" covers only a task that fails to start, not a
 # program that exits, so the task also fires every 5 minutes: while the bridge runs the
@@ -43,7 +43,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $haveWebsockets) { throw "$py lacks websockets 13 or later: $py -m pip install -r requirements.txt" }
 
 $name = 'DirtyFork web bridge'
-$arguments = "web\jsterm_bridge.py --listen $Listen --bbs $Bbs" + (($Origins | ForEach-Object { " --origin $_" }) -join '')
+$arguments = "web\terminal_bridge.py --listen $Listen --bbs $Bbs" + (($Origins | ForEach-Object { " --origin $_" }) -join '')
 $action = New-ScheduledTaskAction -Execute $pyw -WorkingDirectory $root -Argument $arguments
 $triggers = @(
     (New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"),
@@ -72,7 +72,7 @@ if (Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyCon
 
 Register-ScheduledTask -TaskName $name -Action $action -Trigger $triggers -Settings $settings `
     -Principal $principal -Force `
-    -Description "WebSocket-to-telnet bridge for the DirtyFork BBS web terminal (inhahe.com/bbs.html): $root\web\jsterm_bridge.py, $Listen -> BBS at $Bbs." | Out-Null
+    -Description "WebSocket-to-telnet bridge for the DirtyFork BBS web terminal (inhahe.com/bbs.html): $root\web\terminal_bridge.py, $Listen -> BBS at $Bbs." | Out-Null
 Start-ScheduledTask -TaskName $name
 
 Get-ScheduledTask -TaskName $name | Select-Object TaskName, State,

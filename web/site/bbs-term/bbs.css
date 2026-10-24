@@ -1,0 +1,90 @@
+/* The DirtyFork BBS web terminal page (bbs.html, bbs-local.html). */
+@font-face {
+    font-family: "WebPlus IBM VGA 8x16";
+    src: url("fonts/WebPlus_IBM_VGA_8x16.woff") format("woff");
+}
+
+html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    color: #aaa;
+    font: 14px/1.4 system-ui, sans-serif;
+    overflow: hidden;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+}
+
+#bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 14px;
+    padding: 4px 10px;
+    background: #111;
+    border-bottom: 1px solid #333;
+}
+
+#bar h1 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #ddd;
+}
+
+#bar label { white-space: nowrap; }
+#status { flex: 1; min-width: 12em; }
+#pending { color: #ffff55; }
+
+button, select {
+    font: inherit;
+    color: #ddd;
+    background: #222;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 1px 8px;
+}
+
+button:hover, select:hover { border-color: #888; }
+
+/* The terminal is centred in all the room left; its font is sized to fit */
+#screen {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+}
+
+#screen .xterm { padding: 0; }
+#screen .xterm-viewport { overflow-y: hidden; }
+
+/* The file transfer panel, over the terminal */
+#xfer {
+    position: fixed;
+    z-index: 100;  /* above xterm.js's own layers, which would take its clicks */
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(32em, 90vw);
+    padding: 14px 18px;
+    background: #0000aa;
+    color: #fff;
+    border: 2px solid #55ffff;
+    box-shadow: 0 0 0 4px #000;
+    font-family: "WebPlus IBM VGA 8x16", monospace;
+    font-size: 16px;
+}
+
+#xfer h2 { margin: 0 0 8px; font-size: 16px; color: #ffff55; font-weight: normal; }
+#xfer-name { min-height: 1.4em; overflow-wrap: anywhere; }
+#xfer progress { width: 100%; height: 14px; margin: 6px 0 2px; }
+#xfer .buttons { margin-top: 10px; display: flex; gap: 10px; justify-content: flex-end; }
+#xfer-choose { display: inline-block; }
+#xfer-choose input { color: #fff; }
+
+[hidden] { display: none !important; }

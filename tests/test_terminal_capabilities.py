@@ -18,7 +18,7 @@ class DetectTerminal(unittest.TestCase):
 
     def test_each_kind_of_terminal(self):
         for ttype, expected in (
-                ("ANSI-JSTERM", ("cp437", frozenset())),  # the web terminal: none
+                ("XTERMJS", ("utf-8", frozenset({"zmodem"}))),  # the web terminal
                 ("xterm-256color", ("utf-8", None)),
                 ("ansi-bbs", ("cp437", None)),
                 ("SyncTERM", ("cp437", None))):

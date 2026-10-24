@@ -751,10 +751,9 @@ _UTF8_TERMINALS = {"xterm", "xterm-256color", "vt100", "vt220", "linux",
                    "putty"}
 _CP437_TERMINALS = {"ansi", "ansi-bbs", "avatar", "pcansi"}
 # Terminals that can run only some transfer protocols (type substring -> those).
-# The web terminal (web/jsterm_bridge.py) reports "ANSI-JSTERM" and can run
-# none: a transfer would only fill its screen with protocol bytes and swallow
-# the caller's keys until the receiver gave up.
-_TERMINAL_TRANSFER_PROTOCOLS = {"jsterm": frozenset()}
+# The web terminal (web/terminal_bridge.py) reports "XTERMJS": zmodem.js does
+# ZMODEM only, and a YMODEM-G transfer would hang it.
+_TERMINAL_TRANSFER_PROTOCOLS = {"xtermjs": frozenset({"zmodem"})}
 
 async def detect_terminal(user):
   """From the terminal type (telnet TTYPE): the encoding (CP437 if unknown),

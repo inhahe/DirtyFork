@@ -5,7 +5,7 @@ ruamel.yaml
 telnetlib3>=5
 pyserial-asyncio
 bcrypt
-# for web/jsterm_bridge.py (the web terminal)
+# for web/terminal_bridge.py (the web terminal)
 websockets>=13
 # for lib/ymodem (YMODEM-G transfers)
 ordered-set
