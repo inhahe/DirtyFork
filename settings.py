@@ -3,7 +3,6 @@ User Settings page — lets users view and edit their profile and preferences.
 Settings are stored in the user's YAML config file (user_configs/{handle}.yaml).
 """
 
-import json
 import os
 from ruamel.yaml import YAML
 _yaml = YAML()
@@ -16,7 +15,6 @@ from config import get_config
 import paths
 
 config = get_config()
-time_zones = json.load(open(os.path.join(os.path.dirname(__file__), "time_zones.json"), "r"))
 
 # Field types
 TEXT = "text"

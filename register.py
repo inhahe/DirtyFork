@@ -17,7 +17,8 @@ import paths
 
 config = get_config()
 register_config = get_config(path=paths.resolve_project("register.yaml"))
-time_zones = json.load(open(os.path.join(os.path.dirname(__file__), "time_zones.json"), "r"))
+with open(os.path.join(os.path.dirname(__file__), "time_zones.json"), encoding="utf-8") as _zones:
+  time_zones = json.load(_zones)
 
 FIELD_NAMES = ["handle", "password", "age", "sex", "location", "time_zone", "email", "bio"]
 
