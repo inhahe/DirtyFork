@@ -26,6 +26,24 @@ Unsolved bugs and debt that couldn't be fixed when found. Fix and remove entries
 - **What:** the caller's real address reaches only the bridge (nginx's `X-Real-IP`), which logs it in `web/jsterm_bridge.log`.
 - **Fix:** have the bridge announce the caller on the connection (a PROXY protocol v1 line, or a telnet NEW-ENVIRON variable such as `IPADDRESS`), and have `DirtyFork.py` accept it only from 127.0.0.1 and record it as the caller's address.
 
+## ZMODEM downloads always fail
+
+- **Where:** `file_transfer.send_file_zmodem` calls `modem.send(f)` on `lib/modem`'s `ZMODEM`, which (like its base `Modem`) has no `send`: the vendored ZMODEM only receives.
+- **What:** every ZMODEM download ends in an `AttributeError` (logged as "ZMODEM send error") and the caller sees "Transfer failed." YMODEM-G downloads are unaffected. Found by the code review of the web terminal (2026-10-23), confirmed in the code, not yet reproduced with a client.
+- **Fix:** a ZMODEM sender: from a later revision of the library if one has it (see `lib/README.md`), or another implementation (an `sz` subprocess bridged like a door, or a Python one).
+
+## ZMODEM uploads die on a 60-second pause
+
+- **Where:** `file_transfer._make_getc` returns `None` on a timeout; `lib/modem`'s receive loop (`_recv_raw`) expects `''` or `const.TIMEOUT`, and `lib/modem/const.py` defines `TIMEOUT` twice (`None`, then `-1`, which wins).
+- **What:** when no byte arrives within the timeout, the receiver calls `ord(None)` and the upload ends with a `TypeError` instead of retrying. Found by the same review, confirmed in the code.
+- **Fix:** have `getc` return what the library expects on a timeout (or fix the duplicate constant in the vendored copy and note it in `lib/README.md`).
+
+## No five-Ctrl+X abort during transfers
+
+- **Where:** `file_transfer.py` defines `CAN_BYTE`, `CAN_CHAR` and `CAN_COUNT_THRESHOLD` (five CANs = the user aborts) and never uses them.
+- **What:** a caller cannot abort a stuck transfer the standard way; it ends only when the protocol gives up.
+- **Fix:** watch the input during a transfer for five consecutive CAN bytes and cancel the transfer task; or remove the constants if the library's own handling is relied on.
+
 ## Modem support is untested
 
 - **Where:** `modem.py`, `DirtyFork.py` (`modem_listener`).
