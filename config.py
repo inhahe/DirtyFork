@@ -8,7 +8,7 @@
 # note that there's currently no way to distinguish between a value being defined as null and the value 
 #  not existing.
 
-import os, pathlib
+import os
 from collections import defaultdict
 from collections.abc import Mapping, Iterable
 from string import Formatter
@@ -247,17 +247,29 @@ class ConfigView(Mapping):
 
         self._write_to = write_to
 
+    def __contains__(self, key):
+        """Whether a layer has *key*: a Config among its own keys, a view in
+        one of its layers. (Mapping's would ask __getitem__, which answers
+        null for a missing key instead of raising: every key would seem to
+        be there.)"""
+        return any(dict.__contains__(layer, key) if isinstance(layer, Config) else key in layer
+                   for layer in self._layers)
+
     def __getitem__(self, key):
         for layer in self._layers:
             if key in layer:
                 value = layer[key]
 
-                # Nested mapping → return another view
-                if isinstance(value, Config):
+                # A section: a view of it in each layer that has it as one,
+                # in order (a view's section is a view), so what one lacks
+                # falls through to the next.
+                if isinstance(value, (Config, ConfigView)):
                     nested_layers = []
                     for l in self._layers:
-                        if key in l and isinstance(l[key], Config):
-                            nested_layers.append(l[key])
+                        if key in l:
+                            section = l[key]
+                            if isinstance(section, (Config, ConfigView)):
+                                nested_layers.append(section)
                     return ConfigView(*nested_layers, _root=self._root)
 
                 result = self._resolve(value)
