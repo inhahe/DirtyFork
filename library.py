@@ -73,7 +73,7 @@ class Library:
   upload_key: str = DEFAULT_UPLOAD_KEY
   sysop_handle: str = ""
   sources: dict = field(default_factory=dict)
-  legacy_meta: str = ""  # the YAML catalogue the library had before (take_legacy_meta)
+  legacy_meta: str = ""  # the YAML catalogue the library had before (read_legacy_meta)
 
   @property
   def sync_lock(self):
@@ -83,10 +83,12 @@ class Library:
   def reserved_names(self):
     """Names (lower case) an upload may not take in the library folder, and
     that are never catalogued from it: the folders the library keeps there
-    (which may not exist yet), and, if the catalogue was put there itself,
-    its files and the sync's lock."""
+    (which may not exist yet), the old catalogue (read_legacy_meta) and, if
+    the catalogue was put there itself, its files and the sync's lock."""
     names = set()
     folder = os.path.normcase(os.path.abspath(self.files_dir))
+    if self.legacy_meta and os.path.normcase(os.path.dirname(os.path.abspath(self.legacy_meta))) == folder:
+      names.add(os.path.basename(self.legacy_meta).lower())
     catalog_dir = os.path.dirname(os.path.abspath(self.catalog))
     if os.path.normcase(catalog_dir) == folder:
       base = os.path.basename(self.catalog).lower()
@@ -750,8 +752,9 @@ def reconcile_uploads(lib, con, temp_prefix):
         con.execute("UPDATE files SET size = ?, mtime = ? WHERE id = ?", (size, mtime, row["id"]))
     for path, row in known.items():
       if path not in on_disk:
-        remove(con, row["id"])
-        forgotten += 1
+        # (by root too: an upload approved meanwhile has left this one)
+        if con.execute("DELETE FROM files WHERE id = ? AND root = ?", (row["id"], root)).rowcount:
+          forgotten += 1
   con.commit()
   return added, forgotten
 
@@ -791,7 +794,12 @@ def move_new(source, target, temp_prefix):
     finally:
       with contextlib.suppress(FileNotFoundError):
         os.remove(temp)
-  os.remove(source)
+  try:
+    os.remove(source)
+  except OSError:  # (in use: undone, so the move is all or nothing)
+    with contextlib.suppress(OSError):
+      os.remove(target)
+    raise
   return True
 
 
@@ -852,11 +860,12 @@ def reject(lib, con, file_id):
   return None
 
 
-def take_legacy_meta(lib, temp_prefix):
+def read_legacy_meta(lib):
   """The catalogue the library had before this one (files_meta, by default
-  files/meta.yaml: {name: {keys: [...], description: "..."}}), moved out of
-  the library folder into the catalogue's (so it is read once and never
-  listed). Returns its {name: (tags, description)}, {} if there is none."""
+  files/meta.yaml: {name: {keys: [...], description: "..."}}), as
+  {name: (tags, description)}; {} if there is none. It stays where it is
+  (never listed: reserved_names) until retire_legacy_meta, once its
+  details are applied, so a start that fails before then tries again."""
   path = lib.legacy_meta
   if not path or not os.path.isfile(path):
     return {}
@@ -866,10 +875,6 @@ def take_legacy_meta(lib, temp_prefix):
       data = yaml.safe_load(f) or {}
   except (OSError, yaml.YAMLError, UnicodeError):
     return {}
-  kept = os.path.join(os.path.dirname(os.path.abspath(lib.catalog)), os.path.basename(path) + ".imported")
-  with contextlib.suppress(OSError):
-    if not move_new(path, kept, temp_prefix):
-      os.remove(path)
   details = {}
   if isinstance(data, dict):
     for name, entry in data.items():
@@ -880,9 +885,21 @@ def take_legacy_meta(lib, temp_prefix):
   return details
 
 
+def retire_legacy_meta(lib, temp_prefix):
+  """Move the old catalogue (read_legacy_meta) into the catalogue's folder,
+  as "meta.yaml.imported" (or, if that is taken, with the time after it):
+  read once, kept."""
+  path = lib.legacy_meta
+  if not path or not os.path.isfile(path):
+    return
+  kept = os.path.join(os.path.dirname(os.path.abspath(lib.catalog)), os.path.basename(path) + ".imported")
+  if not move_new(path, kept, temp_prefix):
+    move_new(path, kept + time.strftime("-%Y%m%d-%H%M%S"), temp_prefix)
+
+
 def apply_legacy_meta(con, details):
   """Give the library folder's entries of those names the tags and
-  descriptions of take_legacy_meta, where they have neither. Returns how
+  descriptions of read_legacy_meta, where they have neither. Returns how
   many. Commits."""
   n = 0
   for row in con.execute("SELECT id, path FROM files WHERE root = ? AND tag_count = 0 AND description = ''",

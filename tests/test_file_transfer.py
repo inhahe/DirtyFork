@@ -223,10 +223,13 @@ class LibraryFiles(unittest.TestCase):
             sent.assert_not_awaited()
             self.assertIn("No file in the library", shown.await_args.args[1], typed)
 
-    def upload(self, user, names, answers):
-        """_upload_file, as if *names* arrived and the caller typed *answers*."""
+    def upload(self, user, names, answers, during=None, tell=None):
+        """_upload_file, as if *names* arrived and the caller typed *answers*
+        (an exception among them is raised instead; during() runs before each
+        answer). Returns (the sysops' popups, the caller's message boxes); with
+        *tell*, that is what pages the sysops instead."""
         f = self.file
-        popups = []
+        popups, messages = [], []
 
         async def receive(user, policy):
             for name in names:
@@ -237,17 +240,25 @@ class LibraryFiles(unittest.TestCase):
         answers = iter(answers)
 
         async def read_line(user, max_len=200):
-            return next(answers)
+            if during:
+                during()
+            answer = next(answers)
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
 
         async def tell_sysops(text):
             popups.append(text)
+
+        async def show(user, text, *args, **kwargs):
+            messages.append(text)
         with mock.patch.object(f, "_choose_protocol", mock.AsyncMock(return_value="zmodem")), \
                 mock.patch.object(f, "receive_files_zmodem", receive), \
-                mock.patch.object(f, "show_message_box", mock.AsyncMock()), \
-                mock.patch.object(f, "_tell_sysops", tell_sysops), \
+                mock.patch.object(f, "show_message_box", show), \
+                mock.patch.object(f, "_tell_sysops", tell or tell_sysops), \
                 mock.patch.object(f, "_read_line", read_line):
             asyncio.run(f._upload_file(user))
-        return popups
+        return popups, messages
 
     def catalogued(self, name):
         con = self.library.connect(self.lib)
@@ -260,7 +271,7 @@ class LibraryFiles(unittest.TestCase):
     def test_a_trusted_upload_is_listed_at_once(self):
         user = self.user("alice", {"trusted_uploader"})
         valid = self.file._valid_tags()
-        popups = self.upload(user, ["mine.bin"], ["my description", f"2, {valid[0].upper()}, nonesuch, 2"])
+        popups, _ = self.upload(user, ["mine.bin"], ["my description", f"2, {valid[0].upper()}, nonesuch, 2"])
         e = self.catalogued("mine.bin")
         self.assertEqual((e.root, e.uploader, e.description), ("uploads", "alice", "my description"))
         self.assertEqual(e.tags, (valid[1], valid[0]))
@@ -269,7 +280,7 @@ class LibraryFiles(unittest.TestCase):
 
     def test_anyone_elses_waits_for_approval_and_the_sysops_are_told(self):
         user = self.user("mallory")
-        popups = self.upload(user, ["tool.exe"], ["useful", ""])
+        popups, _ = self.upload(user, ["tool.exe"], ["useful", ""])
         e = self.catalogued("tool.exe")
         self.assertEqual((e.root, e.uploader, e.description), ("pending", "mallory", "useful"))
         self.assertTrue(os.path.isfile(os.path.join(self.lib.pending_dir, "tool.exe")))
@@ -290,42 +301,14 @@ class LibraryFiles(unittest.TestCase):
             self.assertEqual(fh.read(), b"a game")
 
     def test_the_sysops_hear_of_an_upload_once_its_details_are_in(self):
-        f = self.file
         seen = []
 
         async def tell_sysops(text):
             seen.append(self.catalogued("tool.exe").description)
-        with mock.patch.object(f, "_tell_sysops", tell_sysops):
-            self.upload_only(self.user("mallory"), ["tool.exe"], ["useful", ""])
+        self.upload(self.user("mallory"), ["tool.exe"], ["useful", ""], tell=tell_sysops)
         self.assertEqual(seen, ["useful"])
 
-    def upload_only(self, user, names, answers, during=None):
-        """_upload_file with its sysop paging as patched by the caller."""
-        f = self.file
-
-        async def receive(user, policy):
-            for name in names:
-                if policy.check(name, 1):
-                    self.write(policy.directory, name, b"data")
-                    policy.saved.append(name)
-            return f.RetVals(status=f.success, message="Transfer complete.")
-        answers = iter(answers)
-
-        async def read_line(user, max_len=200):
-            if during:
-                during()
-            answer = next(answers)
-            if isinstance(answer, BaseException):
-                raise answer
-            return answer
-        with mock.patch.object(f, "_choose_protocol", mock.AsyncMock(return_value="zmodem")), \
-                mock.patch.object(f, "receive_files_zmodem", receive), \
-                mock.patch.object(f, "show_message_box", mock.AsyncMock()), \
-                mock.patch.object(f, "_read_line", read_line):
-            asyncio.run(f._upload_file(user))
-
     def test_an_upload_rejected_while_its_details_are_asked_for(self):
-        f = self.file
 
         def reject():  # (the sysop, quicker than the uploader)
             con = self.library.connect(self.lib)
@@ -335,23 +318,23 @@ class LibraryFiles(unittest.TestCase):
                     self.assertIsNone(self.library.reject(self.lib, con, e.id))
             finally:
                 con.close()
-        with mock.patch.object(f, "_tell_sysops", mock.AsyncMock()):
-            self.upload_only(self.user("mallory"), ["tool.exe"], ["useful", "1"], during=reject)
+        popups, messages = self.upload(self.user("mallory"), ["tool.exe"], ["useful", "1"], during=reject)
         self.assertIsNone(self.catalogued("tool.exe"))
+        self.assertIn("No longer in the library", messages[-1])  # (not "catalogued successfully")
+        self.assertEqual(popups, [])  # (nothing waits for the sysops)
 
     def test_a_caller_leaving_mid_details_still_has_the_sysops_told(self):
         f = self.file
         told = mock.AsyncMock()
-        with mock.patch.object(f, "_tell_sysops", told), self.assertRaises(f.Disconnected):
-            self.upload_only(self.user("mallory"), ["tool.exe"], [f.Disconnected()])
+        with self.assertRaises(f.Disconnected):
+            self.upload(self.user("mallory"), ["tool.exe"], [f.Disconnected()], tell=told)
         told.assert_awaited_once()
         self.assertTrue(self.catalogued("tool.exe").pending)
 
     def test_a_superscript_two_at_the_tag_prompt(self):
         # ("²".isdigit(), but int() refuses it: an AZERTY keyboard's top-left key)
         f = self.file
-        with mock.patch.object(f, "_tell_sysops", mock.AsyncMock()):
-            self.upload_only(self.user("mallory"), ["tool.exe"], ["useful", "², 1"])
+        self.upload(self.user("mallory"), ["tool.exe"], ["useful", "², 1"])
         self.assertEqual(self.catalogued("tool.exe").tags, (f._valid_tags()[0],))
 
     def vet(self, file_id, keys):
@@ -395,6 +378,55 @@ class LibraryFiles(unittest.TestCase):
             asyncio.run(items.load(0, 8))
             asyncio.run(items.load(1, 9))  # (one more row: past the cache's size)
         self.assertEqual([items.item(i)[0] for i in range(1, 9)], ["file"] * 8)
+
+    def test_a_sysop_who_refuses_pages_still_hears_of_an_upload(self):
+        import common
+        f = self.file
+        sysop, caller = self.user("boss", {"sysop"}), self.user("someone")
+        sent = mock.AsyncMock(return_value=(True, None))
+        with mock.patch.dict(common.global_data.users, {"boss": sysop, "someone": caller}, clear=True), \
+                mock.patch("bbs_msg.send_popup", sent):
+            asyncio.run(f._tell_sysops("x uploaded y"))
+        sent.assert_awaited_once()
+        self.assertIs(sent.await_args.args[0], sysop)
+        self.assertTrue(sent.await_args.kwargs.get("skip_checks"))  # (allow_pages: false doesn't stop it)
+
+    def test_a_tenth_digit_keeps_the_number_typed(self):
+        from array import array
+        f = self.file
+        items = f._Items(array("q", range(1, 16)))
+        keys = iter(list("200000000") + ["0"] + ["\x08"] * 8 + ["\r", "\r"])  # (go to file 2, open it)
+
+        async def key(user, *args, **kwargs):
+            return next(keys)
+
+        async def fetch(work, ids):
+            return [self.library.Entry(id=i, root="uploads", path=f"{i}.zip", name=f"{i}.zip", size=1,
+                                       mtime=0, description="", uploader="", added=0, source=None,
+                                       source_key=None, fingerprint=None, tags=()) for i in ids]
+        with mock.patch.object(f, "get_input_key", key), mock.patch.object(f, "_db", fetch):
+            action, item, _ = asyncio.run(f._show_list(self.user(), items, "t", "controls"))
+        self.assertEqual((action, item[1].name), ("open", "2.zip"))
+
+    def test_sizes_fit_their_column(self):
+        f = self.file
+        for size in (0, 1023, 1024 ** 2 - 1, 999 * 1024 ** 2, 9 * 1024 ** 3, 100 * 1024 ** 3,
+                     1023 * 1024 ** 3 + 10 ** 6, 5 * 1024 ** 4, 999 * 1024 ** 4):
+            self.assertLessEqual(len(f._format_size(size)), 7, size)
+
+    def test_the_search_counts_the_files_once(self):
+        f = self.file
+        queries = iter(["tag:none", "also:", "nothing", ""])
+        counted = []
+        real = self.library.listed_count
+
+        async def form(user, query, count):
+            return next(queries)
+        with mock.patch.object(f, "_search_form", form), \
+                mock.patch.object(f, "show_message_box", mock.AsyncMock()), \
+                mock.patch.object(self.library, "listed_count", lambda con: counted.append(1) or real(con)):
+            asyncio.run(f._search_files(self.user()))
+        self.assertEqual(counted, [1])
 
     def test_a_sysop_logging_in_hears_of_uploads_waiting(self):
         f = self.file

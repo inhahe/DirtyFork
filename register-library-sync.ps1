@@ -36,7 +36,8 @@ if (Test-Path (Join-Path $venv 'python.exe')) {
 }
 $pyw = Join-Path (Split-Path -Parent $py) 'pythonw.exe'
 if (-not (Test-Path $pyw)) { throw "pythonw.exe not found next to $py" }
-$data = (Resolve-Path (Join-Path $root $DataDir)).Path
+$data = if ([IO.Path]::IsPathRooted($DataDir)) { $DataDir } else { Join-Path $root $DataDir }
+$data = (Resolve-Path $data).Path
 "Python: $pyw"
 "Data directory: $data"
 

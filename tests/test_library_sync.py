@@ -465,6 +465,16 @@ class Syncing(Scratch):
     self.assertEqual(self.listed(), {})
     self.assertIsNone(library.get_state(self.con, "src", "type"))
 
+  def test_a_source_changed_from_linked_to_zipped_forgets_its_old_entries(self):
+    data, pages = self.path("data"), self.path("pages")
+    write(os.path.join(data, "a.flac"))
+    os.makedirs(pages)
+    S.sync_source(self.ctx, "src", conf(type="samples", dir=data))
+    self.assertEqual(set(self.listed()), {"a.flac"})
+    S.sync_source(self.ctx, "src", conf(type="webpages", dir=pages))  # (the same name, now zipped)
+    self.assertEqual(self.listed(), {})
+    self.assertEqual(library.get_state(self.con, "src", "type"), "webpages")
+
   @unittest.skipUnless(SEVEN_ZIP, "7-Zip is not installed")
   def test_a_zip_source_gone_from_the_config_takes_its_zips(self):
     pages = self.path("pages")
@@ -692,6 +702,16 @@ class CommandLine(Scratch):
       self.assertEqual(S.main([cfg, "--dry-run", "--all", "--data-dir", self.top]), 0)
     self.assertFalse(os.path.exists(files))
     self.assertTrue(any("s: 1 listed, 1 new" in line for line in logs.output), logs.output)
+
+  def test_a_dry_run_needs_no_7zip(self):
+    files, pages = self.path("files"), self.path("pages")
+    write(os.path.join(pages, "P.html"), page("p"))
+    cfg = write(self.path("bbs.yaml"), f"files_dir: '{files}'\nfile_library:\n  sources:\n"
+                                       f"    w: {{type: webpages, dir: '{pages}'}}\n")
+    with mock.patch.object(S, "find_seven_zip", lambda configured=None: None), \
+         self.assertLogs("library_sync", "INFO") as logs:
+      self.assertEqual(S.main([cfg, "--dry-run", "--data-dir", self.top]), 0)
+    self.assertTrue(any("w: 1 listed, 1 new" in line for line in logs.output), logs.output)
 
   def test_a_failure_before_any_source_is_logged(self):
     with self.assertLogs("library_sync", "ERROR") as logs:

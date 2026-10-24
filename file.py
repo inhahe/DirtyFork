@@ -75,18 +75,20 @@ def startup():
   cut short by a crash left behind (later, it could be an upload in
   progress), catalogue what is in the library folders without being
   catalogued (library.reconcile_uploads), and take what an old meta.yaml
-  catalogue said of those files (library.take_legacy_meta)."""
+  catalogue said of those files (library.read_legacy_meta: retired only
+  once applied, so a start that fails meanwhile tries again)."""
   lib = _library()
   library.ensure_schema(lib)
   for folder in (lib.files_dir, lib.pending_dir):
     file_transfer.remove_stale_uploads(folder)
-  legacy = library.take_legacy_meta(lib, TEMP_PREFIX)  # (meta.yaml, from before the catalogue)
+  legacy = library.read_legacy_meta(lib)  # (meta.yaml, from before the catalogue)
   con = library.connect(lib)
   try:
     added, forgotten = library.reconcile_uploads(lib, con, TEMP_PREFIX)
     if legacy:
       log.info("File library: took the tags and descriptions of %d file(s) from %s",
                library.apply_legacy_meta(con, legacy), lib.legacy_meta)
+      library.retire_legacy_meta(lib, TEMP_PREFIX)
   except sqlite3.OperationalError as exc:  # (a sync holding the catalogue: it reconciles too)
     log.warning("File library: could not check its folders against the catalogue: %s", exc)
     return
@@ -119,14 +121,20 @@ def _trusted(user):
 # ---------------------------------------------------------------------------
 
 def _format_size(size):
-  """A short size: 512 B, 37 KB, 12 MB, 3.4 GB."""
+  """A short size, at most 7 characters: 512 B, 37 KB, 12 MB, 3.4 GB, 120 GB."""
   if size < 1024:
     return f"{size} B"
   if size < 1024 * 1024:
     return f"{size // 1024} KB"
   if size < 1024 ** 3:
     return f"{size // (1024 * 1024)} MB"
-  return f"{size / 1024 ** 3:.1f} GB"
+  if size < 10 * 1024 ** 3:
+    return f"{size / 1024 ** 3:.1f} GB"
+  if size < 1024 ** 4:
+    return f"{size // 1024 ** 3} GB"
+  if size < 10 * 1024 ** 4:
+    return f"{size / 1024 ** 4:.1f} TB"
+  return f"{size // 1024 ** 4} TB"  # (never more than the 7 columns lists give it, below a petabyte)
 
 
 def _fit(text, width):
@@ -347,8 +355,9 @@ async def _show_list(user, items, title, controls, selected=0):
   await draw_all()
   while True:
     key = await get_input_key(user)
-    if isinstance(key, str) and len(key) == 1 and key in "0123456789" and len(number) < 9:
-      number += key
+    if isinstance(key, str) and len(key) == 1 and key in "0123456789":
+      if len(number) < 9:  # (a tenth digit is no file: ignored, the number kept)
+        number += key
       ansi_wrap(user, False)
       await draw_footer()
       ansi_wrap(user, True)
@@ -516,12 +525,12 @@ async def _download_file(user):
 # Search (S)
 # ---------------------------------------------------------------------------
 
-async def _search_form(user, query):
-  """Ask for a search, with help and examples under the field. Returns what
-  was typed (stripped), "" to go back."""
+async def _search_form(user, query, count):
+  """Ask for a search, with help and examples under the field (*count*:
+  the files listed, for the title). Returns what was typed (stripped), ""
+  to go back."""
   width = user.screen_width
   await ansi_cls(user)
-  count = await _db(library.listed_count)
   ansi_color(user, fg=cyan, fg_br=True, bg=black)
   await send(user, f"Search the File Library  ({count:,} files)"[:width] + cr + lf + cr + lf, drain=False)
   ansi_color(user, fg=white, fg_br=False, bg=black)
@@ -553,8 +562,9 @@ async def _search_files(user):
   """Search with the query language (library.parse_query); refine and repeat
   until an empty search."""
   query = getattr(user, 'file_search', "")
+  count = await _db(library.listed_count)  # (once: it doesn't change while they search)
   while True:
-    query = await _search_form(user, query)
+    query = await _search_form(user, query, count)
     if not query:
       return
     try:
@@ -646,7 +656,9 @@ async def _tell_sysops(text):
   from bbs_msg import send_popup
   for u in list(global_data.users.values()):
     if _is_sysop(u):
-      await send_popup(u, text, title="File Library")
+      # (work waiting for them, not a page from a caller: their paging
+      # settings don't apply, as for the notice at login)
+      await send_popup(u, text, title="File Library", skip_checks=True)
 
 
 async def tell_sysop_of_pending(user):
@@ -726,6 +738,7 @@ async def _upload_file(user):
   if not ids:
     await show_message_box(user, "\n".join(lines))
     return
+  gone = []  # (rejected while the uploader typed its details)
   try:
     await show_message_box(user, "\n".join(lines))
     await ansi_cls(user)
@@ -746,14 +759,22 @@ async def _upload_file(user):
         return True
       if await _db(details):
         log.info("User %s uploaded %s with tags=%s", user.handle, fname, tags)
+      else:
+        gone.append(fname)
   finally:
     # The sysops hear of it once its details are in, or when the uploader
     # leaves without giving them.
-    if not trusted:
-      await _tell_sysops(f"{user.handle} uploaded {', '.join(ids)}. "
+    waiting = [n for n in ids if n not in gone]
+    if not trusted and waiting:
+      await _tell_sysops(f"{user.handle} uploaded {', '.join(waiting)}. "
                          "It is waiting for your approval in Sysop > Vet Uploads.")
 
-  await show_message_box(user, "File(s) catalogued successfully.")
+  if not gone:
+    await show_message_box(user, "File(s) catalogued successfully.")
+  else:
+    kept = [n for n in ids if n not in gone]
+    await show_message_box(user, (f"Catalogued: {', '.join(kept)}.\n" if kept else "")
+                           + f"No longer in the library (the sysop dealt with it meanwhile): {', '.join(gone)}.")
 
 
 # ---------------------------------------------------------------------------

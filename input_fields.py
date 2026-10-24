@@ -2645,7 +2645,7 @@ class InputField:
         if self.allow_edit:
           await self._handle_backspace()
         continue
-      if key == "\x15":  # Ctrl+U
+      if key == ctrl_u:
         if self.allow_edit:
           await self._handle_kill_line()
         continue

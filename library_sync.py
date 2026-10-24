@@ -156,15 +156,14 @@ class Stats:
   updated: int = 0   # tags or description only
   removed: int = 0
   failed: int = 0
-  skipped: dict = field(default_factory=dict)  # extension -> count, of files left out
+  skipped: Counter = field(default_factory=Counter)  # extension -> count, of files left out
   incomplete: bool = False  # some of it couldn't be read: forget nothing this time
 
   def summary(self):
     text = (f"{self.listed} listed, {self.new} new, {self.changed} changed, {self.updated} retagged or "
             f"redescribed, {self.removed} removed, {self.failed} failed")
     if self.skipped:
-      top = sorted(self.skipped.items(), key=lambda kv: -kv[1])[:8]
-      text += "; left out: " + ", ".join(f"{n} {ext or '(no extension)'}" for ext, n in top)
+      text += "; left out: " + ", ".join(f"{n} {ext or '(no extension)'}" for ext, n in self.skipped.most_common(8))
     return text
 
 
@@ -976,7 +975,7 @@ def handle_gallery(ctx, source, conf, stats):
     elif kind in VIDEO_TYPES:
       tag = "video"
     else:
-      stats.skipped[kind] = stats.skipped.get(kind, 0) + 1
+      stats.skipped[kind] += 1
       continue
     st = e.stat()
     if tag != "pic":
@@ -995,7 +994,7 @@ def handle_videos(ctx, source, conf, stats):
   hierarchy = bool(conf.hierarchy_tags)
   for rel, e in walk_files(top, stats):
     if _ext(e.name) not in VIDEO_TYPES:
-      stats.skipped[_ext(e.name)] = stats.skipped.get(_ext(e.name), 0) + 1
+      stats.skipped[_ext(e.name)] += 1
       continue
     folders = rel.split("/")[:-1] if hierarchy else []
     yield Item(key=rel, root=source, path=rel, tags=["video"] + folders + extra,
@@ -1015,7 +1014,7 @@ def handle_samples(ctx, source, conf, stats):
     elif kind in instruments:
       tags = ["instrument", kind]
     else:
-      stats.skipped[kind] = stats.skipped.get(kind, 0) + 1
+      stats.skipped[kind] += 1
       continue
     if hierarchy:
       tags += rel.split("/")[:-1]
@@ -1031,7 +1030,7 @@ def handle_mods(ctx, source, conf, stats):
   extra = _conf_list(conf.tags)
   for rel, e in walk_files(top, stats):
     if _ext(e.name) != "zip":
-      stats.skipped[_ext(e.name)] = stats.skipped.get(_ext(e.name), 0) + 1
+      stats.skipped[_ext(e.name)] += 1
       continue
     base = _COLLECTION_SUFFIX.sub("", e.name[:-4])  # ("foo.xm (modarchive_2019_additions).zip")
     kind = _ext(base)
@@ -1118,6 +1117,12 @@ def sync_source(ctx, source, conf):
   con.execute("CREATE TEMP TABLE IF NOT EXISTS seen (key TEXT PRIMARY KEY)")
   con.execute("DELETE FROM temp.seen")
   if not ctx.dry_run:
+    # A source changed between a linked type and a zipped one has entries
+    # of the other shape, which nothing below would find: forgotten first.
+    before = library.get_state(con, source, "type")
+    if before and (before in library.LINKED_TYPES) != linked:
+      log.info("%s: was a %s source, now %s: forgot its %d file(s)", source, before, kind,
+               _forget_source(ctx, source, before))
     # (what forget_unconfigured goes by, should the source leave the config)
     library.set_state(con, source, "type", kind)
   if con.in_transaction:
@@ -1247,36 +1252,47 @@ def _sweep_zips(ctx, source):
 # The run
 # ---------------------------------------------------------------------------
 
+def _forget_source(ctx, source, kind):
+  """Forget everything *source* lists as a source of type *kind*: its
+  entries, the zips it made and the clones it kept (a chunk at a time,
+  committing between: the BBS waits for the lock only so long). Returns how
+  many entries. The files of a linked source are never touched."""
+  con = ctx.con
+  # (a linked source's files are under the root named for it; a zip source's are its zips)
+  where = "root = ?" if kind in library.LINKED_TYPES else "source = ? AND source_key IS NOT NULL"
+  n = 0
+  while True:
+    rows = con.execute(f"SELECT id, root, path FROM files WHERE {where} LIMIT 5000", (source,)).fetchall()
+    if not rows:
+      break
+    for row in rows:
+      library.remove(con, row["id"])
+      if row["root"] == library.ZIPS:
+        _delete_zip(ctx, row["path"])
+    con.commit()
+    n += len(rows)
+  if kind not in library.LINKED_TYPES:
+    for folder in (os.path.join(ctx.lib.zips_dir, source), os.path.join(ctx.lib.repos_dir, source)):
+      remove_tree(folder)
+  return n
+
+
 def forget_unconfigured(ctx):
   """Forget what the sources no longer in the config listed (removed or
-  renamed there): their entries, the zips they made and the clones they
-  kept. Sources are known by the type sync_source records for each. A dry
-  run only says so."""
+  renamed there), by the type sync_source records for each. A dry run only
+  says so."""
   con = ctx.con
   for source, kind in con.execute("SELECT source, value FROM sync_state WHERE key = 'type'").fetchall():
     if source in ctx.lib.sources:
       continue
-    # (a linked source's files are under the root named for it; a zip source's are its zips)
-    where = ("root = ?" if kind in library.LINKED_TYPES else "source = ? AND source_key IS NOT NULL")
     if ctx.dry_run:
+      where = "root = ?" if kind in library.LINKED_TYPES else "source = ? AND source_key IS NOT NULL"
       n = con.execute(f"SELECT COUNT(*) FROM files WHERE {where}", (source,)).fetchone()[0]
       log.info("%s is no longer in the config: would forget its %d file(s)", source, n)
       continue
-    n = 0
-    while True:
-      rows = con.execute(f"SELECT id, root, path FROM files WHERE {where} LIMIT 5000", (source,)).fetchall()
-      if not rows:
-        break
-      for row in rows:
-        library.remove(con, row["id"])
-        if row["root"] == library.ZIPS:
-          _delete_zip(ctx, row["path"])
-      con.commit()  # (a chunk at a time: the BBS waits for the lock only so long)
-      n += len(rows)
+    n = _forget_source(ctx, source, kind)
     con.execute("DELETE FROM sync_state WHERE source = ?", (source,))
     con.commit()
-    for folder in (os.path.join(ctx.lib.zips_dir, source), os.path.join(ctx.lib.repos_dir, source)):
-      remove_tree(folder)
     log.info("%s is no longer in the config: forgot its %d file(s)", source, n)
 
 
@@ -1390,7 +1406,7 @@ def _run(args, paths):
       for name in chosen:
         conf = lib.sources[name]
         kind = str(conf.type)
-        if kind in ("websites", "webpages", "github") and ctx.seven_zip is None:
+        if kind in ("websites", "webpages", "github") and ctx.seven_zip is None and not args.dry_run:
           log.error("%s: 7-Zip (7z.exe) is not installed; set file_library.seven_zip", name)
           failures += 1
           continue

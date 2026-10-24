@@ -3,6 +3,7 @@ import dataclasses
 import os
 import random
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from unittest import mock
@@ -364,22 +365,81 @@ class Folders(unittest.TestCase):
       self.assertIn("could not be moved", library.approve(self.lib, self.con, file_id, ".upload-"))
     self.assertTrue(library.get(self.con, file_id).pending)
 
-  def test_the_old_meta_yaml_is_taken_once(self):
+  def old_meta(self):
     self.write(self.lib.files_dir, "old.zip")
     self.write(self.lib.files_dir, "plain.txt")
     meta = os.path.join(self.lib.files_dir, "meta.yaml")
     with open(meta, "w", encoding="utf-8") as f:
       f.write('old.zip:\n  keys: [game, dos]\n  description: "An old game"\ngone.zip:\n  keys: [x]\n')
-    lib = dataclasses.replace(self.lib, legacy_meta=meta)
-    details = library.take_legacy_meta(lib, ".upload-")
-    self.assertFalse(os.path.exists(meta))
-    self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(lib.catalog), "meta.yaml.imported")))
+    return meta, dataclasses.replace(self.lib, legacy_meta=meta)
+
+  def test_the_old_meta_yaml_is_taken_once(self):
+    meta, lib = self.old_meta()
+    details = library.read_legacy_meta(lib)
     library.reconcile_uploads(lib, self.con, ".upload-")
     self.assertEqual(library.apply_legacy_meta(self.con, details), 1)
     entries = {e.name: e for e in library.fetch(self.con, library.all_ids(self.con))}
-    self.assertEqual(set(entries), {"old.zip", "plain.txt"})  # (meta.yaml itself is not listed)
+    self.assertEqual(set(entries), {"old.zip", "plain.txt"})  # (meta.yaml itself is never listed)
     self.assertEqual((entries["old.zip"].tags, entries["old.zip"].description), (("game", "dos"), "An old game"))
-    self.assertEqual(library.take_legacy_meta(lib, ".upload-"), {})  # (once)
+    library.retire_legacy_meta(lib, ".upload-")
+    self.assertFalse(os.path.exists(meta))
+    kept = os.path.join(os.path.dirname(lib.catalog), "meta.yaml.imported")
+    self.assertTrue(os.path.isfile(kept))
+    self.assertEqual(library.read_legacy_meta(lib), {})  # (once)
+    # one put back by hand is applied, and kept again, not deleted
+    shutil.copyfile(kept, meta)
+    self.assertTrue(library.read_legacy_meta(lib))
+    library.retire_legacy_meta(lib, ".upload-")
+    self.assertFalse(os.path.exists(meta))
+    self.assertEqual(len([n for n in os.listdir(os.path.dirname(lib.catalog)) if n.startswith("meta.yaml.imported")]), 2)
+
+  def test_a_start_that_fails_keeps_the_old_meta_yaml(self):
+    import file
+    meta, lib = self.old_meta()
+    with mock.patch.object(file, "_library", lambda: lib), \
+         mock.patch.object(library, "reconcile_uploads", side_effect=sqlite3.OperationalError("database is locked")):
+      file.startup()
+    self.assertTrue(os.path.isfile(meta))  # (read again at the next start)
+    with mock.patch.object(file, "_library", lambda: lib):
+      file.startup()
+    self.assertFalse(os.path.exists(meta))
+    e = {e.name: e for e in library.fetch(self.con, library.all_ids(self.con))}["old.zip"]
+    self.assertEqual(e.description, "An old game")
+
+  def test_an_upload_approved_while_its_folder_is_read_is_not_forgotten(self):
+    self.write(self.lib.pending_dir, "up.zip")
+    file_id = library.put(self.con, root="pending", path="up.zip", size=1, uploader="alice", description="mine")
+    self.con.commit()
+    real_scandir = os.scandir
+    pending = os.path.normcase(os.path.abspath(self.lib.pending_dir))
+
+    def scandir(path):
+      if os.path.normcase(os.path.abspath(path)) == pending:  # (the sysop approves it, just now)
+        sysop = library.connect(self.lib)
+        try:
+          self.assertIsNone(library.approve(self.lib, sysop, file_id, ".upload-"))
+        finally:
+          sysop.close()
+      return real_scandir(path)
+    with mock.patch("os.scandir", scandir):
+      library.reconcile_uploads(self.lib, self.con, ".upload-")
+    e = library.get(self.con, file_id)
+    self.assertEqual((e.root, e.uploader, e.description), ("uploads", "alice", "mine"))
+
+  def test_a_move_whose_source_cant_be_removed_is_undone(self):
+    self.write(self.lib.pending_dir, "busy.zip", b"data")
+    source = os.path.join(self.lib.pending_dir, "busy.zip")
+    target = os.path.join(self.lib.files_dir, "busy.zip")
+    real_remove = os.remove
+
+    def remove(path):
+      if os.path.normcase(path) == os.path.normcase(source):
+        raise PermissionError(32, "being downloaded", path)
+      return real_remove(path)
+    with mock.patch("os.remove", remove), self.assertRaises(PermissionError):
+      library.move_new(source, target, ".upload-")
+    self.assertTrue(os.path.isfile(source))
+    self.assertFalse(os.path.exists(target))
 
   def test_an_upload_catalogued_while_the_folder_is_read_is_not_forgotten(self):
     # The BBS publishes an upload, then catalogues it. If that happens while
