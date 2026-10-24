@@ -53,6 +53,11 @@ class IdleMonitor:
   def _touch(self):
     self._last_activity = asyncio.get_event_loop().time()
 
+  def touch(self):
+    """Count now as activity: at the end of a file transfer, which is
+    activity throughout though a download receives almost nothing."""
+    self._touch()
+
   async def _disconnect(self):
     """Send disconnect message and raise Disconnected."""
     log.info("Idle timeout for user %s", getattr(self._user, 'handle', '?'))

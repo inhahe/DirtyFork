@@ -30,10 +30,6 @@ class Channel(ABC):
 
 _psm = ProtocolStyleManagement()
 
-# DirtyFork: names Windows takes for devices, in any folder
-_DEVICE_NAMES = ({"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
-                 | {f"COM{i}" for i in range(10)} | {f"LPT{i}" for i in range(10)})
-
 class ModemSocket(Channel):
     def __init__(self, 
                  read: Callable[[int, Optional[float]], Any], 
@@ -469,6 +465,9 @@ class ModemSocket(Channel):
 
             # task index
             task_index = -1
+            # DirtyFork: file number -> the name the sender gave it (files are
+            # saved as file<number>)
+            self.received_names = {}
 
             while True:
 
@@ -562,19 +561,10 @@ class ModemSocket(Channel):
                                         self.logger.debug("[Receiver]: <- Filename packet.")
 
                                     task_index += 1
-                                    # DirtyFork: the name is the sender's; keep only its last
-                                    # component, so it cannot be a path out of the save folder
-                                    # (os.path.join below would even take an absolute one whole).
-                                    file_name = file_name.replace("\\", "/").rsplit("/", 1)[-1]
-                                    file_name = file_name.split(":")[-1]
-                                    file_name = "".join("_" if c in '<>"|?*' or ord(c) < 32 else c
-                                                        for c in file_name).strip().rstrip(". ")
-                                    if file_name.lstrip(".") == "":
-                                        file_name = "upload.bin"
-                                    # Windows opens a device for these names in any folder
-                                    # (PRN, COM1 ...), not a file
-                                    if file_name.split(".")[0].strip().upper() in _DEVICE_NAMES:
-                                        file_name = "_" + file_name
+                                    # DirtyFork: the name is the sender's, recorded for the
+                                    # caller (received_names) but never used as a path: see
+                                    # where the file is opened.
+                                    self.received_names[task_index] = file_name
                                     task.name = file_name
                                     self.logger.debug(f"[Receiver]: File - {task.name}")
 
@@ -664,7 +654,11 @@ class ModemSocket(Channel):
                             self.logger.debug("[Receiver]: CAN ->")
                             return False
                         else:
-                            p = os.path.join(path, task.name)
+                            # DirtyFork: a name of our own. Upstream joined the sender's
+                            # name to the folder, so "..\..\x" or an absolute path wrote
+                            # outside it, PRN or COM1 opened the device, and two files of
+                            # one name overwrote each other.
+                            p = os.path.join(path, f"file{task_index}")
 
                             '''
                             5. YMODEM Batch File Transmission

@@ -115,6 +115,9 @@ async def _binary_session(user):
       finally:
         _set_connection_encoding(user)
         user.in_transfer = False
+        touch = getattr(user.reader, "touch", None)  # (the idle monitor's clock)
+        if touch is not None:
+          touch()
 
 
 async def _settle(link, quiet=1.0, limit=10.0):
@@ -347,6 +350,8 @@ def _download_text(protocol, names):
 
 
 def _failure(exc):
+  if isinstance(exc, OSError):
+    return f"The transfer failed: {exc.strerror or exc}."
   if isinstance(exc, zmodem.Aborted):
     text = str(exc)
     return text if text.endswith(".") else "The transfer was cancelled."
@@ -369,7 +374,7 @@ async def send_files_zmodem(user, paths):
     return await zmodem.send_files(link, paths, _settings(user))
   try:
     results = await _with_screen(user, _download_text("zmodem", names), work)
-  except zmodem.TransferError as exc:
+  except (zmodem.TransferError, OSError) as exc:  # (OSError: a file gone, a full disk, a reset)
     log.info("ZMODEM send to %s ended: %s", getattr(user, 'handle', '?'), exc)
     return RetVals(status=fail, message=_failure(exc), results=[])
   sent = [r for r in results if r.status == "sent"]
@@ -394,7 +399,7 @@ async def receive_files_zmodem(user, policy, max_files=MAX_UPLOAD_FILES):
     return await zmodem.receive_files(link, accept, _settings(user), max_files=max_files)
   try:
     await _with_screen(user, _upload_text("zmodem"), work)
-  except zmodem.TransferError as exc:
+  except (zmodem.TransferError, OSError) as exc:  # (OSError: a file gone, a full disk, a reset)
     log.info("ZMODEM receive from %s ended: %s", getattr(user, 'handle', '?'), exc)
     return RetVals(status=fail, message=_failure(exc))
   log.info("ZMODEM receive from %s: saved %s, refused %s", getattr(user, 'handle', '?'),
@@ -558,6 +563,7 @@ async def receive_files_ymodem(user, policy, max_files=MAX_UPLOAD_FILES):
   log.info("YMODEM-G receive from %s into %s", getattr(user, 'handle', '?'), staging)
 
   checked = {}  # file -> bytes at its last free-space check
+  names = {}    # file number -> the name the caller's terminal gave it
 
   def job(modem, threaded):
     def progress(task_index, name, total, received):
@@ -571,7 +577,10 @@ async def receive_files_ymodem(user, policy, max_files=MAX_UPLOAD_FILES):
         checked[task_index] = received
         if policy.out_of_room():
           threaded.cancel("There is not enough room for the upload.")
-    return modem.recv(staging, callback=progress)
+    try:
+      return modem.recv(staging, callback=progress)
+    finally:
+      names.update(getattr(modem, "received_names", {}))
   try:
     try:
       ok = await _run_ymodem(user, _upload_text("ymodem"), job, sending=False)
@@ -582,13 +591,14 @@ async def receive_files_ymodem(user, policy, max_files=MAX_UPLOAD_FILES):
       return RetVals(status=fail, message=f"The transfer failed: {exc}.")
     if not ok:
       return RetVals(status=fail, message="The transfer failed.")
-    for entry in sorted(os.scandir(staging), key=lambda e: e.name):
-      if not entry.is_file():
+    # The library saves file<number>: the caller's names go only through the policy
+    for number in sorted(names)[:max_files]:
+      path = os.path.join(staging, f"file{number}")
+      if not os.path.isfile(path):
         continue
-      size = entry.stat().st_size
-      name = policy.check(entry.name, size)
+      name = policy.check(names[number], os.path.getsize(path))
       if name is not None:
-        policy.publish(entry.path, name)
+        policy.publish(path, name)
     return RetVals(status=success, message="Transfer complete.")
   finally:
     shutil.rmtree(staging, ignore_errors=True)

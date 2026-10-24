@@ -343,6 +343,10 @@ class _Session:
         except OSError as exc:
             reason = "the connection to the BBS was lost"
             log.info("%s: %s: %s", self.who, reason, exc)
+        except Exception:
+            # (a bug): say so, and close the page rather than leave it on a dead session
+            reason = "the bridge failed"
+            log.exception("%s: forwarding from the BBS failed", self.who)
         else:
             log.info("%s: %s", self.who, reason)
         # The BBS side ended (the caller logged off, or the BBS went away): close

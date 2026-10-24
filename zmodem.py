@@ -259,7 +259,7 @@ class Reader:
 
     def __init__(self, link: Link):
         self.link = link
-        self.buf = bytearray()
+        self.buf = bytearray()  # (deleting from its front is cheap: CPython moves its start)
         self.cans = 0
 
     async def _fill(self, deadline: Optional[float]) -> None:
@@ -385,6 +385,8 @@ class Reader:
         deadline = None if timeout is None else asyncio.get_running_loop().time() + timeout
         data = bytearray()
         while True:
+            if len(data) > max_len:  # (counting escaped bytes too)
+                raise _BadFrame("subpacket too long")
             if not self.buf:
                 await self._fill(deadline)
             m = _SPECIAL.search(self.buf)
@@ -393,8 +395,6 @@ class Reader:
                 data += self.buf[:end]
                 del self.buf[:end]
                 self.cans = 0
-                if len(data) > max_len:
-                    raise _BadFrame("subpacket too long")
             if not m:
                 continue
             b = await self.byte(deadline)
@@ -691,7 +691,9 @@ class _Sender:
                     log.info("send: the receiver skipped %s", name)
                     return FileResult(name, "skipped")
                 if hdr is not None and hdr.type == ZCRC:
-                    await self.send(Encoder.hex_header(ZCRC, pos_bytes(_file_crc(fp))))
+                    # (in a thread: a big file would stop every other session meanwhile)
+                    crc = await asyncio.to_thread(_file_crc, f.path)
+                    await self.send(Encoder.hex_header(ZCRC, pos_bytes(crc)))
                     continue
                 if hdr is not None and hdr.type in (ZABORT, ZFERR, ZCAN, ZFIN):
                     raise Aborted("the receiver cancelled")
@@ -839,13 +841,12 @@ async def _try_cancel(link: Link) -> None:
         pass
 
 
-def _file_crc(fp) -> int:
-    """CRC-32 of a whole open file (the answer to ZCRC), leaving it at 0."""
-    fp.seek(0)
+def _file_crc(path: str) -> int:
+    """CRC-32 of a whole file (the answer to ZCRC)."""
     crc = 0
-    while chunk := fp.read(65536):
-        crc = zlib.crc32(chunk, crc)
-    fp.seek(0)
+    with open(path, "rb") as fp:
+        while chunk := fp.read(65536):
+            crc = zlib.crc32(chunk, crc)
     return crc & 0xFFFFFFFF
 
 
@@ -906,11 +907,13 @@ class _Receiver:
         await self.send(self.zrinit)
         try:
             while True:
+                # (checked whatever arrives: a sender repeating ZRQINIT, say,
+                # because it never hears us, must not hold the session forever)
+                if loop.time() >= give_up:
+                    raise TimedOut("nothing was sent")
                 try:
                     hdr = await self.reader.header(self.settings.header_timeout)
                 except asyncio.TimeoutError:
-                    if loop.time() >= give_up:
-                        raise TimedOut("nothing was sent")
                     await self.send(self.zrinit)
                     continue
                 except _BadFrame as exc:
@@ -1001,37 +1004,56 @@ class _Receiver:
 
     async def _data(self, sink: Sink) -> int:
         """Receive one file's data into *sink*, from position 0. Returns its
-        length once ZEOF confirms it."""
+        length once ZEOF confirms it.
+
+        After we ask for data again (ZRPOS), what the sender had sent before
+        it saw that still arrives: until the ZDATA for our position, damaged
+        frames and noise in it are expected, not errors. Silence is one, and
+        getting back in step has a time limit."""
+        loop = asyncio.get_running_loop()
         pos = 0
         errors = 0
+        resync_until = None  # (loop time) while getting back in step after a ZRPOS
+
+        async def ask_again(why: str, silence: bool = False) -> None:
+            nonlocal errors, resync_until
+            errors += 1
+            if errors > self.settings.retries:
+                if silence:
+                    raise TimedOut("the sender stopped sending")
+                raise TransferError("too many errors")
+            log.debug("receive: %s at %d: asking again", why, pos)
+            await self.send(Encoder.hex_header(ZRPOS, pos_bytes(pos)))
+            resync_until = loop.time() + self.settings.header_timeout * self.settings.retries
+
         await self.send(Encoder.hex_header(ZRPOS, pos_bytes(pos)))
         while True:
+            if resync_until is not None and loop.time() > resync_until:
+                raise TimedOut("the sender did not send the data again")
             try:
                 hdr = await self.reader.header(self.settings.header_timeout)
-            except (asyncio.TimeoutError, _BadFrame) as exc:
-                errors += 1
-                if errors > self.settings.retries:
-                    raise TimedOut("the sender stopped sending")
-                log.debug("receive: %s at %d: asking again", exc.__class__.__name__, pos)
-                await self.send(Encoder.hex_header(ZRPOS, pos_bytes(pos)))
+            except asyncio.TimeoutError:
+                await ask_again("nothing came", silence=True)
                 continue
+            except _BadFrame as exc:
+                if resync_until is None:
+                    await ask_again(str(exc))
+                continue  # (while resynchronising: the rest of the old stream)
             if hdr.type == ZDATA:
                 if hdr.pos != pos:
-                    errors += 1
-                    if errors > self.settings.retries:
-                        raise TransferError("too many errors")
-                    await self.send(Encoder.hex_header(ZRPOS, pos_bytes(pos)))
+                    if resync_until is None:
+                        await ask_again(f"data for {hdr.pos}")
                     continue
+                resync_until = None
                 while True:
                     try:
                         data, end = await self.reader.subpacket(hdr.crc32,
                                                                 self.settings.header_timeout)
-                    except (_BadFrame, asyncio.TimeoutError) as exc:
-                        errors += 1
-                        if errors > self.settings.retries:
-                            raise TransferError("too many errors")
-                        log.debug("receive: %s at %d: asking again", exc, pos)
-                        await self.send(Encoder.hex_header(ZRPOS, pos_bytes(pos)))
+                    except asyncio.TimeoutError:
+                        await ask_again("nothing came", silence=True)
+                        break
+                    except _BadFrame as exc:
+                        await ask_again(str(exc))
                         break
                     sink.write(data)
                     pos += len(data)

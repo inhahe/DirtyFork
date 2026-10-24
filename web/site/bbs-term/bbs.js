@@ -186,6 +186,8 @@
         var url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/bbs-ws";
         var socket = ws = new WebSocket(url, SUBPROTOCOL);
         socket.binaryType = "arraybuffer";
+        held = [];
+        skipping = 0;
         sentry = new Zmodem.Sentry({
             to_terminal: function (octets) { term.write(withoutZmodemHeaders(octets)); },
             sender: function (octets) { send(new Uint8Array(octets)); },
@@ -269,18 +271,54 @@
     // The Sentry shows the first ZMODEM header as text (it cannot know yet that
     // the caller will accept): leave out hex headers ("**", ZDLE, "B", 14 hex
     // digits, CR LF, XON), which are never meant to be seen.
+    // A header can straddle two messages: a message ending in what may be
+    // its start keeps those bytes back (written after 50 ms if nothing
+    // completes them: a star drawn last must not wait), and the rest of one
+    // is dropped from the next.
+    var HEADER_START = [0x2A, 0x2A, 0x18, 0x42];
+    var TRAILER = [0x0D, 0x0A, 0x8A, 0x11];
+    var held = [], heldTimer = null;
+    var skipping = 0;  // header bytes still to drop: hex digits, then up to 3 of CR LF XON
+
     function withoutZmodemHeaders(octets) {
-        var out = [], i = 0, n = octets.length;
+        var input = held.length ? held.concat(Array.prototype.slice.call(octets)) : octets;
+        held = [];
+        clearTimeout(heldTimer);
+        var out = [], i = 0, n = input.length;
         while (i < n) {
-            if (octets[i] === 0x2A && octets[i + 1] === 0x2A && octets[i + 2] === 0x18 && octets[i + 3] === 0x42) {
-                var j = i + 4 + 14;
-                while (j < n && j < i + 22 && [0x0D, 0x0A, 0x8A, 0x11].indexOf(octets[j]) >= 0) j++;
-                i = j;
+            if (skipping > 0) {
+                if (skipping > 3 || TRAILER.indexOf(input[i]) >= 0) {
+                    skipping--;
+                    i++;
+                } else {
+                    skipping = 0;  // (a header without all its trailer)
+                }
                 continue;
             }
-            out.push(octets[i++]);
+            if (input[i] === 0x2A) {
+                var k = 0;
+                while (k < 4 && i + k < n && input[i + k] === HEADER_START[k]) k++;
+                if (k === 4) {
+                    skipping = 14 + 3;
+                    i += 4;
+                    continue;
+                }
+                if (i + k === n) {  // the message ends in what may be a header's start
+                    held = Array.prototype.slice.call(input, i);
+                    heldTimer = setTimeout(flushHeld, 50);
+                    break;
+                }
+            }
+            out.push(input[i++]);
         }
         return new Uint8Array(out);
+    }
+
+    function flushHeld() {
+        if (!held.length) return;
+        var bytes = held;
+        held = [];
+        term.write(new Uint8Array(bytes));
     }
 
     // A BBS waiting for an upload says so again every few seconds, and the

@@ -292,6 +292,19 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(ws.close_code, 1000)
                 self.assertEqual(ws.close_reason, "the connection to the BBS was lost")
 
+    async def test_a_failure_forwarding_closes_the_page(self):
+        """Not a dead session left open: the page is told, and the slot freed."""
+        with mock.patch.object(tb.Telnet, "receive", side_effect=ValueError("a bug")):
+            async with page(self.url) as ws:
+                await ws.send(SIZE)
+                _, writer = await self.bbs.next_conn(1)
+                writer.write(b"anything")
+                await writer.drain()
+                with self.assertRaises(ConnectionClosed):
+                    await asyncio.wait_for(ws.recv(), 5)
+                self.assertEqual((ws.close_code, ws.close_reason), (1000, "the bridge failed"))
+        await self.slots_freed()
+
     async def test_origins_other_than_the_sites_are_refused(self):
         await self.restart_bridge(origins=["https://inhahe.com", None])
         with self.assertRaises(InvalidStatus):

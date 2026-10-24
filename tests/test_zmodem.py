@@ -4,7 +4,9 @@ import asyncio
 import os
 import random
 import tempfile
+import time
 import unittest
+import zlib
 
 import _setup  # noqa: F401  (puts the project on sys.path)
 import zmodem
@@ -150,6 +152,32 @@ class Framing(unittest.TestCase):
             hdr = await reader.header(5)
             return await reader.subpacket(hdr.crc32, 5)
         self.assertEqual(asyncio.run(go()), (b"\nline", ZCRCE))
+
+    def test_an_endless_subpacket_of_escaped_bytes_is_refused(self):
+        async def go():
+            pipe = Pipe()
+            pipe.write(b"\x18\x41" * 20000)  # (ZDLE + 'A': the byte 1, escaped, 20000 times)
+            await Reader(End(pipe, Pipe())).subpacket(False, 2, max_len=8192)
+        with self.assertRaises(zmodem._BadFrame):
+            asyncio.run(go())
+
+    def test_a_big_buffer_of_escaped_data_decodes_quickly(self):
+        """Reading from the front of a megabyte buffer must not copy the rest
+        each time (it did: an upload crawled, stalling every session)."""
+        enc = Encoder(escape_ctrl=True)
+        rng = random.Random(5)
+        packets = [rng.randbytes(8192) for _ in range(256)]  # 2 MiB, a quarter escaped
+        wire = b"".join(enc.subpacket(p, ZCRCG, True) for p in packets)
+
+        async def go():
+            pipe = Pipe()
+            pipe.write(wire)
+            reader = Reader(End(pipe, Pipe()))
+            return [(await reader.subpacket(True, 10))[0] for _ in packets]
+        started = time.monotonic()
+        got = asyncio.run(asyncio.wait_for(go(), 30))
+        self.assertEqual(got, packets)
+        self.assertLess(time.monotonic() - started, 10)
 
     def test_five_cans_abort(self):
         async def go():
@@ -377,6 +405,79 @@ class Transfers(unittest.TestCase):
                                              stall_timeout=0.5))
         with self.assertRaises(zmodem.TimedOut):
             run(go())
+
+    def test_getting_back_in_step_through_much_data_in_flight(self):
+        """A damaged subpacket, then 300 KiB the sender had already sent before
+        it saw our request to send again (no header in it, now and then a false
+        start of one): none of that may count as errors."""
+        enc = Encoder()
+        rng = random.Random(9)
+        first, second = rng.randbytes(8192), rng.randbytes(8192)
+        damaged = bytearray(enc.subpacket(second, ZCRCG, True))
+        damaged[100] ^= 0x01
+        in_flight = b"".join(enc.subpacket(rng.randbytes(8192), ZCRCG, True) for _ in range(38))
+        in_flight += b"*\x18C" + b"\x00" * 9  # (a false header start)
+        info = zmodem.encode_file_info("resync.bin", 2 * 8192, 0)
+        stream = (enc.bin_header(zmodem.ZFILE, zmodem.flag_bytes(f0=zmodem.ZCBIN), True)
+                  + enc.subpacket(info, zmodem.ZCRCW, True)
+                  + enc.bin_header(zmodem.ZDATA, zmodem.pos_bytes(0), True)
+                  + enc.subpacket(first, ZCRCG, True) + bytes(damaged) + in_flight
+                  + enc.bin_header(zmodem.ZDATA, zmodem.pos_bytes(8192), True)
+                  + enc.subpacket(second, ZCRCE, True)
+                  + enc.bin_header(zmodem.ZEOF, zmodem.pos_bytes(2 * 8192), True)
+                  + Encoder.hex_header(zmodem.ZFIN) + b"OO")
+        store = {}
+
+        async def go():
+            a, b = Pipe(), Pipe()
+            a.write(stream)  # (the sender's side, all at once)
+            return await zmodem.receive_files(End(a, b), lambda o: MemorySink(store, o.name), FAST)
+        results = run(go())
+        self.assertEqual([r.status for r in results], ["received"])
+        self.assertEqual(store["resync.bin"], first + second)
+
+    def test_a_sender_that_never_starts_times_out_however_much_it_says(self):
+        """It repeats ZRQINIT (it never hears our ZRINIT): the start timeout
+        must still end the session."""
+        async def go():
+            a, b = Pipe(), Pipe()
+
+            async def nag():
+                while True:
+                    a.write(Encoder.hex_header(ZRQINIT))
+                    await asyncio.sleep(0.1)
+            nagging = asyncio.create_task(nag())
+            try:
+                await zmodem.receive_files(End(a, b), lambda o: None,
+                                           Settings(start_timeout=1, header_timeout=0.5, retries=3))
+            finally:
+                nagging.cancel()
+        started = time.monotonic()
+        with self.assertRaises(zmodem.TimedOut):
+            run(go())
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_a_receiver_asking_for_the_file_crc_is_answered(self):
+        path, data = self.make("crc.bin", 50000)
+
+        async def go():
+            a, b = Pipe(), Pipe()
+            sender = End(b, a)
+            receiver = Reader(End(a, Pipe()))
+            task = asyncio.create_task(zmodem.send_files(sender, [path], FAST))
+            b.write(Encoder.hex_header(ZRINIT, zmodem.flag_bytes(f0=CANFDX | CANOVIO | CANFC32)))
+            while (await receiver.header(5)).type != zmodem.ZFILE:
+                pass
+            b.write(Encoder.hex_header(zmodem.ZCRC))
+            while True:
+                hdr = await receiver.header(5)
+                if hdr.type == zmodem.ZCRC:
+                    break
+            b.write(Encoder.hex_header(zmodem.ZSKIP))
+            b.write(Encoder.hex_header(zmodem.ZFIN))
+            await asyncio.wait_for(task, 10)
+            return hdr.pos
+        self.assertEqual(run(go()), zlib.crc32(data) & 0xFFFFFFFF)
 
     def test_a_receiver_with_a_small_buffer_gets_acknowledged_windows(self):
         path, data = self.make("windowed.bin", 20000)

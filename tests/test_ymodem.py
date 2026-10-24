@@ -119,6 +119,29 @@ class Ymodem(unittest.TestCase):
         with open(os.path.join(self.dir, "_NUL"), "rb") as f:
             self.assertEqual(f.read(), b"0123456789")
 
+    def test_two_files_of_one_name_in_a_batch_keep_the_first(self):
+        """The library saves each file under a number, so the second no longer
+        overwrites the first; the policy refuses the second, saying why. A
+        path name loses its folders."""
+        policy = file_transfer.UploadPolicy(directory=self.dir, keep_free=0)
+
+        async def sender(p):
+            for i, (name, body) in enumerate(((b"docs/readme.txt", b"first"),
+                                              (b"..\\src\\readme.txt", b"second"))):
+                await p.until(bytes([G]))
+                p.send(block(0, name + b"\x00" + str(len(body)).encode() + b" 0 0"))
+                await p.until(bytes([G]))
+                p.send(block(1, body))
+                p.send(bytes([EOT]))
+            await p.until(bytes([G]))
+            p.send(block(0, b""))
+        result = self.run_with(lambda: file_transfer.receive_files_ymodem(object(), policy), sender)
+        self.assertEqual(result.status, success, result.message)
+        self.assertEqual(policy.saved, ["readme.txt"])
+        self.assertEqual([name for name, _ in policy.refused], ["..\\src\\readme.txt"])
+        with open(os.path.join(self.dir, "readme.txt"), "rb") as f:
+            self.assertEqual(f.read(), b"first")
+
     def test_a_receiver_cancelling_is_not_a_success(self):
         path = os.path.join(self.dir, "out.bin")
         with open(path, "wb") as f:

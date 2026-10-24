@@ -85,6 +85,45 @@ class UploadRoom(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TransferSession(unittest.TestCase):
+    def test_a_transfer_counts_as_activity(self):
+        """A download receives almost nothing for its length: without this, a
+        long one ends in an idle disconnect at the next menu."""
+        class Reader:
+            touched = 0
+
+            async def read_raw(self, n):
+                return b""  # (nothing more comes)
+
+            read = read_raw
+
+            def touch(self):
+                Reader.touched += 1
+        user = _setup.make_user()
+        user.reader = Reader()
+
+        async def go():
+            async with file_transfer._binary_session(user):
+                pass
+        asyncio.run(go())
+        self.assertEqual(Reader.touched, 1)
+
+    def test_a_file_gone_before_sending_is_a_failure_not_a_crash(self):
+        from test_zmodem import End, Pipe
+        user = _setup.make_user()
+
+        async def direct(user, text, work):
+            a, b = Pipe(), Pipe()
+            # (a receiver that answers; the file is looked at after that)
+            b.write(file_transfer.zmodem.Encoder.hex_header(file_transfer.zmodem.ZRINIT, bytes([0, 0, 0, 0x23])))
+            return await work(End(b, a))
+        with mock.patch.object(file_transfer, "_with_screen", direct):
+            result = asyncio.run(file_transfer.send_files_zmodem(user, [os.path.join(
+                tempfile.gettempdir(), "no-such-file-for-dirtyfork.bin")]))
+        self.assertNotEqual(result.status, file_transfer.success)
+        self.assertTrue(result.message.startswith("The transfer failed:"), result.message)
+
+
 class LibraryFiles(unittest.TestCase):
     """file.py: what a caller can download, and the catalogue."""
 
