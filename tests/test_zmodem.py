@@ -641,6 +641,28 @@ class Transfers(unittest.TestCase):
             zmodem._Receiver.__init__ = original
         self.assertEqual(store["windowed.bin"], data)
 
+    def test_smaller_subpackets_for_a_slow_line_arrive_whole(self):
+        """256-byte subpackets (a 2400 bps modem's), repaired as well."""
+        path, data = self.make("small.bin", 9000)
+        settings = Settings(start_timeout=5, header_timeout=0.5, retries=6,
+                            subpacket_size=256, drain_every=256)
+
+        def damage(chunk, offset):
+            chunk = bytearray(chunk)
+            if offset <= 3000 < offset + len(chunk):
+                chunk[3000 - offset] ^= 0x55
+            return bytes(chunk)
+        with self.assertLogs("dirtyfork.zmodem", "DEBUG") as logs:
+            sent, received, store = self.transfer([path], damage_to_receiver=damage,
+                                                  settings=settings)
+        self.assertEqual(store["small.bin"], data)
+        restarts = [int(line.rsplit(" ", 1)[1]) for line in logs.output
+                    if "asked for the data again from" in line]
+        # (a restart where a subpacket starts: with 1024-byte ones it would be
+        # a multiple of 1024)
+        self.assertTrue(restarts and all(at % 256 == 0 for at in restarts), logs.output)
+        self.assertTrue(any(at % 1024 for at in restarts), logs.output)
+
     def test_the_confirmation_of_a_file_behind_another_header_is_not_lost(self):
         """After ZEOF, a ZACK and then the ZRINIT arrive together: the ZRINIT
         must still be seen (looking past the ZACK for piled-up requests, it

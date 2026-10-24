@@ -123,16 +123,18 @@ class TransferSession(unittest.TestCase):
         self.assertNotEqual(result.status, file_transfer.success)
         self.assertTrue(result.message.startswith("The transfer failed:"), result.message)
 
-    def test_zmodem_drains_as_often_as_the_link_asks(self):
-        """A modem's writer asks for a drain every subpacket: at modem
-        speeds what is queued beyond the line's buffer (16 KiB is a minute)
-        holds up a repair or a cancel."""
-        import modem
+    def test_zmodem_sends_in_the_blocks_the_link_asks_for(self):
+        """A modem's writer asks for small blocks, a drain after each: at
+        modem speeds what is queued beyond the line's buffer (16 KiB is a
+        minute at 2400 bps) holds up a repair or a cancel."""
         user = _setup.make_user()
-        self.assertEqual(file_transfer._settings(user).drain_every,
-                         file_transfer.zmodem.Settings().drain_every)
-        user.writer.drain_every = modem.SerialWriter.drain_every
-        self.assertEqual(file_transfer._settings(user).drain_every, 1024)
+        default = file_transfer.zmodem.Settings()
+        settings = file_transfer._settings(user)
+        self.assertEqual((settings.drain_every, settings.subpacket_size),
+                         (default.drain_every, default.subpacket_size))
+        user.writer.transfer_block = 256  # (a 2400 bps modem's)
+        settings = file_transfer._settings(user)
+        self.assertEqual((settings.drain_every, settings.subpacket_size), (256, 256))
 
 
 class LibraryFiles(unittest.TestCase):

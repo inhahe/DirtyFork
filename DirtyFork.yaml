@@ -44,7 +44,7 @@ idle_warning: 30
 #   baudrate: 115200        # serial port speed, not modem line speed — 115200 is ideal
 #                           # because modem compression can exceed the line rate
 #   init_string: ATZ        # default AT init command for all ports; the BBS then
-#                           # sends its own settings (ATE0V1Q0S0=0&C1&D2, see DOCS.md)
+#                           # sends its own settings (ATE0V1Q0, ATS0=0, AT&C1, AT&D2; see DOCS.md)
 #   idle_timeout: 300       # modem idle timeout in seconds (0 = disabled)
 #   ports:
 #     - port: COM1

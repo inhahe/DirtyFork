@@ -50,6 +50,9 @@ class FakeWriter:
     def get_extra_info(self, *args, **kwargs):
         return None
 
+    def close(self):
+        self.closed = True
+
     def text(self):
         return "".join(self.out)
 

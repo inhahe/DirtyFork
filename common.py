@@ -955,10 +955,7 @@ class _DestinationRegistry:
     except Exception:
       pass
     user.writer.close()
-    handle = getattr(user, 'handle', None)
-    if handle and handle.lower() in global_data.users:
-      del global_data.users[handle.lower()]
-    global_data.users_logging_in.discard(user)
+    forget_session(user)
   logout.dest_name = "logout"
 
   def __getattr__(self, name):

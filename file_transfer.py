@@ -155,9 +155,9 @@ async def _with_screen(user, text, work):
 
 def _settings(user):
   settings = zmodem.Settings(escape_ctrl=not _eight_bit_clean(user))
-  drain_every = getattr(user.writer, "drain_every", None)  # (a slow link's, a modem's)
-  if drain_every:
-    settings.drain_every = drain_every
+  block = getattr(user.writer, "transfer_block", None)  # (a slow link's: a modem's)
+  if block:
+    settings.drain_every = settings.subpacket_size = block
   return settings
 
 

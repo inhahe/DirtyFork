@@ -497,7 +497,9 @@ class Settings:
     character (for a link that is not 8-bit clean); as sender, escape them.
     drain_every: bytes sent between waits for the link to take them (a
     drain): what can be queued beyond the link's own buffer, so small on a
-    slow line, where it would hold up a repair or a cancel.
+    slow line, where it would hold up a repair or a cancel. subpacket_size:
+    the data in each subpacket we send (at most SUBPACKET_SIZE, which every
+    receiver takes; less on a slow line, as for drain_every).
     """
     start_timeout: float = 120.0
     header_timeout: float = 10.0
@@ -505,6 +507,7 @@ class Settings:
     stall_timeout: float = 300.0
     escape_ctrl: bool = False
     drain_every: int = 16 * 1024
+    subpacket_size: int = SUBPACKET_SIZE
 
 
 class _Output:
@@ -598,6 +601,7 @@ class _Sender:
         self.enc = Encoder(settings.escape_ctrl)
         self.crc32 = False
         self.window = 0  # bytes between acknowledgements (0: stream)
+        self.block = max(1, min(settings.subpacket_size, SUBPACKET_SIZE))  # data per subpacket
         # The receiver's headers as they arrived (and, last, the failure that
         # ended them): a deque, so that what comes next can be looked at.
         self.headers: collections.deque = collections.deque()
@@ -703,9 +707,9 @@ class _Sender:
         self.enc.set_escape_ctrl(self.settings.escape_ctrl or bool(f0 & ESCCTL))
         bufsize = hdr.data[0] | hdr.data[1] << 8
         if bufsize:
-            self.window = max(SUBPACKET_SIZE, bufsize - bufsize % SUBPACKET_SIZE)
+            self.window = max(self.block, bufsize - bufsize % self.block)
         elif not (f0 & CANFDX and f0 & CANOVIO):
-            self.window = SUBPACKET_SIZE  # it cannot take data while writing it
+            self.window = self.block  # it cannot take data while writing it
         log.debug("send: receiver flags 0x%02x, buffer %d, crc32 %s", f0, bufsize, self.crc32)
 
     async def _send_file(self, f: SendFile, files_left: int, bytes_left: int) -> FileResult:
@@ -792,7 +796,7 @@ class _Sender:
                 if restart is not None:
                     return restart
             first = False
-            chunk = fp.read(min(SUBPACKET_SIZE, size - pos))
+            chunk = fp.read(min(self.block, size - pos))
             last = not chunk or pos + len(chunk) >= size
             unacked += len(chunk)
             if last:

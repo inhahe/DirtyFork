@@ -33,15 +33,18 @@ import serial_asyncio
 
 from logger import log
 
-SETUP = "ATE0V1Q0S0=0&C1&D2"
+# What the BBS needs of the modem, a command each (a modem that does not know
+# a setting answers its whole line with ERROR, and many then apply none of
+# it); results in words first, so that the answers to the rest are words.
+SETUP = ("ATE0V1Q0", "ATS0=0", "AT&C1", "AT&D2")
 COMMAND_TIMEOUT = 5.0   # seconds a setup command may take to answer (ATZ resets the modem)
 ANSWER_TIMEOUT = 60.0   # seconds from ATA to CONNECT (modems give up after S7, 50 s by default)
 ANALOG_TOP = 33600      # bps: the fastest line an answering modem has (V.90's 56k needs a digital line here)
-DRAIN_EVERY = 1024      # bytes a file transfer sends between drains on a modem (a ZMODEM subpacket)
 CARRIER_POLL = 0.5      # seconds between looks at DCD during a call
 DRAIN_POLL = 0.02       # seconds between looks at the output queue while draining
 FLUSH_LIMIT = 10.0      # seconds a hang-up waits for output still to leave
 DTR_DROP = 1.0          # seconds DTR is held low to hang up
+HANGUP_WAIT = 3.0       # seconds more a modem may take to drop the carrier after that
 GUARD_TIME = 1.1        # seconds of silence around the +++ escape (S12: 1 s by default)
 RETRY = 10.0            # seconds between attempts on a port that failed
 SETTLE = 1.0            # seconds after a hang-up before the modem is set up again
@@ -65,6 +68,7 @@ class _Carrier:
     self._serial = serial
     self.seen = False
     self.lost = False
+    self.port_failed = False  # (lost because the port failed, not the carrier)
 
   def check(self):
     """True while the caller is there (or the line cannot tell)."""
@@ -72,7 +76,7 @@ class _Carrier:
       try:
         up = self._serial.cd
       except Exception:  # (the port is gone)
-        self.lost = True
+        self.lost = self.port_failed = True
         return False
       if up:
         self.seen = True
@@ -112,12 +116,12 @@ class SerialReader:
 class SerialWriter:
   """The caller's output, as telnetlib3's writer takes it (text in the
   connection's encoding, or bytes), and the end of the call: close() hangs
-  up, and wait_closed() waits until the modem is back on hook."""
+  up, and wait_closed() waits until the modem is back on hook.
 
-  # Bytes a file transfer may send between drains (file_transfer asks): at
-  # modem speeds what is queued beyond drain()'s second holds up a repair
-  # or a cancel.
-  drain_every = DRAIN_EVERY
+  transfer_block: the bytes a file transfer should send at a time, and
+  between drains (file_transfer asks): what is queued beyond drain()'s
+  second holds up a repair or a cancel, so less on a slower line (as lrzsz's
+  sz: 256 below 4800 bps, 512 below 9600, else 1024)."""
 
   def __init__(self, stream_writer, port="serial", carrier=None, carrier_watch=None,
                encoding="cp437", line_speed=115200):
@@ -138,9 +142,10 @@ class SerialWriter:
     self._encoding = encoding
 
   def set_line_speed(self, bps):
-    """drain() leaves about a second of output queued on a line of *bps*
-    bits a second."""
+    """For a line of *bps* bits a second: drain() leaves about a second of
+    output queued, and transfers send transfer_block bytes at a time."""
     self._queue_limit = max(256, bps // 10)
+    self.transfer_block = 256 if bps < 4800 else 512 if bps < 9600 else 1024
 
   def write(self, data):
     if self._closed:
@@ -152,10 +157,15 @@ class SerialWriter:
   async def drain(self):
     """Wait until no more than about a second of output is still queued, in
     the transport and in the port (which takes any amount at once). Raises
-    ConnectionResetError if the caller hangs up meanwhile."""
-    while not (self._closed or self._transport.is_closing()):
+    ConnectionResetError if the caller hangs up meanwhile, or the port has
+    failed (pyserial-asyncio then drops what is written, and a sender that
+    only writes would never know)."""
+    while not self._closed:
+      if self._transport.is_closing():
+        raise ConnectionResetError("the serial port failed")
       if self._carrier is not None and not self._carrier.check():
-        raise ConnectionResetError("the caller hung up")
+        raise ConnectionResetError("the serial port failed" if self._carrier.port_failed
+                                   else "the caller hung up")
       if self._queued() <= self._queue_limit:
         return
       await asyncio.sleep(DRAIN_POLL)
@@ -199,8 +209,7 @@ class SerialWriter:
       await self._flushed(FLUSH_LIMIT)
       serial.dtr = False
       await asyncio.sleep(DTR_DROP)
-      # (with no carrier to tell by, it may have ignored DTR: ATH to be sure)
-      if serial.cd or (self._carrier is not None and not self._carrier.seen):
+      if await self._still_connected(serial):
         log.info("Modem on %s: perhaps still connected with DTR low; hanging up with ATH",
                  self._port)
         await asyncio.sleep(GUARD_TIME)
@@ -217,6 +226,20 @@ class SerialWriter:
       except Exception:
         pass
       _close_port(self._transport)
+
+  async def _still_connected(self, serial):
+    """After DTR dropped: whether the modem may still be connected. It may
+    take a few seconds to drop the carrier (HANGUP_WAIT); with no carrier to
+    tell by, it may have ignored DTR, so yes."""
+    if self._carrier is None or not self._carrier.seen:
+      return True
+    loop = asyncio.get_running_loop()
+    end = loop.time() + HANGUP_WAIT
+    while serial.cd:
+      if loop.time() >= end:
+        return True
+      await asyncio.sleep(0.1)
+    return False
 
   async def _flushed(self, limit):
     """Wait, at most *limit* seconds, until what was written has left both
@@ -243,7 +266,11 @@ def _close_port(transport):
     serial.reset_output_buffer()  # (so that the flush when it closes is quick)
   except Exception:
     pass
-  if not transport.is_closing():  # (else a close is already under way)
+  # A close already under way finishes, unless it is pyserial-asyncio's own
+  # graceful one (after a failed read) with output in its buffer: that never
+  # ends on Windows, its writer stopped; its end was never scheduled, so the
+  # abort schedules it once.
+  if not transport.is_closing() or transport.get_write_buffer_size():
     transport.abort()
 
 
@@ -346,8 +373,12 @@ async def _watch_carrier(carrier, transport, stream_reader, port):
     if looks == 4 and not carrier.seen:
       log.warning("Modem on %s: the modem shows no carrier (DCD), so a caller's hang-up will "
                   "not be noticed (is it set &C1, and the cable wired for DCD?)", port)
-  log.info("Modem on %s: the carrier dropped (the caller hung up)", port)
-  transport.pause_reading()  # (the modem's NO CARRIER is not for the session)
+  if carrier.port_failed:
+    log.warning("Modem on %s: the serial port failed during the call", port)
+  else:
+    log.info("Modem on %s: the carrier dropped (the caller hung up)", port)
+  if not transport.is_closing():
+    transport.pause_reading()  # (the modem's NO CARRIER is not for the session)
   stream_reader.feed_eof()
 
 
@@ -370,7 +401,7 @@ async def wait_for_call(port, baudrate, init_string="ATZ", ready=None):
   transport = writer.transport
   try:
     transport.serial.dtr = True  # (a modem set &D2 does nothing without it)
-    for command in (init_string, SETUP):
+    for command in (init_string, *SETUP):
       if not command:
         continue
       result = await _command(reader, writer, command, COMMAND_TIMEOUT)

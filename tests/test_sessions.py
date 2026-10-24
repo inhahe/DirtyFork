@@ -1,5 +1,6 @@
 """common.forget_session: an ended session leaves the registry of who is
 on, but not the session that replaced it under the same handle."""
+import asyncio
 import unittest
 
 import _setup
@@ -37,6 +38,15 @@ class Registry(unittest.TestCase):
         common.global_data.users["bob"] = second
         common.forget_session(first)
         self.assertIs(common.global_data.users.get("bob"), second)
+
+    def test_logging_out_leaves_a_session_that_replaced_it(self):
+        """The same race through logout: the first session is saying goodbye
+        when the second login replaces it."""
+        first, second = self.session("Bob"), self.session("Bob")
+        common.global_data.users["bob"] = second
+        asyncio.run(common.Destinations.logout(first))
+        self.assertIs(common.global_data.users.get("bob"), second)
+        self.assertTrue(first.writer.closed)
 
     def test_a_session_that_never_logged_in_is_forgotten_too(self):
         caller = _setup.make_user()

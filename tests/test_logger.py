@@ -44,7 +44,9 @@ class Console(unittest.TestCase):
         self.console = PausedConsole()
         self.addCleanup(self.console.resumed.set)  # (so that its writers end)
 
-    def test_logging_goes_on_while_the_console_is_paused(self):
+    def keep_logging_as_it_is(self):
+        """Put the loggers back as they were after the test (setup_logging
+        changes them for the whole process)."""
         dirtyfork, root = logging.getLogger("dirtyfork"), logging.getLogger()
         saved = (list(dirtyfork.handlers), dirtyfork.propagate, dirtyfork.level, list(root.handlers))
 
@@ -59,24 +61,40 @@ class Console(unittest.TestCase):
             root.handlers[:] = saved[3]
             logging.captureWarnings(False)
         self.addCleanup(restore)
-        with mock.patch.object(sys, "stderr", self.console), \
-                mock.patch.object(sys, "unraisablehook", sys.unraisablehook):
-            logger.setup_logging()
-            done = threading.Event()
+        patches = (mock.patch.object(sys, "stderr", self.console),
+                   mock.patch.object(sys, "unraisablehook", sys.unraisablehook))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
 
-            def go():  # (the BBS's event loop, logging)
-                for n in range(5):
-                    logger.log.info("line %d", n)
-                logging.getLogger("asyncio").warning("from asyncio")
-                with warnings.catch_warnings():
-                    warnings.simplefilter("always")
-                    warnings.warn("a Python warning", RuntimeWarning)
-                logger.log.info("%d lines", "not a number")  # (a record that cannot be logged)
-                done.set()
-            threading.Thread(target=go, daemon=True).start()
-            self.assertTrue(done.wait(2), "logging waited for the paused console")
-            self.console.resumed.set()
-            shown = self.console.shown(8)
+    def test_setting_up_again_closes_what_was_set_up_before(self):
+        self.keep_logging_as_it_is()
+        self.console.resumed.set()
+        logger.setup_logging()
+        first = [h for h in logger.log.handlers if isinstance(h, logger._FileLog)]
+        logger.setup_logging()
+        self.assertEqual(len(first), 1)
+        self.assertIsNone(first[0].stream)  # (its log file closed)
+        self.assertNotIn(first[0], logging.getLogger().handlers)
+
+    def test_logging_goes_on_while_the_console_is_paused(self):
+        self.keep_logging_as_it_is()
+        logger.setup_logging()
+        done = threading.Event()
+
+        def go():  # (the BBS's event loop, logging)
+            for n in range(5):
+                logger.log.info("line %d", n)
+            logging.getLogger("asyncio").warning("from asyncio")
+            with warnings.catch_warnings():
+                warnings.simplefilter("always")
+                warnings.warn("a Python warning", RuntimeWarning)
+            logger.log.info("%d lines", "not a number")  # (a record that cannot be logged)
+            done.set()
+        threading.Thread(target=go, daemon=True).start()
+        self.assertTrue(done.wait(2), "logging waited for the paused console")
+        self.console.resumed.set()
+        shown = self.console.shown(8)
         self.assertIn("line 4", shown)
         self.assertIn("from asyncio", shown)
         self.assertIn("a Python warning", shown)

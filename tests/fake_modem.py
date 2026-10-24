@@ -31,7 +31,10 @@ import serial_asyncio
 class FakeModem:
     def __init__(self, *, connect="CONNECT 33600/ARQ", carrier=None, cps=None, answers=True,
                  results=True, numeric=False, dcd=True, follows_dtr=True, guard=1.0,
-                 powered=True):
+                 powered=True, hangup_delay=0.0, rejects=()):
+        self.hangup_delay = hangup_delay  # seconds after DTR drops before it is on hook
+        self.rejects = rejects      # settings it does not know: a command with one is ERROR
+        self.failing_reads = False  # reads fail (the port is failing), in_waiting still works
         self.connect = connect      # what ATA says when it connects
         self.carrier_message = carrier  # what it says before that (CARRIER 2400), if anything
         self.cps = cps              # the line's speed, bytes a second (None: at once; 0: held)
@@ -64,6 +67,7 @@ class FakeModem:
         self._escape_at = None
         self._last_write = 0.0
         self._sent_at = time.monotonic()
+        self._on_hook_at = None  # (when a hang-up by DTR completes)
 
     # -- the caller's side ----------------------------------------------
 
@@ -96,6 +100,8 @@ class FakeModem:
 
     def read(self, size=1):
         self._check()
+        if self.failing_reads:
+            raise serial.SerialException("ReadFile failed (the device is failing)")
         data = bytes(self.rx[:size])
         del self.rx[:size]
         return data
@@ -144,13 +150,23 @@ class FakeModem:
             self._transmit()
             self.dtr_drops.append(len(self.unsent))
             if self.online and self.follows_dtr and self.powered:
-                self._lose_carrier(quietly=False)
+                self._on_hook_at = time.monotonic() + self.hangup_delay
+                self._hook()
         self._dtr = value
+
+    def _hook(self):
+        """A hang-up by DTR completes once its delay has passed."""
+        if self._on_hook_at is not None and time.monotonic() >= self._on_hook_at:
+            self._on_hook_at = None
+            self._lose_carrier(quietly=False)
 
     @property
     def cd(self):
+        if self.broken:
+            raise serial.SerialException("GetCommModemStatus failed (the device is gone)")
         if not self.is_open:
             raise serial.PortNotOpenError()
+        self._hook()
         return self._carrier and self.dcd and self.powered
 
     # -- the modem ---------------------------------------------------------
@@ -230,6 +246,9 @@ class FakeModem:
     def _execute(self, line):
         self.commands.append(line)
         body = line[2:].upper()
+        if any(setting in body for setting in self.rejects):
+            self._result("ERROR")  # (and, as many modems do, none of the line applied)
+            return
         if body.startswith("Z"):
             self.echo = True
         if "E0" in body:

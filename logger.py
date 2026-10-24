@@ -129,6 +129,13 @@ class _FileLog(RotatingFileHandler):
             self.console.report_error(record)
 
 
+def _stop_console():
+    """At exit: show what the console has waiting (for a while)."""
+    for handler in log.handlers:
+        if isinstance(handler, ConsoleLog):
+            handler.stop()
+
+
 def _log_unraisable(unraisable):
     """sys.unraisablehook: an exception Python can only report, to the log."""
     where = unraisable.err_msg or "Exception ignored in"
@@ -238,6 +245,7 @@ def setup_logging():
         root.removeHandler(handler)
         if isinstance(handler, ConsoleLog):
             handler.stop()
+        handler.close()
     log.handlers.clear()
 
     formatter = logging.Formatter(
@@ -249,7 +257,8 @@ def setup_logging():
     console_handler = ConsoleLog()
     console_handler.setLevel(logging.DEBUG if "--debug" in sys.argv else logging.INFO)
     console_handler.setFormatter(formatter)
-    atexit.register(console_handler.stop)
+    atexit.unregister(_stop_console)  # (once, for whichever console is current)
+    atexit.register(_stop_console)
 
     # File handler with rotation
     file_handler = _FileLog(
