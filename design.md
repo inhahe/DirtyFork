@@ -235,6 +235,7 @@ They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data
 - **Against other implementations** (`test_zmodem_interop.py`, skipped without the tool): zmodem.js under Node (`tests/zmodem_peer.js`, running the web terminal's own copy) and lrzsz's `sz`/`rz` in WSL, both directions, with escaping and with damage on the line.
 - **YMODEM-G** (`test_ymodem.py`): `file_transfer` against small fake peers: a sender's cancel midway (nothing published), a device name, a receiver's cancel (not a success), a plain YMODEM receiver that refuses a packet once and asks late for the end of the batch, a connection that closes.
 - **The file library** (`test_file_transfer.py`): upload names, sizes and room (checked as data arrives), publishing that never replaces; downloads of listed files only; cataloguing that keeps other callers' entries.
+- **The console** (`test_logger.py`): logging (the BBS's, asyncio's, Python's warnings) goes on while the console is paused, and lines beyond the backlog are counted, not kept.
 - **Modems** (`test_modem.py`, Windows only): `modem.py` on pyserial-asyncio's real transport, against a simulated Hayes modem (`tests/fake_modem.py`: AT commands, RING, CONNECT, a line of a given speed, DCD, DTR, the `+++` escape): setting up, answering (and a failed answer), a modem that answers nothing, a port that fails while waiting, the caller's hang-up (loud and quiet), a modem without DCD, drain at 2400 bps and when the caller hangs up, hanging up after the output (by DTR, and by `ATH` when DTR is ignored), `close()` hanging up, one call at a time, a port that cannot be opened, a ZMODEM download over the line; and UTF-8 split across reads.
 - **The web terminal's bridge** (`test_terminal_bridge.py`): its telnet client alone, and the bridge against a fake BBS (negotiation, every byte value both ways, the subprotocol and first-message checks, hang-ups and connection errors, an unreachable BBS, the connection limits, silent sockets, origins).
 - **Transfers as a web caller makes them** (`test_web_transfers.py`): zmodem.js, over a WebSocket, through the bridge, to a real telnetlib3 server running `file_transfer` as the BBS does; downloads in UTF-8 and CP437, uploads with refused names and limits, cancelling; and the upload naming rules.
@@ -265,7 +266,7 @@ They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data
 | `file_transfer.py` | Transfers on a caller's connection (binary mode, screen, cancelling) and the upload policy |
 | `lib/` | The vendored YMODEM-G library (`ymodem`); where it came from, and what was changed, in `lib/README.md` |
 | `idle.py` | Idle timeout: the reader wrapper with its warning popup |
-| `logger.py` | Rotating file logging |
+| `logger.py` | Rotating file logging, and the console's, from a thread of its own (a paused console must not stop the event loop); other libraries' and Python's warnings to both |
 | `modem.py` | Modem calls: setting up and answering (AT commands), the session's serial reader and writer, the carrier, hanging up, a port's calls one at a time |
 | `modules.py` | Dynamic module loader |
 | `paths.py` | Path resolution (project vs data directory) |

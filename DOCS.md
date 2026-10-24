@@ -479,3 +479,5 @@ Rotating file logger with configurable:
 - `split_at`: max size before rotation
 - `max_length`: total size including rotated files
 - `max_age`: retention period
+
+The same lines (INFO and up; DEBUG too with `--debug`) are shown on the console the BBS runs in, along with other libraries' warnings and Python's. The console is written by a thread of its own, so a console that stops taking output does not stop the BBS: in a Windows console with QuickEdit on (the default), a click in the window starts a selection, which pauses every program writing to it until the selection ends (Esc, Enter, or a right-click). The BBS goes on meanwhile; the console catches up afterwards, and if more than 10,000 lines were waiting, it says how many it left out (the log file has them all).

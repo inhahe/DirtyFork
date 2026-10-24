@@ -3,7 +3,14 @@ Logging system for DirtyFork BBS.
 
 Provides a module-level `log` logger and a `setup_logging()` function
 that configures Python's logging module with a RotatingFileHandler
-(for log file splitting) and a StreamHandler (for console output).
+(for log file splitting) and the console.
+
+The console is written by a thread of its own (ConsoleLog): the BBS's event
+loop only hands it records. A console can stop taking output for any length
+of time (in a Windows console with QuickEdit, a click in the window pauses
+every program writing to it until the selection ends), and a write the loop
+made itself would stop the whole BBS meanwhile: every caller frozen,
+connections accepted and never answered.
 
 Usage:
     from logger import log, setup_logging
@@ -11,11 +18,14 @@ Usage:
     log.info("message")      # use everywhere else
 """
 
+import atexit
 import glob
 import logging
 import os
+import queue
 import re
 import sys
+import threading
 import time
 from datetime import timedelta
 from logging.handlers import RotatingFileHandler
@@ -24,6 +34,68 @@ from config import get_config
 import paths
 
 log = logging.getLogger("dirtyfork")
+
+
+class ConsoleLog(logging.Handler):
+    """Shows records on the console (stderr) from a thread of its own.
+
+    At most *backlog* records wait while the console is not taking output;
+    further ones are not shown (the log file has them), and once there is room
+    again a line says how many were left out. stop() writes what is waiting,
+    for at most *timeout* seconds (the console may still be paused at exit)."""
+
+    def __init__(self, backlog=10_000, stream=None):
+        super().__init__()
+        self._stream = stream
+        self._queue = queue.Queue(maxsize=backlog)
+        self._left_out = 0
+        self._thread = threading.Thread(target=self._show, name="console log", daemon=True)
+        self._thread.start()
+
+    def emit(self, record):
+        try:
+            line = self.format(record)
+        except Exception:
+            self.handleError(record)
+            return
+        if self._left_out:
+            try:
+                self._queue.put_nowait(f"({self._left_out} log lines were not shown here while the "
+                                       f"console was not taking output; the log file has them)")
+            except queue.Full:
+                self._left_out += 1
+                return
+            self._left_out = 0
+        try:
+            self._queue.put_nowait(line)
+        except queue.Full:
+            self._left_out += 1
+
+    def _show(self):
+        while True:
+            line = self._queue.get()
+            if line is None:
+                return
+            stream = self._stream or sys.stderr
+            try:
+                stream.write(line + "\n")
+                stream.flush()
+            except Exception:
+                pass  # (no console, or a closed one: nothing to show it on)
+
+    def stop(self, timeout=2.0):
+        try:
+            self._queue.put(None, timeout=timeout)
+        except queue.Full:
+            return
+        self._thread.join(timeout)
+
+
+def _log_unraisable(unraisable):
+    """sys.unraisablehook: an exception Python can only report, to the log."""
+    where = unraisable.err_msg or "Exception ignored in"
+    log.error("%s: %r", where, unraisable.object,
+              exc_info=(unraisable.exc_type, unraisable.exc_value, unraisable.exc_traceback))
 
 
 def _parse_duration(text):
@@ -123,6 +195,11 @@ def setup_logging():
     log.propagate = False  # Don't propagate to root logger (prevents duplicate output)
 
     # Prevent duplicate handlers if setup_logging is called more than once
+    root = logging.getLogger()
+    for handler in list(log.handlers):
+        root.removeHandler(handler)
+        if isinstance(handler, ConsoleLog):
+            handler.stop()
     log.handlers.clear()
 
     formatter = logging.Formatter(
@@ -141,11 +218,22 @@ def setup_logging():
     file_handler.setFormatter(formatter)
     log.addHandler(file_handler)
 
-    # Console handler (stdout) — only show DEBUG if --debug was passed
-    console_handler = logging.StreamHandler()
+    # Console (stderr), written by its own thread — only show DEBUG if --debug was passed
+    console_handler = ConsoleLog()
     console_handler.setLevel(logging.DEBUG if "--debug" in sys.argv else logging.INFO)
     console_handler.setFormatter(formatter)
     log.addHandler(console_handler)
+    atexit.register(console_handler.stop)
+
+    # Other libraries' warnings (asyncio's, telnetlib3's) go to both too: left
+    # to logging's last resort, the event loop would write them to the console
+    # itself. So do Python's warnings ("coroutine ... was never awaited") and
+    # the exceptions it can only report ("Exception ignored in ..."), which
+    # are otherwise written to stderr by whichever thread raised them.
+    root.addHandler(file_handler)
+    root.addHandler(console_handler)
+    logging.captureWarnings(True)
+    sys.unraisablehook = _log_unraisable
 
     log.debug("Logging initialised (file=%s, split_at=%d, backups=%d, max_age=%s)",
              log_path, split_at, backup_count, max_age)
