@@ -354,20 +354,21 @@ async def _show_file_list(user, files_with_meta, title):
 # Protocol chooser
 # ---------------------------------------------------------------------------
 
-# Terminal types (substrings, lower case) of terminals that can't do file
-# transfers: the browser terminal (web/jsterm_bridge.py) reports "ANSI-JSTERM".
-# Starting a transfer there would only fill the screen with protocol bytes and
-# swallow the caller's keys until the receiver gives up.
-_NO_TRANSFER_TERMINALS = ("jsterm",)
+async def _transfers_refused(user):
+  """True, after telling the user why, when their terminal can't do file
+  transfers (common.detect_terminal decides: the browser terminal can't).
+  Check it before asking for anything a transfer needs, so they don't answer in vain."""
+  if user.file_transfers:
+    return False
+  await show_message_box(user, "File transfers need a terminal program with ZMODEM or YMODEM-G, "
+                               "such as SyncTERM; the web terminal can't do them. Connect to the BBS "
+                               "with one of those to upload or download.")
+  return True
 
 
 async def _choose_protocol(user):
   """Let the user choose a transfer protocol. Returns protocol name or None."""
-  ttype = str(getattr(user, "ttype", "") or "").lower()
-  if any(name in ttype for name in _NO_TRANSFER_TERMINALS):
-    await show_message_box(user, "File transfers need a terminal program with ZMODEM or YMODEM-G, "
-                                 "such as SyncTERM; the web terminal can't do them. Connect to the BBS "
-                                 "with one of those to upload or download.")
+  if await _transfers_refused(user):
     return None
   protocols = get_available_protocols()
   available = [p for p, ok in protocols.items() if ok]
@@ -706,6 +707,8 @@ async def _list_all_files(user):
 
 async def _download_file(user):
   """Prompt for a filename and download it."""
+  if await _transfers_refused(user):
+    return
   await ansi_cls(user)
 
   ansi_color(user, fg=cyan, fg_br=True, bg=black)

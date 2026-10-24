@@ -89,10 +89,12 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
         async with connect(self.url) as ws:
             await ws.send("telnet|bbs|23")
             reader, writer = await self.bbs.next_conn(1)
-            writer.write(everything)  # IAC (255) and all, untouched
+            # Untouched, IAC (255) and all; a data 255 is doubled, as telnet sends it
+            # (a lone IAC at the end would be an unfinished command, held back).
+            writer.write(everything + b"\xff")
             await writer.drain()
-            text = await recv_text(ws, 256)
-            self.assertEqual([ord(c) for c in text], list(range(256)))
+            text = await recv_text(ws, 257)
+            self.assertEqual([ord(c) for c in text], list(range(256)) + [255])
             await ws.send(everything.decode("latin-1"))  # how jsTerm sends bytes
             self.assertEqual(await asyncio.wait_for(reader.readexactly(256), 5), everything)
 
@@ -228,6 +230,51 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
         async with connect(self.url) as ws:  # no Origin: not a browser
             await ws.send("telnet|bbs|23")
             await self.bbs.next_conn(2)
+
+
+class WholeCommandsTest(unittest.TestCase):
+    """The page parses each message on its own, so a telnet command must not be
+    split across two: whole_commands says where a chunk can safely end."""
+
+    def test_where_a_chunk_can_end(self):
+        cases = [
+            (b"plain text", 10),
+            (b"ab\xff", 2),                              # a lone IAC waits for its byte
+            (b"ab\xff\xff", 4),                          # IAC IAC: a data 255
+            (b"ab\xff\xfd", 2),                          # IAC DO waits for its option
+            (b"ab\xff\xfd\x18cd", 7),
+            (b"\xff\xfa\x18\x01", 0),                    # SB without its end
+            (b"\xff\xfa\x18\x01\xff", 0),
+            (b"\xff\xfa\x18\x01\xff\xf0x", 7),           # SB ... IAC SE
+            (b"\xff\xfa\x18\xff\xff\xf0\xff\xf0", 8),   # IAC IAC inside SB, then a 240
+            (b"x\xff\xf1y", 4),                          # a two-byte command (NOP)
+        ]
+        for chunk, expected in cases:
+            self.assertEqual(jsterm_bridge.whole_commands(chunk), expected, chunk)
+
+
+class SplitCommandTest(unittest.IsolatedAsyncioTestCase):
+    async def test_a_command_split_by_the_network_reaches_the_page_whole(self):
+        bbs = FakeBBS()
+        await bbs.start()
+        bridge = jsterm_bridge.Bridge(("127.0.0.1", bbs.port), 50, 50)
+        server = await serve(bridge.handle, "127.0.0.1", 0)
+        url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/"
+        try:
+            async with connect(url) as ws:
+                await ws.send("telnet|bbs|23")
+                _, writer = await bbs.next_conn(1)
+                writer.write(b"hi\xff\xfa\x18\x01")  # IAC SB TTYPE SEND ...
+                await writer.drain()
+                self.assertEqual(await asyncio.wait_for(ws.recv(), 5), "hi")
+                await asyncio.sleep(0.2)
+                writer.write(b"\xff\xf0")  # ... IAC SE
+                await writer.drain()
+                self.assertEqual(await asyncio.wait_for(ws.recv(), 5), "\xff\xfa\x18\x01\xff\xf0")
+        finally:
+            server.close()
+            await server.wait_closed()
+            await bbs.stop()
 
 
 class HostPortTest(unittest.TestCase):

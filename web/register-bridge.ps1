@@ -23,16 +23,24 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$py = (Get-Command python -ErrorAction Stop).Source
+# The project's own environment (env\, which requirements.txt and the tests use) when
+# there is one; else the python on PATH.
+$venv = Join-Path $root 'env\Scripts'
+if (Test-Path (Join-Path $venv 'pythonw.exe')) {
+    $py = Join-Path $venv 'python.exe'
+} else {
+    $py = (Get-Command python -ErrorAction Stop).Source
+}
 $pyw = Join-Path (Split-Path -Parent $py) 'pythonw.exe'
 if (-not (Test-Path $pyw)) { throw "pythonw.exe not found next to $py" }
+"Python: $pyw"
 # websockets 13 introduced the API the bridge uses. Windows PowerShell 5.1 turns a
 # native program's stderr into a terminating error under 'Stop', so relax it here.
 $ErrorActionPreference = 'Continue'
 & $py -c "import websockets.asyncio.server" 2>&1 | Out-Null
 $haveWebsockets = $LASTEXITCODE -eq 0
 $ErrorActionPreference = 'Stop'
-if (-not $haveWebsockets) { throw "$py lacks websockets 13 or later: pip install -U websockets" }
+if (-not $haveWebsockets) { throw "$py lacks websockets 13 or later: $py -m pip install -r requirements.txt" }
 
 $name = 'DirtyFork web bridge'
 $arguments = "web\jsterm_bridge.py --listen $Listen --bbs $Bbs" + (($Origins | ForEach-Object { " --origin $_" }) -join '')
@@ -47,8 +55,13 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances 
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
 # A running bridge keeps its old settings, and a start while it runs is ignored: stop it
-# first, and wait until its port is free, or the new one cannot listen there.
-if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) { Stop-ScheduledTask -TaskName $name }
+# first, and wait until its port is free, or the new one cannot listen there. Disabled
+# first, so its own 5-minute trigger cannot start it again meanwhile (registering
+# again enables it).
+if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
+    Disable-ScheduledTask -TaskName $name | Out-Null
+    Stop-ScheduledTask -TaskName $name
+}
 $port = [int]($Listen -replace '^.*:', '')
 for ($i = 0; $i -lt 40 -and (Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue); $i++) {
     Start-Sleep -Milliseconds 250

@@ -26,6 +26,19 @@ destinations:
 
 Top-level values like `bbs_name` are available as `{bbs_name}` placeholders anywhere in the config.
 
+### Letting Callers In (Firewall)
+
+Callers on other machines reach `port` only if Windows Firewall lets them, and, behind a router, only if the router forwards that port to this machine. On inhahe.com the rule is **"DirtyFork BBS telnet (TCP 23)"**: inbound TCP 23, allowed for any program (so it holds whichever Python runs the BBS), on the **Private** profile only — the home network is Private, and on a network Windows calls Public the port stays closed. The router forwards port 23, so the BBS answers at `inhahe.com:23` from the internet.
+
+From an elevated PowerShell (change `23` if `port:` changes):
+
+```powershell
+New-NetFirewallRule -DisplayName 'DirtyFork BBS telnet (TCP 23)' -Direction Inbound -Protocol TCP -LocalPort 23 -Action Allow -Profile Private
+Remove-NetFirewallRule -DisplayName 'DirtyFork BBS telnet (TCP 23)'   # to close it again
+```
+
+The web terminal needs no rule of its own: its callers come in through the web server's port, and its bridge listens on this machine only (see [Web Terminal](#web-terminal)).
+
 ### Database vs YAML
 
 - **SQLite database**: credentials (handle, password_hash), keys (USER_KEYS table), messages, forum posts — anything queried across users
@@ -324,12 +337,12 @@ browser (bbs.html, jsTerm) --wss://host/bbs-ws--> nginx --> web/jsterm_bridge.py
 - **The page**: `https://inhahe.com/bbs.html`, from `D:\mypage\inhahe.com`: `bbs.html`, and `jsterm\` for jsTerm itself, its font, and the page's script (`jsterm\bbs.js`). `jsterm\README.txt` says where jsTerm came from and what was changed in it. The page connects as soon as it loads, shows whether it is connected, and offers to connect again after a disconnect.
 - **jQuery**, the one file jsTerm takes from the web: `bbs.html` loads it from `code.jquery.com` (with an integrity hash). `bbs-local.html` is the same page using the copy in `jsterm\vendor\` instead, for when the web copy is unwanted or unreachable; copy it over `bbs.html` to switch.
 - **nginx** (in WSL, `/etc/nginx/sites-enabled/inhahe.com`) passes `/bbs-ws` to the bridge, upgrading it to a WebSocket, so the page works over both `https` (as `wss://`) and `http`, through the site's own certificate and port.
-- **The bridge** runs from logon as the Task Scheduler task "DirtyFork web bridge", registered (and started) by `web\register-bridge.ps1`; the task also fires every 5 minutes, so a bridge that stopped is back within 5 minutes. It runs independently of the BBS: while the BBS is down, web callers are told so. It accepts pages from inhahe.com and www.inhahe.com only. It logs to `web\jsterm_bridge.log`, why it stopped included.
+- **The bridge** runs from logon as the Task Scheduler task "DirtyFork web bridge", registered (and started) by `web\register-bridge.ps1` with the project's own Python (`env\`); the task also fires every 5 minutes, so a bridge that stopped is back within 5 minutes. It runs independently of the BBS: while the BBS is down, web callers are told so. It accepts pages from inhahe.com and www.inhahe.com only. It logs to `web\jsterm_bridge.log`, why it stopped included.
 
 **To set it up elsewhere:**
 
 1. `pip install "websockets>=13"` (it is in `requirements.txt`).
-2. Run the bridge: `powershell -NoProfile -ExecutionPolicy Bypass -File web\register-bridge.ps1 -Origins https://your.site` (also `-Listen 127.0.0.1:8023 -Bbs 127.0.0.1:23`; re-running it applies new settings to the running bridge), or by hand: `python web/jsterm_bridge.py --listen ... --bbs ... [--origin URL ...] [--max-clients 50] [--max-per-address 4] [--log path]`.
+2. Run the bridge: `powershell -NoProfile -ExecutionPolicy Bypass -File web\register-bridge.ps1 -Origins https://your.site` (it uses `env\`'s Python when there is one, else the `python` on PATH; also `-Listen 127.0.0.1:8023 -Bbs 127.0.0.1:23`; re-running it applies new settings to the running bridge), or by hand: `python web/jsterm_bridge.py --listen ... --bbs ... [--origin URL ...] [--max-clients 50] [--max-per-address 4] [--log path]`.
 3. Proxy a path to it in the web server, as a WebSocket:
 
    ```nginx

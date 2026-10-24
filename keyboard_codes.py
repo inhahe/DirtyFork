@@ -36,6 +36,11 @@ keyboard_codes = {
   "\x1b[C": right,
   "\x1b[A": up,
   "\x1b[B": down,
+  # ... in application cursor mode (DECCKM, ESC[?1h), as xterm and PuTTY send them
+  "\x1bOD": left,
+  "\x1bOC": right,
+  "\x1bOA": up,
+  "\x1bOB": down,
 
   # Home/End — multiple conventions
   "\x1b[H": home,

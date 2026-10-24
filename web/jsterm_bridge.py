@@ -16,7 +16,9 @@ jsTerm's protocol (its src/telnet/Socket.js and Session.js):
 * The bridge forwards what the BBS sends as text messages whose characters are
   its bytes (Latin-1); the page reads them back with charCodeAt.
 
-Telnet negotiation passes through untouched: jsTerm answers the BBS itself.
+Telnet negotiation passes through untouched: jsTerm answers the BBS itself. The
+bridge only keeps each telnet command within one message (whole_commands),
+since jsTerm parses each message on its own.
 
 Run (it serves until stopped):
 
@@ -53,6 +55,55 @@ CONNECT_TIMEOUT_S = 10
 # once); until it does it holds a slot without a BBS session, whose own idle
 # timeout would otherwise free it.
 FIRST_MESSAGE_TIMEOUT_S = 10
+
+IAC, SB, SE = 255, 250, 240
+WILL, WONT, DO, DONT = 251, 252, 253, 254
+# An unfinished telnet command longer than this is not one (a subnegotiation
+# without its end): stop holding it back.
+MAX_HELD = 4096
+
+
+def whole_commands(buf: bytes) -> int:
+    """How much of `buf` ends between telnet commands: everything up to an
+    unfinished command at its end (a lone IAC, IAC WILL without its option, an
+    IAC SB ... without its IAC SE).
+
+    The page handles each WebSocket message on its own, so a command split
+    across two would be lost there; the bridge holds the unfinished part back
+    until the rest comes.
+    """
+    i, n, end = 0, len(buf), 0
+    while i < n:
+        if buf[i] != IAC:
+            i += 1
+            end = i
+            continue
+        if i + 1 >= n:
+            break  # IAC at the very end
+        command = buf[i + 1]
+        if WILL <= command <= DONT:
+            if i + 2 >= n:
+                break
+            i += 3
+        elif command == SB:
+            j, closed = i + 2, False
+            while j < n:  # to IAC SE; IAC IAC inside is a data 255
+                if buf[j] != IAC:
+                    j += 1
+                elif j + 1 >= n:
+                    break
+                elif buf[j + 1] == SE:
+                    j, closed = j + 2, True
+                    break
+                else:
+                    j += 2
+            if not closed:
+                break
+            i = j
+        else:  # IAC IAC (a data 255) or a two-byte command
+            i += 2
+        end = i
+    return end
 
 
 def host_port(text: str) -> tuple[str, int]:
@@ -100,7 +151,10 @@ class Bridge:
         if total >= self.max_clients or self.by_address[who] >= self.max_per_address:
             log.warning("%s turned away: %d web terminals connected, %d from this address",
                         who, total, self.by_address[who])
-            await ws.send(BUSY_TEXT)
+            try:
+                await ws.send(BUSY_TEXT)
+            except ConnectionClosed:
+                return  # gone already
             await ws.close(1013, "too many users")  # 1013: try again later
             return
         self.by_address[who] += 1
@@ -168,9 +222,18 @@ class _Session:
 
     async def _bbs_to_page(self, reader: asyncio.StreamReader) -> None:
         reason = "the BBS closed the connection"
+        held = b""  # the start of a telnet command whose rest has not come yet
         try:
             while data := await reader.read(65536):
-                await self.ws.send(data.decode("latin-1"))
+                data = held + data
+                cut = whole_commands(data)
+                if len(data) - cut > MAX_HELD:
+                    cut = len(data)
+                data, held = data[:cut], data[cut:]
+                if data:
+                    await self.ws.send(data.decode("latin-1"))
+            if held:
+                await self.ws.send(held.decode("latin-1"))
         except ConnectionClosed:
             return  # the page left; run() cleans up
         except OSError as exc:
