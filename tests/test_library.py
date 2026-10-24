@@ -489,6 +489,15 @@ class Folders(unittest.TestCase):
     library.set_details(self.con, upload, "theirs", [], by_sysop=True)
     self.assertFalse(library.reset_details(self.con, upload))  # (no sync to give them to)
 
+  def test_details_given_back_make_their_source_due(self):
+    file_id = library.put(self.con, root="pics", path="z.jpg", size=1, source="pics")
+    library.set_state(self.con, "pics", library.CHECKED, "1 2 key")
+    library.set_state(self.con, "other", library.CHECKED, "1 2 key")
+    library.set_details(self.con, file_id, "mine", [], by_sysop=True)
+    self.assertTrue(library.reset_details(self.con, file_id))
+    self.assertIsNone(library.get_state(self.con, "pics", library.CHECKED))  # (checked at the next run)
+    self.assertEqual(library.get_state(self.con, "other", library.CHECKED), "1 2 key")
+
   def test_nothing_writes_over_a_sysops_details(self):
     file_id = library.put(self.con, root="pics", path="y.jpg", size=1, tags=["pic"], source="pics")
     library.set_details(self.con, file_id, "mine", ["kept"], by_sysop=True)

@@ -11,19 +11,23 @@
 # their zips, zips websites and webpages that are new or changed, and lists new
 # pictures and videos. Its log is library_sync.log in the data directory.
 #
+# First, unless -NoFirstRun, this runs the sync here, once: it brings everything up to
+# date, however long that takes (zips are kept as they are made), where the task's runs
+# are stopped after 3 hours; and a config that doesn't work shows at once.
+#
 # How often: the task runs every -Minutes (default 15), and the sync paces each source
 # itself: a run checks a source only once 30 times as long as its last check took has
-# passed (file_library.sync_pace; zipping not counted), and at least once a day. So a
-# source that is quick to check is checked at every run, and one that takes minutes, as
-# a big folder does on a disk busy with something else, waits hours. The first run
-# brings everything up to date, however long that takes (zips are kept as they are made).
+# passed (file_library.sync_pace; the work on what changed not counted), and at least
+# once a day. So a source that is quick to check is checked at every run, and one that
+# takes minutes, as a big folder does on a disk busy with something else, waits hours.
 #
 # It runs as the current user, only while logged on (no stored password), with pythonw so
 # no console window appears. A run still going when the next is due has that one skipped
 # (one at a time); a run that hangs is stopped after 3 hours.
 param(
     [string]$DataDir = 'me',
-    [int]$Minutes = 15
+    [int]$Minutes = 15,
+    [switch]$NoFirstRun
 )
 $ErrorActionPreference = 'Stop'
 
@@ -41,6 +45,23 @@ $data = (Resolve-Path $data).Path
 if ($Minutes -lt 1) { throw "-Minutes must be at least 1" }
 "Python: $pyw"
 "Data directory: $data"
+
+if (-not $NoFirstRun) {
+    "Bringing the library up to date (the log: $data\library_sync.log)..."
+    # (Windows PowerShell 5.1 turns a native program's stderr, the sync's log, into a
+    # terminating error under 'Stop'.)
+    $ErrorActionPreference = 'Continue'
+    Push-Location $root
+    try {
+        & $py library_sync.py --data-dir $data 2>&1 | ForEach-Object { "$_" }
+        $code = $LASTEXITCODE
+    } finally {
+        Pop-Location
+        $ErrorActionPreference = 'Stop'
+    }
+    if ($code -eq 3) { throw "Another library_sync is running; run this again when it has finished." }
+    if ($code -ne 0) { Write-Host "library_sync exited with $code (a source failed; see the log). Registering anyway." }
+}
 
 $name = 'DirtyFork library sync'
 $action = New-ScheduledTaskAction -Execute $pyw -WorkingDirectory $root -Argument "library_sync.py --data-dir `"$data`""

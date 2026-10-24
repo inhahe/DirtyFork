@@ -77,9 +77,11 @@ import urllib.request
 import zipfile
 import zlib
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import library
+from definitions import null
 
 DEFAULT_CONFIG = "DirtyFork.yaml"
 BATCH = 1000            # items compared with the catalogue at a time
@@ -87,6 +89,8 @@ COMMIT_EVERY = 0.5      # seconds the sync holds the catalogue's write lock at m
 PACE = 30               # (file_library.sync_pace) a scheduled run checks a source again only once
                         # this many times as long as its last check took has passed...
 MAX_GAP = 24 * 3600     # ...or a day
+EARLY = 300             # seconds before it is due that a source is checked (the next run is
+                        # minutes away, and runs start late by more or less)
 TEMP_SUFFIX = ".~sync.zip"
 HTML_TYPES = (".htm", ".html", ".xhtml", ".shtml", ".mht", ".mhtml")
 SITE_EXCLUDE = ("hts-cache", "hts-log.txt", "hts-in_progress.lock", "hts-nohup.out", "cookies.txt", "*.whtt")
@@ -166,7 +170,7 @@ class Stats:
   failed: int = 0
   skipped: Counter = field(default_factory=Counter)  # extension -> count, of files left out
   incomplete: bool = False  # some of it couldn't be read: forget nothing this time
-  zipping: float = 0.0  # seconds spent making zips (builds)
+  work: float = 0.0  # seconds spent on what changed (_work): not what checking the source costs
 
   def summary(self):
     text = (f"{self.listed} listed, {self.new} new, {self.changed} changed, {self.updated} retagged or "
@@ -182,6 +186,18 @@ class Stats:
 
 def _ext(name):
   return os.path.splitext(name)[1][1:].lower()
+
+
+@contextlib.contextmanager
+def _work(stats):
+  """Time spent in here is work a change asked for (fetching, zipping,
+  describing and cataloguing what is new or changed): Stats.work, which
+  pacing leaves out of what checking a source costs (next_check)."""
+  began = time.monotonic()
+  try:
+    yield
+  finally:
+    stats.work += time.monotonic() - began
 
 
 def _rel(path, base):
@@ -833,16 +849,17 @@ def handle_github(ctx, source, conf, stats):
                  description=description)
       continue
     try:
-      if os.path.isdir(os.path.join(clone, ".git")):
-        git(ctx, "fetch", "--depth", "1", "--no-tags", "origin", branch, cwd=clone)
-        head = git(ctx, "rev-parse", "FETCH_HEAD", cwd=clone).strip()
-      else:
-        remove_tree(clone)
-        os.makedirs(clones, exist_ok=True)
-        git(ctx, "clone", "--depth", "1", "--single-branch", "--branch", branch, "--no-tags",
-            repo["clone_url"], name, cwd=clones)
-        git(ctx, "config", "core.autocrlf", "false", cwd=clone)
-        head = git(ctx, "rev-parse", "HEAD", cwd=clone).strip()
+      with _work(stats):  # (fetching what was pushed)
+        if os.path.isdir(os.path.join(clone, ".git")):
+          git(ctx, "fetch", "--depth", "1", "--no-tags", "origin", branch, cwd=clone)
+          head = git(ctx, "rev-parse", "FETCH_HEAD", cwd=clone).strip()
+        else:
+          remove_tree(clone)
+          os.makedirs(clones, exist_ok=True)
+          git(ctx, "clone", "--depth", "1", "--single-branch", "--branch", branch, "--no-tags",
+              repo["clone_url"], name, cwd=clones)
+          git(ctx, "config", "core.autocrlf", "false", cwd=clone)
+          head = git(ctx, "rev-parse", "HEAD", cwd=clone).strip()
     except (RuntimeError, OSError) as exc:
       if "not found in upstream" in str(exc) and old is None:
         # An empty repository (no commit, so no branch): nothing to list
@@ -1190,26 +1207,23 @@ def sync_source(ctx, source, conf):
       if ctx.dry_run:
         continue
       try:
-        if item.build is not None:
-          settle(now=True)  # (making a zip can take minutes)
-          began = time.monotonic()
-          try:
+        with _work(stats):
+          if item.build is not None:
+            settle(now=True)  # (making a zip can take minutes)
             item.build(old)
-          finally:
-            stats.zipping += time.monotonic() - began
-        if item.stamp is not None:
-          size, mtime = item.stamp
-        else:
-          size, mtime = library.file_stamp(os.path.join(ctx.lib.roots[item.root], *item.path.split("/")))
-        description = item.description if item.description is not None else (
-          item.describe() if item.describe else "")
-        if old is not None and (old.root, old.path) != (item.root, item.path):
-          # (the same entry, so a sysop's details stay; its old zip goes in _sweep_zips)
-          library.move(con, old.id, item.root, item.path)
-        # (put keeps a sysop's details, even ones set since old was read)
-        library.put(con, root=item.root, path=item.path, size=size, mtime=mtime, description=description,
-                    uploader=uploader, tags=item.tags, source=source, source_key=item.key,
-                    fingerprint=item.fingerprint)
+          if item.stamp is not None:
+            size, mtime = item.stamp
+          else:
+            size, mtime = library.file_stamp(os.path.join(ctx.lib.roots[item.root], *item.path.split("/")))
+          description = item.description if item.description is not None else (
+            item.describe() if item.describe else "")
+          if old is not None and (old.root, old.path) != (item.root, item.path):
+            # (the same entry, so a sysop's details stay; its old zip goes in _sweep_zips)
+            library.move(con, old.id, item.root, item.path)
+          # (put keeps a sysop's details, even ones set since old was read)
+          library.put(con, root=item.root, path=item.path, size=size, mtime=mtime, description=description,
+                      uploader=uploader, tags=item.tags, source=source, source_key=item.key,
+                      fingerprint=item.fingerprint)
       except sqlite3.Error:
         raise  # (the catalogue itself: the source fails, and is rolled back)
       except Exception as exc:
@@ -1326,21 +1340,48 @@ def forget_unconfigured(ctx):
     log.info("%s is no longer in the config: forgot its %d file(s)", source, n)
 
 
-def next_check(con, source, pace, now):
-  """When a scheduled run is to check *source* next (Unix time), or None
-  (now: never checked, or the clock has gone back since). Its last finished
-  check's cost decides: a check that took t seconds is done again *pace*
-  times t after it began, at most a day after. (A check that fails, or
-  can't read everything, records nothing, so the source stays due.) Making
-  zips doesn't count, being work a change asked for: what is paced is
-  looking for changes, which, on a disk busy with something else, can take
-  a hundred times as long as on one idle (all of a source's folders are
-  read)."""
+def next_check(con, source, conf, pace, now):
+  """When a scheduled run is to check *source* (its settings *conf*) next,
+  in Unix time: 0, at once, if it never has been, its settings have
+  changed since, or the clock has gone back. Its last check's cost
+  decides: a check that cost t seconds is done again *pace* times t after
+  the run that made it began, and at least daily. The cost leaves out the
+  work changes asked for (Stats.work): what is paced is looking for
+  changes, which reads all of a source's folders, and on a disk busy with
+  something else takes a hundred times as long as on one idle."""
   try:
-    began, took = (float(v) for v in library.get_state(con, source, "checked", "").split())
+    began, cost, settings = library.get_state(con, source, library.CHECKED, "").split()
+    began, cost = float(began), float(cost)
   except ValueError:
-    return None
-  return began + min(MAX_GAP, pace * took) if began <= now else None
+    return 0.0
+  if settings != _settings_key(conf) or began > now:
+    return 0.0
+  return began + min(MAX_GAP, pace * cost)
+
+
+def _record_check(ctx, source, conf, began, cost):
+  """Record that the run that began at *began* checked *source*, at a cost
+  of *cost* seconds (next_check): whatever came of it, a check that failed
+  or couldn't read everything too, so a source that always does is paced
+  like any other."""
+  try:
+    library.set_state(ctx.con, source, library.CHECKED, f"{began:.0f} {max(0.0, cost):.3f} {_settings_key(conf)}")
+    ctx.con.commit()
+  except sqlite3.Error as exc:  # (the catalogue locked too long: checked again next run)
+    ctx.con.rollback()
+    log.warning("%s: could not record its check: %s", source, exc)
+
+
+def _settings_key(conf):
+  """A short fingerprint of a source's settings: a check under others is
+  no guide to the next (a new dir, more tags), so it is due at once."""
+  def plain(v):
+    if isinstance(v, Mapping):
+      return {str(k): plain(v[k]) for k in v.keys()}
+    if isinstance(v, (list, tuple)):
+      return [plain(x) for x in v]
+    return v if isinstance(v, (str, int, float, bool)) else str(v)
+  return hashlib.sha1(json.dumps(plain(conf), sort_keys=True).encode("utf-8")).hexdigest()[:12]
 
 
 def _when(t):
@@ -1394,10 +1435,10 @@ def main(argv=None):
   parser = argparse.ArgumentParser(description="Fill and refresh the file library's catalogue.")
   parser.add_argument("config", nargs="?", help=f"the BBS's config (default: {DEFAULT_CONFIG} in the data dir)")
   parser.add_argument("--data-dir", help="the BBS's data directory (as for DirtyFork.py)")
-  parser.add_argument("--all", action="store_true", help="every source, scheduled: false ones too")
+  parser.add_argument("--all", action="store_true", help="every source, scheduled: false ones too, due or not")
   parser.add_argument("--dry-run", action="store_true", help="say what would change; change nothing")
   parser.add_argument("-v", "--verbose", action="store_true", help="log every file that changes")
-  parser.add_argument("sources", nargs="*", metavar="SOURCE", help="sources to sync (default: the scheduled ones)")
+  parser.add_argument("sources", nargs="*", metavar="SOURCE", help="sources to sync, due or not (default: the scheduled ones that are due)")
   args = parser.parse_args(argv)
   # A config path given first and a source name are both positional: a name
   # ending in .yaml is the config.
@@ -1416,6 +1457,7 @@ def main(argv=None):
 
 
 def _run(args, paths):
+  run_began = time.time()  # (what each check is recorded as begun at: next_check)
   config_path = os.path.abspath(args.config or paths.resolve_data(DEFAULT_CONFIG))
   os.chdir(paths.project_dir)  # (the config's !include paths are relative to it, as for the BBS)
   from config import get_config
@@ -1439,11 +1481,16 @@ def _run(args, paths):
   # (a scheduled run checks each source only as often as its last check's
   # cost allows: next_check; a run naming sources, or --all, checks them now)
   paced = not (args.sources or args.all or args.dry_run)
-  try:
-    pace = float(cfg.file_library.sync_pace) if cfg.file_library.sync_pace else PACE
-  except (TypeError, ValueError):
-    log.warning("Unreadable file_library.sync_pace %r; using %s", cfg.file_library.sync_pace, PACE)
-    pace = PACE
+  pace = PACE
+  if cfg.file_library.sync_pace is not null:
+    try:
+      pace = float(cfg.file_library.sync_pace)  # (0: every source at every run)
+      if not 0 <= pace < float("inf"):
+        raise ValueError
+    except (TypeError, ValueError):
+      log.warning("file_library.sync_pace %r is not a number of 0 or more; using %s", cfg.file_library.sync_pace,
+                  PACE)
+      pace = PACE
 
   if args.dry_run and not os.path.isfile(lib.catalog):
     con = library.empty_catalogue()  # (a dry run makes nothing, not even the catalogue)
@@ -1462,9 +1509,8 @@ def _run(args, paths):
     with contextlib.nullcontext() if args.dry_run else single_instance(lib.sync_lock):
       later = {}  # source -> when it is next checked, for those not due yet
       if paced:
-        now = time.time()
         later = {name: due for name in chosen
-                 if (due := next_check(con, name, pace, now)) is not None and due > now}
+                 if (due := next_check(con, name, lib.sources[name], pace, run_began)) > run_began + EARLY}
         chosen = [name for name in chosen if name not in later]
       log.info("library_sync: %s%s%s", ", ".join(chosen) or "(no sources)", " (dry run)" if args.dry_run else "",
                "; not due: " + ", ".join(f"{n} (at {_when(d)})" for n, d in later.items()) if later else "")
@@ -1480,26 +1526,24 @@ def _run(args, paths):
           log.error("%s: 7-Zip (7z.exe) is not installed; set file_library.seven_zip", name)
           failures += 1
           continue
-        t, began = time.monotonic(), time.time()
+        t, stats = time.monotonic(), None
         try:
           stats = sync_source(ctx, name, conf)
         except SourceError as exc:
           ctx.con.rollback()
           log.error("%s: skipped: %s", name, exc)
           failures += 1
-          continue
         except Exception:
           ctx.con.rollback()
           log.exception("%s: failed", name)
           failures += 1
-          continue
-        failures += 1 if stats.failed else 0
         took = time.monotonic() - t
-        log.info("%s: %s (%.1f s%s)", name, stats.summary(), took,
-                 f", {stats.zipping:.1f} s of it zipping" if stats.zipping else "")
-        if not (args.dry_run or stats.incomplete):  # (a check that couldn't read it all: again next run)
-          library.set_state(ctx.con, name, "checked", f"{began:.0f} {max(0.0, took - stats.zipping):.3f}")
-          ctx.con.commit()
+        if stats is not None:
+          failures += 1 if stats.failed else 0
+          log.info("%s: %s (%.1f s%s)", name, stats.summary(), took,
+                   f", {stats.work:.1f} s of it on what changed" if stats.work >= 0.05 else "")
+        if not args.dry_run:
+          _record_check(ctx, name, conf, run_began, took - (stats.work if stats else 0.0))
   except AlreadyRunning as exc:
     log.error("%s", exc)
     return 3

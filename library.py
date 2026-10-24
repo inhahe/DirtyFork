@@ -51,6 +51,9 @@ SCHEMA_VERSION = 2
 # a sysop's given back to the sync (reset_details), which sets them afresh
 # at its next run, even if the file hasn't changed.
 SYNCED, EDITED, RESET = 0, 1, 2
+# The sync_state key of when library_sync last checked a source, and what
+# that cost (library_sync.next_check); without it, the source is due.
+CHECKED = "checked"
 _SOURCE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -749,11 +752,16 @@ def set_details(con, file_id, description, tags, by_sysop=False):
 
 def reset_details(con, file_id):
   """Give a file's details back to the sync (a file a source lists, whose
-  details a sysop set): it sets them afresh at its next run. Returns
-  whether it did (not if the file is no longer catalogued, or its details
-  aren't a sysop's). The caller commits."""
-  return con.execute(f"UPDATE files SET edited = {RESET} WHERE id = ? AND edited = {EDITED} "
-                     "AND source IS NOT NULL", (file_id,)).rowcount > 0
+  details a sysop set): it sets them afresh at its next run, which checks
+  the source then however it is paced. Returns whether it did (not if the
+  file is no longer catalogued, or its details aren't a sysop's). The
+  caller commits."""
+  if not con.execute(f"UPDATE files SET edited = {RESET} WHERE id = ? AND edited = {EDITED} "
+                     "AND source IS NOT NULL", (file_id,)).rowcount:
+    return False
+  con.execute("DELETE FROM sync_state WHERE key = ? AND source = (SELECT source FROM files WHERE id = ?)",
+              (CHECKED, file_id))
+  return True
 
 
 def remove(con, file_id):

@@ -63,7 +63,7 @@ file_library:                  # (see DOCS.md, File Library; paths are project-r
   # repos_dir: files/repos         # its clones of GitHub repositories
   upload_key: trusted_uploader     # uploads by holders of this key (and sysops) are listed at once
   # sync_pace: 30                  # the scheduled sync checks a source again only after this many
-  #                                # times as long as its last check took (and at least daily)
+  #                                # times as long as its last check took (and at least daily; 0: always)
   # Sources for library_sync.py: folders and accounts whose files the library
   # lists. Linked types (gallery, videos, samples, mods) are listed where they
   # are; the rest are zipped into zips_dir. Every type, and its options:
