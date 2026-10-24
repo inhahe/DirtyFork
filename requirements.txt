@@ -5,7 +5,7 @@ telnetlib3
 pyserial-asyncio
 bcrypt
 # for web/jsterm_bridge.py (the web terminal)
-websockets
+websockets>=13
 # for lib/ymodem (YMODEM-G transfers)
 ordered-set
 

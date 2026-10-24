@@ -21,6 +21,8 @@ env/
 # Log files generated at runtime (in project root when no --data-dir)
 DirtyFork.log
 DirtyFork.log.*
+# Rotated logs of anything else (web/jsterm_bridge.log.1 ...: callers' addresses)
+*.log.*
 DirtyFork.db
 
 # User data generated at runtime (in project root when no --data-dir)

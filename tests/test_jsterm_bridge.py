@@ -3,6 +3,7 @@ import asyncio
 import os
 import sys
 import unittest
+from unittest import mock
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
@@ -56,10 +57,20 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
         await self.bbs.start()
         await self.start_bridge(("127.0.0.1", self.bbs.port))
 
-    async def start_bridge(self, bbs_address, max_clients=50):
-        self.bridge = jsterm_bridge.Bridge(bbs_address, max_clients)
-        self.server = await serve(self.bridge.handle, "127.0.0.1", 0)
+    async def start_bridge(self, bbs_address, max_clients=50, max_per_address=50, origins=None,
+                           first_message_timeout=jsterm_bridge.FIRST_MESSAGE_TIMEOUT_S):
+        self.bridge = jsterm_bridge.Bridge(bbs_address, max_clients, max_per_address, first_message_timeout)
+        self.server = await serve(self.bridge.handle, "127.0.0.1", 0, origins=origins)
         self.url = f"ws://127.0.0.1:{self.server.sockets[0].getsockname()[1]}/"
+
+    async def slots_freed(self):
+        """Wait for the bridge to give back every slot: its handler finishes a
+        moment after the client sees the socket close."""
+        for _ in range(100):
+            if not self.bridge.by_address:
+                return
+            await asyncio.sleep(0.05)
+        self.fail(f"slots still held: {dict(self.bridge.by_address)}")
 
     async def asyncTearDown(self):
         self.server.close()
@@ -98,15 +109,13 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
             reader, _ = await self.bbs.next_conn(1)
             self.assertEqual(await asyncio.wait_for(reader.readexactly(2), 5), b"hi")
 
-    async def test_connect_again_replaces_the_bbs_connection(self):
+    async def test_only_the_first_message_is_a_connect_request(self):
         async with connect(self.url) as ws:
             await ws.send("telnet|bbs|23")
-            first_reader, _ = await self.bbs.next_conn(1)
-            await ws.send("telnet|bbs|23")
-            second_reader, _ = await self.bbs.next_conn(2)
-            self.assertEqual(await asyncio.wait_for(first_reader.read(), 5), b"")  # closed
-            await ws.send("z")
-            self.assertEqual(await asyncio.wait_for(second_reader.readexactly(1), 5), b"z")
+            reader, _ = await self.bbs.next_conn(1)
+            await ws.send("telnet|bbs|23")  # later, it is what the caller typed or pasted
+            self.assertEqual(await asyncio.wait_for(reader.readexactly(13), 5), b"telnet|bbs|23")
+        self.assertEqual(len(self.bbs.conns), 1)
 
     async def test_bbs_hanging_up_closes_the_page(self):
         async with connect(self.url) as ws:
@@ -153,6 +162,72 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
                     await asyncio.wait_for(second.recv(), 5)
                 self.assertEqual(second.close_code, 1013)
         self.assertEqual(len(self.bbs.conns), 1)
+
+    async def test_one_address_cannot_take_every_slot(self):
+        self.server.close()
+        await self.server.wait_closed()
+        await self.start_bridge(("127.0.0.1", self.bbs.port), max_per_address=1)
+        # Through nginx (a loopback peer), the caller is X-Real-IP.
+        async with connect(self.url, additional_headers={"X-Real-IP": "203.0.113.5"}) as first:
+            await first.send("telnet|bbs|23")
+            await self.bbs.next_conn(1)
+            async with connect(self.url, additional_headers={"X-Real-IP": "203.0.113.5"}) as again:
+                self.assertEqual(await asyncio.wait_for(again.recv(), 5), jsterm_bridge.BUSY_TEXT)
+            async with connect(self.url, additional_headers={"X-Real-IP": "198.51.100.7"}) as other:
+                await other.send("telnet|bbs|23")
+                await self.bbs.next_conn(2)
+        await self.slots_freed()
+
+    async def test_a_silent_socket_is_closed(self):
+        self.server.close()
+        await self.server.wait_closed()
+        await self.start_bridge(("127.0.0.1", self.bbs.port), first_message_timeout=0.3)
+        async with connect(self.url) as ws:
+            with self.assertRaises(ConnectionClosed):
+                await asyncio.wait_for(ws.recv(), 5)
+            self.assertEqual(ws.close_code, 1008)
+        self.assertEqual(self.bbs.conns, [])
+        await self.slots_freed()
+
+    async def test_bbs_connection_error_closes_the_page(self):
+        # Reading from the BBS fails, not ends (on Windows even a reset usually
+        # reads as an orderly end, so the error is made here).
+        real_open = asyncio.open_connection
+        fail = asyncio.Event()
+
+        async def open_then_fail(*args, **kwargs):
+            reader, writer = await real_open(*args, **kwargs)
+
+            async def read(n=-1):
+                await fail.wait()
+                raise ConnectionResetError(10054, "An existing connection was forcibly closed")
+            reader.read = read
+            return reader, writer
+
+        with mock.patch.object(jsterm_bridge.asyncio, "open_connection", open_then_fail):
+            async with connect(self.url) as ws:
+                await ws.send("telnet|bbs|23")
+                await self.bbs.next_conn(1)
+                fail.set()
+                with self.assertRaises(ConnectionClosed):
+                    await asyncio.wait_for(ws.recv(), 5)
+                self.assertEqual(ws.close_code, 1000)
+                self.assertEqual(ws.close_reason, "the connection to the BBS was lost")
+
+    async def test_origins_other_than_the_sites_are_refused(self):
+        from websockets.exceptions import InvalidStatus
+        self.server.close()
+        await self.server.wait_closed()
+        await self.start_bridge(("127.0.0.1", self.bbs.port), origins=["https://inhahe.com", None])
+        with self.assertRaises(InvalidStatus):
+            async with connect(self.url, origin="https://evil.example"):
+                pass
+        async with connect(self.url, origin="https://inhahe.com") as ws:
+            await ws.send("telnet|bbs|23")
+            await self.bbs.next_conn(1)
+        async with connect(self.url) as ws:  # no Origin: not a browser
+            await ws.send("telnet|bbs|23")
+            await self.bbs.next_conn(2)
 
 
 class HostPortTest(unittest.TestCase):

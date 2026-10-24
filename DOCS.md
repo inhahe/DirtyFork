@@ -324,12 +324,12 @@ browser (bbs.html, jsTerm) --wss://host/bbs-ws--> nginx --> web/jsterm_bridge.py
 - **The page**: `https://inhahe.com/bbs.html`, from `D:\mypage\inhahe.com`: `bbs.html`, and `jsterm\` for jsTerm itself, its font, and the page's script (`jsterm\bbs.js`). `jsterm\README.txt` says where jsTerm came from and what was changed in it. The page connects as soon as it loads, shows whether it is connected, and offers to connect again after a disconnect.
 - **jQuery**, the one file jsTerm takes from the web: `bbs.html` loads it from `code.jquery.com` (with an integrity hash). `bbs-local.html` is the same page using the copy in `jsterm\vendor\` instead, for when the web copy is unwanted or unreachable; copy it over `bbs.html` to switch.
 - **nginx** (in WSL, `/etc/nginx/sites-enabled/inhahe.com`) passes `/bbs-ws` to the bridge, upgrading it to a WebSocket, so the page works over both `https` (as `wss://`) and `http`, through the site's own certificate and port.
-- **The bridge** runs from logon as the Task Scheduler task "DirtyFork web bridge", registered (and started) by `web\register-bridge.ps1`, and restarted a minute after it exits. It runs independently of the BBS: while the BBS is down, web callers are told so. It logs to `web\jsterm_bridge.log`.
+- **The bridge** runs from logon as the Task Scheduler task "DirtyFork web bridge", registered (and started) by `web\register-bridge.ps1`; the task also fires every 5 minutes, so a bridge that stopped is back within 5 minutes. It runs independently of the BBS: while the BBS is down, web callers are told so. It accepts pages from inhahe.com and www.inhahe.com only. It logs to `web\jsterm_bridge.log`, why it stopped included.
 
 **To set it up elsewhere:**
 
-1. `pip install websockets` (it is in `requirements.txt`).
-2. Run the bridge: `powershell -NoProfile -File web\register-bridge.ps1` (options `-Listen 127.0.0.1:8023 -Bbs 127.0.0.1:23`), or `python web/jsterm_bridge.py --listen ... --bbs ... [--max-clients 50] [--log path]` by hand.
+1. `pip install "websockets>=13"` (it is in `requirements.txt`).
+2. Run the bridge: `powershell -NoProfile -ExecutionPolicy Bypass -File web\register-bridge.ps1 -Origins https://your.site` (also `-Listen 127.0.0.1:8023 -Bbs 127.0.0.1:23`; re-running it applies new settings to the running bridge), or by hand: `python web/jsterm_bridge.py --listen ... --bbs ... [--origin URL ...] [--max-clients 50] [--max-per-address 4] [--log path]`.
 3. Proxy a path to it in the web server, as a WebSocket:
 
    ```nginx
@@ -345,11 +345,13 @@ browser (bbs.html, jsTerm) --wss://host/bbs-ws--> nginx --> web/jsterm_bridge.py
    }
    ```
 
-4. Put `bbs.html` and `jsterm/` in the site. The page connects to `/bbs-ws` on its own host; `?ws=<url>` on its address points it elsewhere (to try a bridge directly).
+4. Put `bbs.html` and `jsterm/` in the site. The page connects to `/bbs-ws` on its own host, and only there: an address taken from the page's URL would let a crafted link send a caller's typing, password included, to someone else's server.
 
-**What callers get**: an 80x25 CP437 ANSI terminal (it reports its type as `ANSI`, and its size on request), typing as on a keyboard (letters, punctuation and accented letters CP437 has; arrows, Home/End, PgUp/PgDn, Insert/Delete, F1-F10, Ctrl+letter; Ctrl+V pastes). F11 and F12 stay with the browser (full screen, developer tools).
+**What callers get**: an 80x25 CP437 ANSI terminal (it reports its type as `ANSI-JSTERM`, which the BBS reads as CP437, and its size on request), typing as on a keyboard (letters, punctuation and accented letters CP437 has; arrows, Home/End, PgUp/PgDn, Insert/Delete, F1-F10, Ctrl+letter; Ctrl+V pastes). F11 and F12 stay with the browser (full screen, developer tools).
 
-**Limits**: no file transfers (the browser terminal has no ZMODEM), and no mouse (it sends no clicks). The bridge connects only to the BBS it was started for, whatever the page asks, and at most `--max-clients` web callers at once (default 50); the next is asked to try later. The BBS sees every web caller as coming from the bridge (see `known-issues.md`); the bridge's log records their real addresses.
+**Limits**: no file transfers (the browser terminal has no ZMODEM; a web caller who picks Upload or Download is told to connect with a terminal program instead), and no mouse (it sends no clicks). The BBS sees every web caller as coming from the bridge (see `known-issues.md`); the bridge's log records their real addresses.
+
+**What the bridge guards against**: it connects only to the BBS it was started for, whatever the page asks, so it relays nowhere else. It takes at most `--max-clients` web callers at once (default 50) and `--max-per-address` from one address (default 4; behind nginx the address is `X-Real-IP`, trusted only from this machine); the next is asked to try later. A socket that says nothing for 10 seconds is closed, so idle sockets cannot hold every slot. With `--origin` given, pages from other sites are refused, so they cannot use their visitors' browsers to fill it.
 
 ---
 
