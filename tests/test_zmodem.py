@@ -271,6 +271,52 @@ class Transfers(unittest.TestCase):
         self.assertEqual(store["lost.bin"], data)
         self.assertTrue(any("again" in line for line in logs.output), logs.output)
 
+    def test_more_repairs_than_retries_each_further_on_still_finish(self):
+        """A long file over a noisy line: what limits the sender's errors is
+        how many come in a row, without the receiver getting further."""
+        path, data = self.make("noisy.bin", 120000)
+        hits = range(8000, 160000, 15000)  # (offsets in all that is sent, again included)
+
+        def damage(chunk, offset):
+            chunk = bytearray(chunk)
+            for at in hits:
+                if offset <= at < offset + len(chunk):
+                    chunk[at - offset] ^= 0x55
+            return bytes(chunk)
+        settings = Settings(start_timeout=5, header_timeout=0.5, retries=2)
+        with self.assertLogs("dirtyfork.zmodem", "INFO") as logs:
+            sent, received, store = self.transfer([path], damage_to_receiver=damage,
+                                                  settings=settings)
+        self.assertNotIsInstance(sent, Exception, repr(sent))
+        self.assertEqual([r.status for r in sent], ["sent"])
+        self.assertEqual(store["noisy.bin"], data)
+        restarts = sum("asked for the data again" in line for line in logs.output)
+        self.assertGreater(restarts, settings.retries, logs.output)
+
+    def test_a_receiver_that_gets_no_further_is_given_up_on(self):
+        """From 20000 on everything it is sent is damaged, so it asks for the
+        same place again and again: the sender stops after its retries."""
+        path, _ = self.make("stuck.bin", 60000)
+
+        def damage(chunk, offset):
+            if offset + len(chunk) <= 20000:
+                return chunk
+            chunk = bytearray(chunk)
+            chunk[len(chunk) // 2] ^= 0x55  # (in the abort sequence, after its CANs)
+            return bytes(chunk)
+
+        async def go():
+            s_end, r_end = connected(damage_to_receiver=damage)
+            return await asyncio.gather(
+                zmodem.send_files(s_end, [path], Settings(start_timeout=5, header_timeout=0.5,
+                                                          retries=3)),
+                zmodem.receive_files(r_end, lambda offer: MemorySink({}, offer.name),
+                                     Settings(start_timeout=5, header_timeout=0.5, retries=50)),
+                return_exceptions=True)
+        sent, received = run(go())
+        self.assertIs(type(sent), zmodem.TransferError, repr(sent))
+        self.assertEqual(str(sent), "too many errors")
+
     def test_a_receiver_without_32_bit_crcs_gets_16_bit_ones(self):
         path, data = self.make("crc16.bin", 9000)
         original = zmodem._Receiver.__init__

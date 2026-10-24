@@ -716,16 +716,29 @@ class _Sender:
     async def _stream(self, fp, name: str, pos: int, size: int) -> tuple[str, int]:
         """Send the file's data from *pos*, then ZEOF, until the receiver
         confirms the end with ZRINIT (or skips the file). Returns ("sent" or
-        "skipped", position reached)."""
+        "skipped", position reached).
+
+        Errors count in a row, while the receiver gets no further: one bad
+        byte can bring several requests for one position (each request it
+        makes while it looks for our restart is another), and a long file over
+        a noisy line has many such repairs."""
         errors = 0
+        furthest = pos  # the furthest position the receiver has asked to go on from
+
+        def asked_from(at: int) -> int:
+            nonlocal errors, furthest
+            if at > furthest:  # it got further than ever before: progress
+                errors, furthest = 0, at
+            errors = self._count_error(errors)
+            log.info("send: %s: the receiver asked for the data again from %d", name, at)
+            return at
+
         while True:  # once per (re)start at a position
             restart = await self._send_data(fp, pos, size)
             if restart == "skip":
                 return "skipped", pos
             if restart is not None:
-                errors = self._count_error(errors)
-                log.info("send: %s: the receiver asked for the data again from %d", name, restart)
-                pos = restart
+                pos = asked_from(restart)
                 continue
             pos = fp.tell()
             # All sent: ZEOF until the receiver confirms the file (ZRINIT)
@@ -743,8 +756,7 @@ class _Sender:
                 if hdr.type == ZSKIP:
                     return "skipped", pos
                 if hdr.type == ZRPOS:
-                    errors = self._count_error(errors)
-                    pos = min(hdr.pos, size)
+                    pos = asked_from(min(hdr.pos, size))
                     break  # send again from there
                 if hdr.type in (ZABORT, ZFERR, ZCAN, ZFIN):
                     raise Aborted("the receiver cancelled")
