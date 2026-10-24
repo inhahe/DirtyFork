@@ -62,6 +62,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -69,6 +70,7 @@ import time
 import urllib.parse
 import urllib.request
 import zipfile
+import zlib
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -91,6 +93,9 @@ MODULE_TYPES = frozenset(
 # What each fingerprint was made by: changing how a kind of zip is made
 # changes its prefix, so every zip of that kind is made again.
 PAGE_RECIPE, SITE_RECIPE, REPO_RECIPE = "page1", "site1", "git1"
+# git and 7-Zip are console programs: started from pythonw (the scheduled
+# task), each would open a console window of its own.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 log = logging.getLogger("library_sync")
 
@@ -152,6 +157,7 @@ class Stats:
   removed: int = 0
   failed: int = 0
   skipped: dict = field(default_factory=dict)  # extension -> count, of files left out
+  incomplete: bool = False  # some of it couldn't be read: forget nothing this time
 
   def summary(self):
     text = (f"{self.listed} listed, {self.new} new, {self.changed} changed, {self.updated} retagged or "
@@ -182,6 +188,20 @@ def _conf_list(value, default=()):
   return [str(v) for v in value]
 
 
+_HIDDEN = getattr(stat, "FILE_ATTRIBUTE_HIDDEN", 0) | getattr(stat, "FILE_ATTRIBUTE_SYSTEM", 0)
+
+
+def _hidden(entry):
+  """A hidden or system file or folder (Windows: $RECYCLE.BIN, System Volume
+  Information, Thumbs.db, desktop.ini): never listed or zipped."""
+  if not _HIDDEN:
+    return False
+  try:
+    return bool(entry.stat(follow_symlinks=False).st_file_attributes & _HIDDEN)
+  except (OSError, AttributeError):
+    return False
+
+
 def _excluded(name, patterns):
   import fnmatch
   return any(fnmatch.fnmatch(name.lower(), p.lower()) for p in patterns)
@@ -197,7 +217,7 @@ def tree_fingerprint(top, exclude=()):
     d = stack.pop()
     with os.scandir(d) as it:
       for e in it:
-        if exclude and _excluded(e.name, exclude):
+        if _hidden(e) or (exclude and _excluded(e.name, exclude)):
           continue
         if e.is_dir(follow_symlinks=False):
           stack.append(e.path)
@@ -400,7 +420,7 @@ def mod_description(path, kind):
         return ""
       with z.open(member) as f:
         return module_title(f.read(1100), kind)
-  except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError, EOFError, ValueError):
+  except (OSError, zipfile.BadZipFile, zlib.error, RuntimeError, NotImplementedError, EOFError, ValueError):
     return ""
 
 
@@ -440,7 +460,8 @@ def run_7z(ctx, args, cwd, names):
         f.write(n + "\n")
     cmd = [ctx.seven_zip] + args[:1] + ["-tzip", "-mcu=on", "-scsUTF-8", "-ssw", "-y", "-bso0", "-bsp0"] \
       + args[1:] + ["@" + listing]
-    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       creationflags=_NO_WINDOW)
   finally:
     with contextlib.suppress(OSError):
       os.remove(listing)
@@ -528,7 +549,7 @@ def _page_companion(folder, name):
   return d if os.path.isdir(d) else None
 
 
-def _page_item(ctx, source, conf, folder, name, zip_rel, base_tags):
+def _page_item(ctx, conf, folder, name, zip_rel, base_tags):
   """An Item for the page *name* in *folder*, zipped to zips/<zip_rel>."""
   page = os.path.join(folder, name)
   companion = _page_companion(folder, name)
@@ -540,18 +561,18 @@ def _page_item(ctx, source, conf, folder, name, zip_rel, base_tags):
 
   def build(old):
     zip_files(ctx, ctx.zip_path(zip_rel), folder, names)
-  return Item(key=_rel(page, str(conf.dir)), root="zips", path=zip_rel,
+  return Item(key=_rel(page, library.source_dir(conf)), root="zips", path=zip_rel,
               tags=base_tags + ["web", "webpage"] + _conf_list(conf.tags),
               fingerprint=f"{PAGE_RECIPE}:{h.hexdigest()}", describe=lambda: html_title(page), build=build)
 
 
-def _site_item(ctx, source, conf, folder, zip_rel, base_tags):
+def _site_item(ctx, conf, folder, zip_rel, base_tags):
   """An Item for the website in *folder*, zipped whole to zips/<zip_rel>."""
   parent, base = os.path.split(os.path.normpath(folder))
 
   def build(old):
     zip_mirror(ctx, ctx.zip_path(zip_rel), parent, base, SITE_EXCLUDE)
-  return Item(key=_rel(folder, str(conf.dir)), root="zips", path=zip_rel,
+  return Item(key=_rel(folder, library.source_dir(conf)), root="zips", path=zip_rel,
               tags=base_tags + ["web", "website"] + _conf_list(conf.tags),
               fingerprint=f"{SITE_RECIPE}:{tree_fingerprint(folder, SITE_EXCLUDE)}",
               describe=lambda: site_title(folder), build=build)
@@ -565,6 +586,44 @@ def _zip_names(things):
   counts = Counter(stem.lower() for stem, _ in things.values())
   return {key: (stem if counts[stem.lower()] == 1 else fallback) + ".zip"
           for key, (stem, fallback) in things.items()}
+
+
+def _unique(used, zip_rel):
+  """*zip_rel*, or "... (2).zip" and so on if the source has a zip of that
+  name already (any case: a folder named "x.htm" beside a page "x.htm", or
+  a site "A - B" beside container A's site B). *used* is the source's."""
+  candidate, n = zip_rel, 2
+  while candidate.lower() in used:
+    candidate = f"{zip_rel[:-4]} ({n}).zip"
+    n += 1
+  used.add(candidate.lower())
+  return candidate
+
+
+def _entries(folder, stats):
+  """The (pages, folders) in *folder*, by name, hidden and system ones
+  left out; ([], []) if it can't be read (logged; the source incomplete)."""
+  try:
+    with os.scandir(folder) as it:
+      entries = sorted((e for e in it if not _hidden(e)), key=lambda e: e.name)
+    pages = [e.name for e in entries if e.name.lower().endswith(HTML_TYPES) and e.is_file()]
+    dirs = [e.name for e in entries if e.is_dir()]
+  except OSError as exc:
+    log.warning("Can't read %s, left out this time: %s", folder, exc)
+    stats.incomplete = True
+    return [], []
+  return pages, dirs
+
+
+def _made(make, stats, what):
+  """make(): an Item; None (logged; the source incomplete) if what it reads
+  can't be read."""
+  try:
+    return make()
+  except OSError as exc:
+    log.warning("Can't read %s, left out this time: %s", what, exc)
+    stats.incomplete = True
+    return None
 
 
 def _has_files(folder):
@@ -581,31 +640,38 @@ def _is_httrack_page(path):
   return os.path.basename(path).lower() in INDEX_PAGES and _is_httrack(html_title(path))
 
 
-def handle_websites(ctx, source, conf):
-  top = str(conf.dir)
+def handle_websites(ctx, source, conf, stats):
+  top = library.source_dir(conf)
   if not os.path.isdir(top):
     raise SourceError(f"{top} is not a folder")
   containers = {c.lower() for c in _conf_list(conf.containers)}
   skip = {s.lower() for s in _conf_list(conf.skip)}
+  used = set()
 
   def visit(folder, prefix):
-    entries = sorted(os.listdir(folder))
-    pages = [n for n in entries if n.lower().endswith(HTML_TYPES) and os.path.isfile(os.path.join(folder, n))]
+    pages, dirs = _entries(folder, stats)
     pages = [n for n in pages if not _is_httrack_page(os.path.join(folder, n))]  # (HTTrack's list of projects)
-    dirs = [n for n in entries if os.path.isdir(os.path.join(folder, n)) and "_files" not in n]
-    dirs = [n for n in dirs if n.lower() not in skip and _rel(os.path.join(folder, n), top).lower() not in skip]
+    dirs = [n for n in dirs if "_files" not in n and n.lower() not in skip
+            and _rel(os.path.join(folder, n), top).lower() not in skip]
     names = _zip_names({n: (" - ".join(prefix + [os.path.splitext(n)[0]]), " - ".join(prefix + [n]))
                         for n in pages}
                        | {n + "/": (" - ".join(prefix + [n]), " - ".join(prefix + [n]) + " (website)")
                           for n in dirs})
     for n in pages:
-      yield _page_item(ctx, source, conf, folder, n, f"{source}/{names[n]}", [])
+      item = _made(lambda: _page_item(ctx, conf, folder, n, _unique(used, f"{source}/{names[n]}"), []),
+                   stats, os.path.join(folder, n))
+      if item:
+        yield item
     for n in dirs:
       rel = _rel(os.path.join(folder, n), top)
       if rel.lower() in containers or (folder == top and n.lower() in containers):
         yield from visit(os.path.join(folder, n), prefix + [n])
       elif _has_files(os.path.join(folder, n)):
-        yield _site_item(ctx, source, conf, os.path.join(folder, n), f"{source}/{names[n + '/']}", [])
+        item = _made(lambda: _site_item(ctx, conf, os.path.join(folder, n),
+                                        _unique(used, f"{source}/{names[n + '/']}"), []),
+                     stats, os.path.join(folder, n))
+        if item:
+          yield item
   yield from visit(top, [])
 
 
@@ -633,31 +699,41 @@ def _is_site(folder):
   return has_pages
 
 
-def handle_webpages(ctx, source, conf):
-  top = str(conf.dir)
+def handle_webpages(ctx, source, conf, stats):
+  top = library.source_dir(conf)
   if not os.path.isdir(top):
     raise SourceError(f"{top} is not a folder")
   hierarchy = bool(conf.hierarchy_tags)
+  used = set()
 
   def visit(folder):
     rel_folder = _rel(folder, top)
     out_dir = source if rel_folder == "." else f"{source}/{rel_folder}"
     tags = [] if not hierarchy or rel_folder == "." else rel_folder.split("/")
-    entries = sorted(os.listdir(folder))
-    pages = [n for n in entries if n.lower().endswith(HTML_TYPES) and os.path.isfile(os.path.join(folder, n))]
-    dirs = [n for n in entries if os.path.isdir(os.path.join(folder, n)) and "_files" not in n]
+    pages, dirs = _entries(folder, stats)
+    dirs = [n for n in dirs if "_files" not in n]
     sites = [n for n in dirs if _is_site(os.path.join(folder, n))]
     names = _zip_names({n: (os.path.splitext(n)[0], n) for n in pages}
                        | {n + "/": (n, n + " (website)") for n in sites})
     for n in pages:
-      yield _page_item(ctx, source, conf, folder, n, f"{out_dir}/{names[n]}", tags)
+      item = _made(lambda: _page_item(ctx, conf, folder, n, _unique(used, f"{out_dir}/{names[n]}"), tags),
+                   stats, os.path.join(folder, n))
+      if item:
+        yield item
     for n in dirs:
       if n in sites:
-        yield _site_item(ctx, source, conf, os.path.join(folder, n), f"{out_dir}/{names[n + '/']}",
-                         tags + ([n] if hierarchy else []))
+        item = _made(lambda: _site_item(ctx, conf, os.path.join(folder, n),
+                                        _unique(used, f"{out_dir}/{names[n + '/']}"),
+                                        tags + ([n] if hierarchy else [])),
+                     stats, os.path.join(folder, n))
+        if item:
+          yield item
       else:
         yield from visit(os.path.join(folder, n))
   yield from visit(top)
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -690,7 +766,8 @@ def github_repos(user):
 def git(ctx, *args, cwd=None):
   """Run git (text output, UTF-8 paths); RuntimeError if it fails."""
   p = subprocess.run([ctx.git, "-c", "core.quotepath=off", "-c", "core.autocrlf=false", *args], cwd=cwd,
-                     capture_output=True, text=True, encoding="utf-8", errors="surrogateescape")
+                     capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
+                     creationflags=_NO_WINDOW)
   if p.returncode != 0:
     raise RuntimeError(f"git {' '.join(args[:2])} failed: {(p.stderr or p.stdout).strip()[:500]}")
   return p.stdout
@@ -703,19 +780,21 @@ def _git_z(output):
 def remove_tree(path):
   """Delete a folder, a git clone's read-only files too (Windows won't
   delete a read-only file). Logs what it couldn't delete."""
-  import stat
-
   def again(func, p, exc):
     try:
       os.chmod(p, stat.S_IWRITE)
       func(p)
     except OSError as exc2:
       log.warning("Could not delete %s: %s", p, exc2)
-  if os.path.lexists(path):
+  if not os.path.lexists(path):
+    return
+  if sys.version_info >= (3, 12):
     shutil.rmtree(path, onexc=again)
+  else:  # (onexc is new in 3.12)
+    shutil.rmtree(path, onerror=lambda func, p, info: again(func, p, info[1]))
 
 
-def handle_github(ctx, source, conf):
+def handle_github(ctx, source, conf, stats):
   user = str(conf.user or "")
   if not user:
     raise SourceError("a github source needs a user")
@@ -736,7 +815,8 @@ def handle_github(ctx, source, conf):
     description = repo.get("description") or ""
     if library.get_state(ctx.con, source, "empty:" + name) == pushed:
       continue  # (empty when last looked at, and not pushed to since)
-    if (old is not None and old.fingerprint and library.get_state(ctx.con, source, "pushed:" + name) == pushed
+    current = old is not None and (old.fingerprint or "").startswith(REPO_RECIPE + ":")
+    if (current and library.get_state(ctx.con, source, "pushed:" + name) == pushed
             and os.path.isdir(clone) and os.path.isfile(ctx.zip_path(zip_rel))):
       yield Item(key=name, root="zips", path=zip_rel, tags=tags, fingerprint=old.fingerprint,
                  description=description)
@@ -775,7 +855,9 @@ def handle_github(ctx, source, conf):
     # it uses is bound now)
     def build(old_entry, name=name, clone=clone, head=head, zip_rel=zip_rel, pushed=pushed):
       final = ctx.zip_path(zip_rel)
-      before = old_entry.fingerprint.split(":", 1)[1] if old_entry and old_entry.fingerprint else None
+      # (a zip made by another recipe is made again, whole)
+      prefix, _, before = (old_entry.fingerprint or "").partition(":") if old_entry else ("", "", "")
+      before = before if prefix == REPO_RECIPE else None
       changed = deleted = None
       if before and os.path.isfile(final):
         try:
@@ -817,24 +899,34 @@ def _stamp(entry):
   return st.st_size, st.st_mtime_ns
 
 
-def walk_files(top):
-  """(relative path with /, DirEntry) for every file under *top*. A folder's
-  entries are streamed, not gathered (one of the sample folders holds more
-  than a million and a half)."""
+def walk_files(top, stats):
+  """(relative path with /, DirEntry) for every file under *top* but hidden
+  or system ones (_hidden). A folder's entries are streamed, not gathered
+  (one of the sample folders holds more than a million and a half). A
+  subfolder that can't be read is logged and left out, and the source
+  marked incomplete (stats.incomplete: nothing it lists is forgotten)."""
   stack = [""]
   while stack:
     rel = stack.pop()
     folder = os.path.join(top, *rel.split("/")) if rel else top
-    with os.scandir(folder) as it:
-      for e in it:
-        if e.is_dir(follow_symlinks=False):
-          stack.append(f"{rel}/{e.name}" if rel else e.name)
-        elif e.is_file(follow_symlinks=False):
-          yield (f"{rel}/{e.name}" if rel else e.name), e
+    try:
+      with os.scandir(folder) as it:
+        for e in it:
+          if _hidden(e):
+            continue
+          if e.is_dir(follow_symlinks=False):
+            stack.append(f"{rel}/{e.name}" if rel else e.name)
+          elif e.is_file(follow_symlinks=False):
+            yield (f"{rel}/{e.name}" if rel else e.name), e
+    except OSError as exc:
+      if not rel:
+        raise SourceError(f"{top}: {exc}") from exc
+      log.warning("Can't read %s, left out this time: %s", folder, exc)
+      stats.incomplete = True
 
 
 def _linked_top(conf):
-  top = str(conf.dir)
+  top = library.source_dir(conf)
   if not os.path.isdir(top):
     raise SourceError(f"{top} is not a folder (a drive not mounted?)")
   return top
@@ -857,7 +949,8 @@ def thumbsup_key(name, size, mtime_ns):
 
 
 def load_captions(path):
-  """thumbsup2's AI captions, by its hash; {} if its database can't be read."""
+  """thumbsup2's AI captions, by its hash; None if its database can't be
+  read (so the pictures keep the captions they have)."""
   if not path:
     return {}
   try:
@@ -868,15 +961,15 @@ def load_captions(path):
     finally:
       con.close()
   except sqlite3.Error as exc:
-    log.warning("Can't read the captions in %s: %s", path, exc)
-    return {}
+    log.warning("Can't read the captions in %s, keeping those catalogued: %s", path, exc)
+    return None
 
 
 def handle_gallery(ctx, source, conf, stats):
   top = _linked_top(conf)
   captions = load_captions(str(conf.captions) if conf.captions else None)
   extra = _conf_list(conf.tags)
-  for rel, e in walk_files(top):
+  for rel, e in walk_files(top, stats):
     kind = _ext(e.name)
     if kind in PICTURE_TYPES:
       tag = "pic"
@@ -886,7 +979,12 @@ def handle_gallery(ctx, source, conf, stats):
       stats.skipped[kind] = stats.skipped.get(kind, 0) + 1
       continue
     st = e.stat()
-    description = captions.get(thumbsup_key(e.name, st.st_size, st.st_mtime_ns), "") if tag == "pic" else ""
+    if tag != "pic":
+      description = ""
+    elif captions is None:
+      description = None  # (unknown: kept as catalogued, or none for a new picture)
+    else:
+      description = captions.get(thumbsup_key(e.name, st.st_size, st.st_mtime_ns), "")
     yield Item(key=rel, root=source, path=rel, tags=[tag] + rel.split("/")[:-1] + extra,
                stamp=(st.st_size, st.st_mtime_ns), description=description)
 
@@ -895,7 +993,7 @@ def handle_videos(ctx, source, conf, stats):
   top = _linked_top(conf)
   extra = _conf_list(conf.tags)
   hierarchy = bool(conf.hierarchy_tags)
-  for rel, e in walk_files(top):
+  for rel, e in walk_files(top, stats):
     if _ext(e.name) not in VIDEO_TYPES:
       stats.skipped[_ext(e.name)] = stats.skipped.get(_ext(e.name), 0) + 1
       continue
@@ -910,7 +1008,7 @@ def handle_samples(ctx, source, conf, stats):
   instruments = {t.lower().lstrip(".") for t in _conf_list(conf.instrument_types, INSTRUMENT_TYPES)}
   extra = _conf_list(conf.tags)
   hierarchy = bool(conf.hierarchy_tags)
-  for rel, e in walk_files(top):
+  for rel, e in walk_files(top, stats):
     kind = _ext(e.name)
     if kind in samples:
       tags = ["sample"]
@@ -931,7 +1029,7 @@ _COLLECTION_SUFFIX = re.compile(r" \([^()]*\)$")
 def handle_mods(ctx, source, conf, stats):
   top = _linked_top(conf)
   extra = _conf_list(conf.tags)
-  for rel, e in walk_files(top):
+  for rel, e in walk_files(top, stats):
     if _ext(e.name) != "zip":
       stats.skipped[_ext(e.name)] = stats.skipped.get(_ext(e.name), 0) + 1
       continue
@@ -946,10 +1044,10 @@ def handle_mods(ctx, source, conf, stats):
                stamp=_stamp(e), describe=describe)
 
 
+# handler(ctx, source, conf, stats) yields the Items a source would list
 HANDLERS = {"websites": handle_websites, "webpages": handle_webpages, "github": handle_github,
             "gallery": handle_gallery, "videos": handle_videos, "samples": handle_samples,
             "mods": handle_mods}
-_WITH_STATS = {"gallery", "videos", "samples", "mods"}
 
 
 # ---------------------------------------------------------------------------
@@ -1014,11 +1112,16 @@ def sync_source(ctx, source, conf):
   stats = Stats()
   ctx.after = []
   handler = HANDLERS[kind]
-  items = handler(ctx, source, conf, stats) if kind in _WITH_STATS else handler(ctx, source, conf)
+  items = handler(ctx, source, conf, stats)
   con, uploader = ctx.con, ctx.lib.sysop_handle
   linked = kind in library.LINKED_TYPES
   con.execute("CREATE TEMP TABLE IF NOT EXISTS seen (key TEXT PRIMARY KEY)")
   con.execute("DELETE FROM temp.seen")
+  if not ctx.dry_run:
+    # (what forget_unconfigured goes by, should the source leave the config)
+    library.set_state(con, source, "type", kind)
+  if con.in_transaction:
+    con.commit()  # (an IMMEDIATE transaction holds the write lock: not while the handler starts its slow work)
   last_commit = time.monotonic()
 
   def settle(now=False):
@@ -1082,14 +1185,21 @@ def sync_source(ctx, source, conf):
         library.put(con, root=item.root, path=item.path, size=size, mtime=mtime, description=description,
                     uploader=uploader, tags=item.tags, source=source, source_key=item.key,
                     fingerprint=item.fingerprint)
-      except (OSError, RuntimeError, ValueError, UnicodeError, zipfile.BadZipFile) as exc:
-        # (one file that can't be made or read: the rest go on; it is tried again next time)
+      except sqlite3.Error:
+        raise  # (the catalogue itself: the source fails, and is rolled back)
+      except Exception as exc:
+        # One file that can't be made or read: the rest go on, and it is
+        # tried again next time. (A trace for anything but the expected.)
         stats.failed += 1
-        log.error("%s: %s: %s", source, item.key, exc)
+        log.error("%s: %s: %s", source, item.key, exc,
+                  exc_info=not isinstance(exc, (OSError, RuntimeError, zipfile.BadZipFile)))
     if not ctx.dry_run:
       con.commit()
   # what the source no longer has
-  if linked:
+  if stats.incomplete:
+    log.warning("%s: not all of it could be read: nothing it lists is forgotten this time", source)
+    gone = []
+  elif linked:
     gone = con.execute("SELECT id, root, path, path AS source_key FROM files WHERE root = ? AND path NOT IN "
                        "(SELECT key FROM temp.seen)", (source,)).fetchall()
   else:
@@ -1101,6 +1211,7 @@ def sync_source(ctx, source, conf):
       log.info("%s: removed %s", source, row["source_key"])
     if ctx.dry_run:
       continue
+    settle()
     library.remove(con, row["id"])
     if row["root"] == library.ZIPS:
       _delete_zip(ctx, row["path"])
@@ -1136,9 +1247,46 @@ def _sweep_zips(ctx, source):
 # The run
 # ---------------------------------------------------------------------------
 
+def forget_unconfigured(ctx):
+  """Forget what the sources no longer in the config listed (removed or
+  renamed there): their entries, the zips they made and the clones they
+  kept. Sources are known by the type sync_source records for each. A dry
+  run only says so."""
+  con = ctx.con
+  for source, kind in con.execute("SELECT source, value FROM sync_state WHERE key = 'type'").fetchall():
+    if source in ctx.lib.sources:
+      continue
+    # (a linked source's files are under the root named for it; a zip source's are its zips)
+    where = ("root = ?" if kind in library.LINKED_TYPES else "source = ? AND source_key IS NOT NULL")
+    if ctx.dry_run:
+      n = con.execute(f"SELECT COUNT(*) FROM files WHERE {where}", (source,)).fetchone()[0]
+      log.info("%s is no longer in the config: would forget its %d file(s)", source, n)
+      continue
+    n = 0
+    while True:
+      rows = con.execute(f"SELECT id, root, path FROM files WHERE {where} LIMIT 5000", (source,)).fetchall()
+      if not rows:
+        break
+      for row in rows:
+        library.remove(con, row["id"])
+        if row["root"] == library.ZIPS:
+          _delete_zip(ctx, row["path"])
+      con.commit()  # (a chunk at a time: the BBS waits for the lock only so long)
+      n += len(rows)
+    con.execute("DELETE FROM sync_state WHERE source = ?", (source,))
+    con.commit()
+    for folder in (os.path.join(ctx.lib.zips_dir, source), os.path.join(ctx.lib.repos_dir, source)):
+      remove_tree(folder)
+    log.info("%s is no longer in the config: forgot its %d file(s)", source, n)
+
+
+class AlreadyRunning(RuntimeError):
+  """Another library_sync holds the lock."""
+
+
 @contextlib.contextmanager
 def single_instance(path):
-  """Hold *path* locked for the run; RuntimeError if another run holds it."""
+  """Hold *path* locked for the run; AlreadyRunning if another run holds it."""
   os.makedirs(os.path.dirname(path), exist_ok=True)
   f = open(path, "a+b")
   try:
@@ -1151,7 +1299,7 @@ def single_instance(path):
         import fcntl
         fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-      raise RuntimeError(f"another library_sync is running ({path} is locked)")
+      raise AlreadyRunning(f"another library_sync is running ({path} is locked)")
     yield
   finally:
     f.close()
@@ -1190,11 +1338,19 @@ def main(argv=None):
 
   import paths
   paths.data_dir = os.path.abspath(args.data_dir or ".")
+  _setup_logging(paths.data_dir, args.verbose)  # (first: under pythonw, the log is all there is)
+  try:
+    return _run(args, paths)
+  except Exception:
+    log.exception("library_sync failed")
+    return 1
+
+
+def _run(args, paths):
   config_path = os.path.abspath(args.config or paths.resolve_data(DEFAULT_CONFIG))
   os.chdir(paths.project_dir)  # (the config's !include paths are relative to it, as for the BBS)
   from config import get_config
   cfg = get_config(path=config_path, main=True)
-  _setup_logging(paths.data_dir, args.verbose)
   from file_transfer import TEMP_PREFIX
   try:
     lib = library.from_config(cfg)
@@ -1212,19 +1368,25 @@ def main(argv=None):
     chosen = [name for name, sc in lib.sources.items()
               if args.all or not (sc.scheduled is False or str(sc.scheduled).lower() == "false")]
 
-  library.ensure_schema(lib)
-  ctx = Context(lib=lib, con=open_catalogue(lib, args.dry_run), seven_zip=find_seven_zip(str(cfg.file_library.seven_zip or "")
-                                                                           or None),
-                git=shutil.which("git"), dry_run=args.dry_run, verbose=args.verbose)
+  if args.dry_run and not os.path.isfile(lib.catalog):
+    con = library.empty_catalogue()  # (a dry run makes nothing, not even the catalogue)
+  else:
+    if not args.dry_run:
+      library.ensure_schema(lib)
+    con = open_catalogue(lib, args.dry_run)
+  seven_zip = find_seven_zip(str(cfg.file_library.seven_zip) if cfg.file_library.seven_zip else None)
+  ctx = Context(lib=lib, con=con, seven_zip=seven_zip, git=shutil.which("git"), dry_run=args.dry_run,
+                verbose=args.verbose)
   started = time.monotonic()
   failures = 0
   try:
-    with single_instance(lib.sync_lock):
+    with contextlib.nullcontext() if args.dry_run else single_instance(lib.sync_lock):
       log.info("library_sync: %s%s", ", ".join(chosen) or "(no sources)", " (dry run)" if args.dry_run else "")
       if not args.dry_run:
         added, forgotten = library.reconcile_uploads(lib, ctx.con, TEMP_PREFIX)
         if added or forgotten:
           log.info("library folders: %d catalogued, %d forgotten", added, forgotten)
+      forget_unconfigured(ctx)
       for name in chosen:
         conf = lib.sources[name]
         kind = str(conf.type)
@@ -1247,7 +1409,7 @@ def main(argv=None):
           continue
         failures += 1 if stats.failed else 0
         log.info("%s: %s (%.1f s)", name, stats.summary(), time.monotonic() - t)
-  except RuntimeError as exc:
+  except AlreadyRunning as exc:
     log.error("%s", exc)
     return 3
   finally:
@@ -1255,6 +1417,9 @@ def main(argv=None):
   log.info("library_sync done in %.1f s%s", time.monotonic() - started,
            f", {failures} source(s) with failures" if failures else "")
   return 1 if failures else 0
+
+
+
 
 
 if __name__ == "__main__":

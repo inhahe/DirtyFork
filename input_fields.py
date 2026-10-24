@@ -1172,12 +1172,13 @@ class InputFields:
     return null
 
   def _next_index(self, idx):
-    """Advance to the next field/button, wrapping around."""
+    """Advance to the next field/button, wrapping around (among the
+    buttons alone, in a form of buttons only)."""
     if self._is_button_index(idx):
       bi = self._button_list_index(idx)
       if bi + 1 < len(self._buttons):
         return self._button_index(bi + 1)
-      return 0  # wrap to first field
+      return 0 if self.fields else self._button_index(0)  # wrap to the first field
     elif idx + 1 < len(self.fields):
       return idx + 1
     elif self._buttons:
@@ -1190,6 +1191,8 @@ class InputFields:
       bi = self._button_list_index(idx)
       if bi > 0:
         return self._button_index(bi - 1)
+      if not self.fields:
+        return self._button_index(len(self._buttons) - 1)  # (buttons only: the last)
       return len(self.fields) - 1  # last field
     elif idx > 0:
       return idx - 1
@@ -1206,7 +1209,10 @@ class InputFields:
 
   async def run(self, start_index=0):
     """Run the input fields form.
-    start_index: which field to activate first (0-based index into self.fields)."""
+    start_index: which field to activate first (0-based index into self.fields);
+    a form of buttons only starts on its first."""
+    if not self.fields and self._buttons and not self._is_button_index(start_index):
+      start_index = self._button_index(0)
     await ansi_mouse_reporting(self.user, True, drain=True)
 
     try:
@@ -2639,6 +2645,10 @@ class InputField:
         if self.allow_edit:
           await self._handle_backspace()
         continue
+      if key == "\x15":  # Ctrl+U
+        if self.allow_edit:
+          await self._handle_kill_line()
+        continue
 
       # -- Insert mode toggle --
       if key == insert:
@@ -3087,6 +3097,22 @@ class InputField:
       self._compute_display_rows()
       self._ensure_cursor_visible()
       await self._draw_visible()
+
+  async def _handle_kill_line(self):
+    """Ctrl+U: delete from the start of the line to the cursor, as a Unix
+    shell does (the line, not the whole text: in a message being written,
+    a slip costs one line)."""
+    if self.cursor_col == 0:
+      return
+    line = self.lines[self.cursor_line]
+    line.text = line.text[self.cursor_col:]
+    self.cursor_col = 0
+    self._compute_display_rows()
+    self._set_updown_col()
+    self._ensure_cursor_visible()
+    self._ensure_h_scroll()
+    await self._draw_visible()
+    await self._position_cursor(drain=True)
 
   async def _handle_backspace(self):
     line = self.lines[self.cursor_line]

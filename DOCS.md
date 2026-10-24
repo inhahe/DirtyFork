@@ -251,7 +251,7 @@ file_library:
 file_tags: [game, utility, ...]   # the tags an uploader may choose from
 ```
 
-**Search** takes one line, with its help and examples under the field (an empty search goes back; after the results, the search comes back to be refined):
+**Search** takes one line, with its help and examples under the field. It comes back holding the last search, to be refined (Ctrl+U deletes back to the start of the line, in any input field); Q or Backspace in the results returns to it, and an empty search goes back to the menu.
 
 - A word finds files whose **tags**, **name** or **description** have it: `space`. Words side by side must all match: `space nebula`.
 - `tag:pic`, `filename:dirtyfork`, `description:knight`, `uploader:inhahe` look in one field (also `tags:`, `name:`, `file:`, `desc:`, `by:`). A field before parentheses applies inside them: `tag:(art or nature)`.
@@ -277,7 +277,7 @@ After an upload the caller is asked for a description and tags (from `file_tags`
 
 **Vetting uploads.** A caller with the `upload_key` key (default `trusted_uploader`), or a sysop, has uploads listed at once. Anyone else's go to `files/pending` and are listed to no one, the uploader included, until a sysop deals with them in **Sysop > Vet Uploads**: the list of uploads awaiting approval, oldest first, where Enter shows one with **Approve** (moved into the library, listed), **Reject** (deleted, after a confirmation) and **Download** (to look at it first). Sysops online get a popup when such an upload arrives, and a sysop logging in is told how many are waiting. Grant the key in Sysop > Keys, or through a key group.
 
-Files you put in the library's folder yourself are catalogued (as yours, `sysop_handle`, untagged) when the BBS starts and whenever `library_sync.py` runs; files gone from it are forgotten.
+Files you put in the library's folder yourself are catalogued (as yours, `sysop_handle`, untagged) when the BBS starts and whenever `library_sync.py` runs; files gone from it are forgotten. A `meta.yaml` from before the catalogue (`files_meta`) is read once, at startup: its keys and descriptions go to those files, and it is moved to `files/catalog/meta.yaml.imported`.
 
 #### Library Sources
 
@@ -302,7 +302,9 @@ python library_sync.py --data-dir me github pics  # just these
 python library_sync.py --data-dir me --dry-run    # what would change; changes nothing
 ```
 
-It logs to `library_sync.log` in the data directory, needs 7-Zip (found on PATH or in Program Files; `file_library.seven_zip` to say where) for the zipped types and git for `github`, and runs one at a time. A source that can't be read (a drive not mounted, GitHub unreachable) is skipped and forgets nothing; a zip that can't be made, or replaced because a caller is downloading it, is tried again next time. A zip is made under a temporary name and put in place whole.
+It logs to `library_sync.log` in the data directory, needs 7-Zip (found on PATH or in Program Files; `file_library.seven_zip` to say where) for the zipped types and git for `github`, and runs one at a time. A source that can't be read (a drive not mounted, GitHub unreachable) is skipped and forgets nothing, and so does one with a folder it couldn't read this time; a zip that can't be made, or replaced because a caller is downloading it, is tried again next time. A zip is made under a temporary name and put in place whole. Hidden and system files and folders (`Thumbs.db`, `$RECYCLE.BIN`) are never listed. A source's `dir` is relative to the project, like the library's own folders.
+
+**Removing a source** from `file_library.sources` (or renaming it) takes its files out of the library at the next run: their entries are forgotten, and the zips and clones it made are deleted (the files of a linked source are never touched). To pause a source, comment it out and run its name again later; it is catalogued anew. A `--dry-run` says what would be forgotten, and makes nothing, not even a catalogue.
 
 **The scheduled task**: `register-library-sync.ps1` (`powershell -NoProfile -ExecutionPolicy Bypass -File register-library-sync.ps1 -DataDir me`) registers "DirtyFork library sync" with Task Scheduler. Unless given `-Minutes`, it first runs the sync to bring the library up to date, then times a second run, and repeats the task every 30 times that long (a slower sync runs less often), between every 15 minutes and once a day. Run it again after the sources grow, to recalibrate.
 

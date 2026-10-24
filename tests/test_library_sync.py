@@ -140,9 +140,7 @@ class Discovery(Scratch):
 
   def items(self, handler, c, stats=None):
     ctx = S.Context(lib=None, con=None)
-    args = (ctx, "src", c) + ((stats or S.Stats(),) if handler in (S.handle_gallery, S.handle_samples,
-                                                                   S.handle_videos, S.handle_mods) else ())
-    return {i.key: i for i in handler(*args)}
+    return {i.key: i for i in handler(ctx, "src", c, stats or S.Stats())}
 
   def test_websites(self):
     root = self.path("websites")
@@ -369,6 +367,130 @@ class Syncing(Scratch):
     self.assertEqual(failures, [])
     self.assertGreater(done[0], 0)
 
+  def test_the_handler_starts_without_the_write_lock(self):
+    # (fetching repositories, fingerprinting sites: slow, and the BBS must
+    # be able to catalogue an upload meanwhile)
+    data = self.path("data")
+    write(os.path.join(data, "a.flac"))
+    writes = []
+    real = S.HANDLERS["samples"]
+
+    def slow_start(ctx, source, conf, stats):
+      bbs = sqlite3.connect(self.lib.catalog, timeout=0.2)
+      try:
+        bbs.execute("INSERT INTO settings (key, value) VALUES ('bbs', 'x')")
+        bbs.commit()
+        writes.append("ok")
+      except sqlite3.OperationalError as exc:
+        writes.append(str(exc))
+      finally:
+        bbs.close()
+      yield from real(ctx, source, conf, stats)
+    with mock.patch.dict(S.HANDLERS, {"samples": slow_start}):
+      S.sync_source(self.ctx, "src", conf(type="samples", dir=data))
+    self.assertEqual(writes, ["ok"])
+
+  def test_a_folder_that_cant_be_read_makes_it_forget_nothing(self):
+    data = self.path("data")
+    write(os.path.join(data, "a", "one.flac"))
+    write(os.path.join(data, "b", "two.flac"))
+    c = conf(type="samples", dir=data)
+    S.sync_source(self.ctx, "src", c)
+    real = os.scandir
+
+    def scandir(path):
+      if os.path.basename(os.path.normpath(path)) == "a":
+        raise PermissionError(13, "Access is denied", path)
+      return real(path)
+    os.remove(os.path.join(data, "b", "two.flac"))
+    with mock.patch("os.scandir", scandir):
+      stats = S.sync_source(self.ctx, "src", c)
+    self.assertTrue(stats.incomplete)
+    self.assertEqual((stats.removed, set(self.listed())), (0, {"a/one.flac", "b/two.flac"}))
+    stats = S.sync_source(self.ctx, "src", c)  # (readable again)
+    self.assertEqual((stats.removed, set(self.listed())), (1, {"a/one.flac"}))
+
+  @unittest.skipUnless(os.name == "nt", "file attributes")
+  def test_hidden_and_system_files_are_left_out(self):
+    import ctypes
+    data = self.path("data")
+    write(os.path.join(data, "seen.flac"))
+    hidden = write(os.path.join(data, "Thumbs.flac"))
+    write(os.path.join(data, "$RECYCLE.BIN", "$R123.flac"))
+    ctypes.windll.kernel32.SetFileAttributesW(hidden, 0x2 | 0x4)  # (hidden, system)
+    ctypes.windll.kernel32.SetFileAttributesW(os.path.join(data, "$RECYCLE.BIN"), 0x10 | 0x2 | 0x4)
+    S.sync_source(self.ctx, "src", conf(type="samples", dir=data))
+    self.assertEqual(set(self.listed()), {"seen.flac"})
+
+  def test_unreadable_captions_keep_those_catalogued(self):
+    pics = self.path("data")
+    pic = write(os.path.join(pics, "p.jpg"), "jpg")
+    captions = self.path("thumbsup.db")
+    con = sqlite3.connect(captions)
+    st = os.stat(pic)
+    con.execute("CREATE TABLE ai_descriptions (hash TEXT PRIMARY KEY, caption TEXT, ocr TEXT)")
+    con.execute("INSERT INTO ai_descriptions VALUES (?, 'a picture', '')",
+                (S.thumbsup_key("p.jpg", st.st_size, st.st_mtime_ns),))
+    con.commit()
+    con.close()
+    S.sync_source(self.ctx, "src", conf(type="gallery", dir=pics, captions=captions))
+    self.assertEqual(self.listed()["p.jpg"][2], "a picture")
+    stats = S.sync_source(self.ctx, "src", conf(type="gallery", dir=pics, captions=self.path("gone.db")))
+    self.assertEqual((stats.updated, self.listed()["p.jpg"][2]), (0, "a picture"))
+
+  def test_a_damaged_module_zip_has_no_description_but_is_listed(self):
+    mods = self.path("data")
+    path = os.path.join(mods, "bad.xm.zip")
+    os.makedirs(mods)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+      z.writestr("bad.xm", b"Extended Module: " + os.urandom(4000))
+    data = bytearray(open(path, "rb").read())
+    data[40:80] = b"\xff" * 40  # (the deflate stream, just after the member's header)
+    open(path, "wb").write(bytes(data))
+    self.assertEqual(S.mod_description(path, "xm"), "")
+    stats = S.sync_source(self.ctx, "src", conf(type="mods", dir=mods))
+    self.assertEqual((stats.new, stats.failed), (1, 0))
+
+  def test_a_source_gone_from_the_config_is_forgotten(self):
+    import dataclasses
+    data = self.path("data")
+    write(os.path.join(data, "a.flac"))
+    S.sync_source(self.ctx, "src", conf(type="samples", dir=data))
+    kept = dataclasses.replace(self.lib, sources={"src": conf(type="samples", dir=data)})
+    S.forget_unconfigured(S.Context(lib=kept, con=self.con))
+    self.assertEqual(set(self.listed()), {"a.flac"})
+    S.forget_unconfigured(S.Context(lib=self.lib, con=self.con, dry_run=True))
+    self.assertEqual(set(self.listed()), {"a.flac"})
+    S.forget_unconfigured(S.Context(lib=self.lib, con=self.con))  # (no sources configured)
+    self.assertEqual(self.listed(), {})
+    self.assertIsNone(library.get_state(self.con, "src", "type"))
+
+  @unittest.skipUnless(SEVEN_ZIP, "7-Zip is not installed")
+  def test_a_zip_source_gone_from_the_config_takes_its_zips(self):
+    pages = self.path("pages")
+    write(os.path.join(pages, "P.html"), page("p"))
+    S.sync_source(self.ctx, "pg", conf(type="webpages", dir=pages))
+    zip_path = library.resolve(self.lib, library.source_entries(self.con, "pg")["P.html"])
+    self.assertTrue(os.path.isfile(zip_path))
+    S.forget_unconfigured(self.ctx)
+    self.assertEqual(library.source_entries(self.con, "pg"), {})
+    self.assertFalse(os.path.exists(os.path.join(self.lib.zips_dir, "pg")))
+
+  def test_zip_names_never_clash(self):
+    root = self.path("websites")
+    write(os.path.join(root, "A - B", "index.html"), page("top"))   # a site called "A - B" ...
+    write(os.path.join(root, "A", "B", "index.html"), page("inner"))  # ... and container A's site B
+    items = {i.key: i for i in S.handle_websites(S.Context(lib=None, con=None), "w",
+                                                  conf(dir=root, containers=["A"]), S.Stats())}
+    self.assertEqual(sorted(i.path for i in items.values()), ["w/A - B (2).zip", "w/A - B.zip"])
+    pages = self.path("pages")
+    write(os.path.join(pages, "x.htm"), page("a page"))                     # stem "x" ...
+    write(os.path.join(pages, "x", "index.html"), page("a site"))           # ... so "x (website).zip" ...
+    write(os.path.join(pages, "x (website)", "index.html"), page("another"))  # ... which this one is too
+    items = {i.key: i for i in S.handle_webpages(S.Context(lib=None, con=None), "p", conf(dir=pages), S.Stats())}
+    paths = sorted(i.path.lower() for i in items.values())
+    self.assertEqual(paths, ["p/x (website) (2).zip", "p/x (website).zip", "p/x.htm.zip"])
+
   def test_a_dry_run_changes_nothing(self):
     data = self.path("data")
     write(os.path.join(data, "two.flac"), "22")
@@ -511,6 +633,16 @@ class GitHub(Scratch):
       self.sync()
       self.assertEqual(calls, ["clone"])
 
+  def test_a_zip_made_by_another_recipe_is_made_again(self):
+    self.commit({"a.txt": "A1"})
+    self.listing(True)
+    self.sync()
+    with mock.patch.object(S, "REPO_RECIPE", "git2"), self.assertLogs("library_sync", "INFO") as logs:
+      stats = self.sync()  # (not pushed to since)
+    self.assertEqual(stats.changed, 1)
+    self.assertTrue(any("zipped whole" in line for line in logs.output), logs.output)
+    self.assertTrue(library.source_entries(self.con, "gh")["proj"].fingerprint.startswith("git2:"))
+
   def test_a_repository_gone_takes_its_zip_and_clone(self):
     self.commit({"a.txt": "A1"})
     self.listing(True)
@@ -523,20 +655,48 @@ class GitHub(Scratch):
 
 
 class CommandLine(Scratch):
-  def test_unknown_sources_and_the_lock(self):
+  """main(): what it does to the process (data dir, working directory, the
+  main config) is put back after each test."""
+
+  def setUp(self):
+    super().setUp()
+    import config
     import paths
-    data_dir = paths.data_dir
-    try:
-      with mock.patch.object(S, "_setup_logging"):
-        self.assertEqual(S.main([os.path.join(_setup.PROJECT, "DirtyFork.yaml"), "nosuchsource", "--dry-run",
-                                 "--data-dir", self.top]), 2)
-    finally:
-      paths.data_dir = data_dir
+    self.saved = (paths.data_dir, os.getcwd(), config.main_path)
+    self.logging = mock.patch.object(S, "_setup_logging")
+    self.logging.start()
+
+  def tearDown(self):
+    import config
+    import paths
+    self.logging.stop()
+    paths.data_dir, cwd, config.main_path = self.saved
+    os.chdir(cwd)
+    super().tearDown()
+
+  def test_unknown_sources_and_the_lock(self):
+    self.assertEqual(S.main([os.path.join(_setup.PROJECT, "DirtyFork.yaml"), "nosuchsource", "--dry-run",
+                             "--data-dir", self.top]), 2)
     lock = self.path("x.lock")
     with S.single_instance(lock):
-      with self.assertRaises(RuntimeError):
+      with self.assertRaises(S.AlreadyRunning):
         with S.single_instance(lock):
           pass
+
+  def test_a_dry_run_makes_nothing(self):
+    files, data = self.path("files"), self.path("data")
+    write(os.path.join(data, "a.flac"))
+    cfg = write(self.path("bbs.yaml"), f"files_dir: '{files}'\nfile_library:\n  sources:\n"
+                                       f"    s: {{type: samples, dir: '{data}'}}\n")
+    with self.assertLogs("library_sync", "INFO") as logs:
+      self.assertEqual(S.main([cfg, "--dry-run", "--all", "--data-dir", self.top]), 0)
+    self.assertFalse(os.path.exists(files))
+    self.assertTrue(any("s: 1 listed, 1 new" in line for line in logs.output), logs.output)
+
+  def test_a_failure_before_any_source_is_logged(self):
+    with self.assertLogs("library_sync", "ERROR") as logs:
+      self.assertEqual(S.main([self.path("no such config.yaml"), "--data-dir", self.top]), 1)
+    self.assertIn("library_sync failed", logs.output[0])
 
 
 if __name__ == "__main__":

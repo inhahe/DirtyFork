@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 
 import zmodem
 from definitions import RetVals, success, fail, null
+from library import move_new
 from logger import log
 
 _lib_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib')
@@ -279,20 +280,10 @@ class UploadPolicy:
       self.refused.append((name, "a file with that name arrived meanwhile"))
       os.remove(temp_path)
       return False
-    try:
-      os.link(temp_path, final)  # fails if *final* exists, on every system
-    except FileExistsError:
+    if not move_new(temp_path, final, TEMP_PREFIX):  # (never replaces)
       self.refused.append((name, "a file with that name arrived meanwhile"))
       os.remove(temp_path)
       return False
-    except OSError:
-      if os.path.exists(final):  # (a file system without hard links)
-        self.refused.append((name, "a file with that name arrived meanwhile"))
-        os.remove(temp_path)
-        return False
-      os.rename(temp_path, final)
-    else:
-      os.remove(temp_path)
     self.saved.append(name)
     return True
 

@@ -335,5 +335,42 @@ class Overlay(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((user.new_fg, user.new_fg_br, user.new_row, user.new_col), staged)
 
 
+class Fields(unittest.IsolatedAsyncioTestCase):
+    async def type_into(self, content, keys):
+        """What a one-line field holding *content* holds after *keys* and Enter."""
+        import input_fields
+        user = _setup.make_user()
+        await io.ansi_move(user, 3, 2)
+        keys = iter(list(keys) + ["\r"])
+
+        async def key(user, *args, **kwargs):
+            return next(keys)
+        with mock.patch.object(input_fields, "get_input_key", key):
+            r = await input_fields.InputField.create(user=user, width=40, max_length=100, content=content)
+        return r.content
+
+    async def test_ctrl_u_deletes_back_to_the_start_of_the_line(self):
+        from keyboard_codes import left, end
+        self.assertEqual(await self.type_into("old search", [end, "\x15", "n", "e", "w"]), "new")
+        self.assertEqual(await self.type_into("keep this", [end, left, left, left, left, "\x15"]), "this")
+
+    async def test_a_form_of_buttons_only(self):
+        import input_fields
+        from keyboard_codes import tab, shift_tab
+        user = _setup.make_user()
+        for keys, chosen in (([], "a"), ([tab], "b"), ([tab, tab], "a"), ([shift_tab], "b")):
+            await io.ansi_move(user, 5, 1)
+            form = input_fields.InputFields(user)
+            await form.add_button("a", content="A")
+            await io.ansi_move_deferred(user, row=5, col=10, drain=True)
+            await form.add_button("b", content="B")
+            pressed = iter(keys + ["\r"])
+
+            async def key(user, *args, **kwargs):
+                return next(pressed)
+            with mock.patch.object(input_fields, "get_input_key", key):
+                self.assertEqual((await form.run()).button, chosen, keys)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -18,7 +18,7 @@
 # sources grow to recalibrate.
 #
 # It runs as the current user, only while logged on (no stored password), with pythonw so
-# no console window appears. A run still going when the next is due makes that one wait
+# no console window appears. A run still going when the next is due has that one skipped
 # (one at a time); a run that hangs is stopped after 3 hours.
 param(
     [string]$DataDir = 'me',
@@ -41,26 +41,27 @@ $data = (Resolve-Path (Join-Path $root $DataDir)).Path
 "Data directory: $data"
 
 function Invoke-Sync {
-    # Windows PowerShell 5.1 turns a native program's stderr (the sync's log) into a
-    # terminating error under 'Stop'.
+    # Runs the sync; returns how long it took. (Windows PowerShell 5.1 turns a native
+    # program's stderr, the sync's log, into a terminating error under 'Stop'.)
     $ErrorActionPreference = 'Continue'
     Push-Location $root
     try {
-        & $py library_sync.py --data-dir $data 2>&1 | Out-Null
+        $took = Measure-Command { & $py library_sync.py --data-dir $data 2>&1 | Out-Null }
         $code = $LASTEXITCODE
     } finally {
         Pop-Location
     }
     if ($code -eq 3) { throw "Another library_sync is running; run this again when it has finished." }
-    if ($code -ne 0) { "library_sync exited with $code (some source failed; see $data\library_sync.log)" }
+    if ($code -ne 0) { Write-Host "library_sync exited with $code (a source failed; see $data\library_sync.log)" }
+    $took
 }
 
 if ($Minutes -le 0) {
     "Bringing the library up to date..."
-    $first = Measure-Command { Invoke-Sync }
+    $first = Invoke-Sync
     "  took {0:N0} s" -f $first.TotalSeconds
     "Timing a run with nothing new..."
-    $second = Measure-Command { Invoke-Sync }
+    $second = Invoke-Sync
     "  took {0:N1} s" -f $second.TotalSeconds
     $Minutes = [int][Math]::Ceiling($second.TotalSeconds * $Factor / 60 / 5) * 5
     $Minutes = [Math]::Min([Math]::Max($Minutes, 15), 1440)

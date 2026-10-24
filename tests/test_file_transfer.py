@@ -289,6 +289,113 @@ class LibraryFiles(unittest.TestCase):
         with open(os.path.join(self.lib.files_dir, "game.zip"), "rb") as fh:
             self.assertEqual(fh.read(), b"a game")
 
+    def test_the_sysops_hear_of_an_upload_once_its_details_are_in(self):
+        f = self.file
+        seen = []
+
+        async def tell_sysops(text):
+            seen.append(self.catalogued("tool.exe").description)
+        with mock.patch.object(f, "_tell_sysops", tell_sysops):
+            self.upload_only(self.user("mallory"), ["tool.exe"], ["useful", ""])
+        self.assertEqual(seen, ["useful"])
+
+    def upload_only(self, user, names, answers, during=None):
+        """_upload_file with its sysop paging as patched by the caller."""
+        f = self.file
+
+        async def receive(user, policy):
+            for name in names:
+                if policy.check(name, 1):
+                    self.write(policy.directory, name, b"data")
+                    policy.saved.append(name)
+            return f.RetVals(status=f.success, message="Transfer complete.")
+        answers = iter(answers)
+
+        async def read_line(user, max_len=200):
+            if during:
+                during()
+            answer = next(answers)
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+        with mock.patch.object(f, "_choose_protocol", mock.AsyncMock(return_value="zmodem")), \
+                mock.patch.object(f, "receive_files_zmodem", receive), \
+                mock.patch.object(f, "show_message_box", mock.AsyncMock()), \
+                mock.patch.object(f, "_read_line", read_line):
+            asyncio.run(f._upload_file(user))
+
+    def test_an_upload_rejected_while_its_details_are_asked_for(self):
+        f = self.file
+
+        def reject():  # (the sysop, quicker than the uploader)
+            con = self.library.connect(self.lib)
+            try:
+                e = self.catalogued("tool.exe")
+                if e:
+                    self.assertIsNone(self.library.reject(self.lib, con, e.id))
+            finally:
+                con.close()
+        with mock.patch.object(f, "_tell_sysops", mock.AsyncMock()):
+            self.upload_only(self.user("mallory"), ["tool.exe"], ["useful", "1"], during=reject)
+        self.assertIsNone(self.catalogued("tool.exe"))
+
+    def test_a_caller_leaving_mid_details_still_has_the_sysops_told(self):
+        f = self.file
+        told = mock.AsyncMock()
+        with mock.patch.object(f, "_tell_sysops", told), self.assertRaises(f.Disconnected):
+            self.upload_only(self.user("mallory"), ["tool.exe"], [f.Disconnected()])
+        told.assert_awaited_once()
+        self.assertTrue(self.catalogued("tool.exe").pending)
+
+    def test_a_superscript_two_at_the_tag_prompt(self):
+        # ("²".isdigit(), but int() refuses it: an AZERTY keyboard's top-left key)
+        f = self.file
+        with mock.patch.object(f, "_tell_sysops", mock.AsyncMock()):
+            self.upload_only(self.user("mallory"), ["tool.exe"], ["useful", "², 1"])
+        self.assertEqual(self.catalogued("tool.exe").tags, (f._valid_tags()[0],))
+
+    def vet(self, file_id, keys):
+        """_vet_one on upload *file_id*, with these keys pressed."""
+        import input_fields
+        f = self.file
+        keys = iter(keys)
+
+        async def key(user, *args, **kwargs):
+            return next(keys)
+        shown = mock.AsyncMock()
+        with mock.patch.object(input_fields, "get_input_key", key), \
+                mock.patch.object(f, "show_message_box", shown):
+            asyncio.run(f._vet_one(self.user("boss", {"sysop"}), self.entry(file_id)))
+        return shown.await_args.args[1]
+
+    def test_vetting_approve(self):
+        self.assertEqual(self.vet(self.unvetted, ["\r"]), "unvetted.zip is now in the library.")  # (Approve)
+        e = self.entry(self.unvetted)
+        self.assertEqual((e.root, e.path), ("uploads", "unvetted.zip"))
+        self.assertTrue(os.path.isfile(os.path.join(self.lib.files_dir, "unvetted.zip")))
+
+    def test_vetting_reject(self):
+        from keyboard_codes import right, tab
+        # Tab to Reject (Back wraps round to Approve), Enter; then Delete, the first button
+        self.assertEqual(self.vet(self.unvetted, [tab, tab, tab, tab, right, "\r", "\r"]), "unvetted.zip was deleted.")
+        self.assertIsNone(self.entry(self.unvetted))
+        self.assertFalse(os.path.exists(os.path.join(self.lib.pending_dir, "unvetted.zip")))
+
+    def test_a_list_keeps_the_rows_on_screen_when_its_cache_is_full(self):
+        f = self.file
+        from array import array
+        items = f._Items(array("q", range(1, 30)))
+        items.CACHE = 8
+
+        async def fetch(work, ids):
+            return [self.library.Entry(id=i, root="uploads", path=f"{i}.zip", name=f"{i}.zip", size=1,
+                                       mtime=0, description="", uploader="", added=0, source=None,
+                                       source_key=None, fingerprint=None, tags=()) for i in ids]
+        with mock.patch.object(f, "_db", fetch):
+            asyncio.run(items.load(0, 8))
+            asyncio.run(items.load(1, 9))  # (one more row: past the cache's size)
+        self.assertEqual([items.item(i)[0] for i in range(1, 9)], ["file"] * 8)
+
     def test_a_sysop_logging_in_hears_of_uploads_waiting(self):
         f = self.file
         sent = mock.AsyncMock()

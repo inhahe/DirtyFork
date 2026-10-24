@@ -27,9 +27,12 @@ slow query never holds up other callers; library_sync.py writes in batches,
 in WAL mode, so callers can read meanwhile.
 """
 
+import contextlib
 import os
 import re
+import shutil
 import sqlite3
+import tempfile
 import time
 import unicodedata
 from array import array
@@ -70,6 +73,7 @@ class Library:
   upload_key: str = DEFAULT_UPLOAD_KEY
   sysop_handle: str = ""
   sources: dict = field(default_factory=dict)
+  legacy_meta: str = ""  # the YAML catalogue the library had before (take_legacy_meta)
 
   @property
   def sync_lock(self):
@@ -118,14 +122,21 @@ def from_config(cfg):
     if kind != "github" and not sc.dir:
       raise ValueError(f"file_library.sources.{name}: a {kind} source needs a dir")
     if kind in LINKED_TYPES:
-      roots[name] = os.path.abspath(str(sc.dir))
+      roots[name] = source_dir(sc)
     sources[name] = sc
   return Library(files_dir=files_dir, pending_dir=roots[PENDING], zips_dir=roots[ZIPS],
                  repos_dir=folder("repos_dir", "repos"),
                  catalog=folder("catalog", os.path.join("catalog", "library.db")),
                  roots=roots, sources=sources,
                  upload_key=str(fl.upload_key) if fl and fl.upload_key else DEFAULT_UPLOAD_KEY,
-                 sysop_handle=str(cfg.sysop_handle) if cfg.sysop_handle else "")
+                 sysop_handle=str(cfg.sysop_handle) if cfg.sysop_handle else "",
+                 legacy_meta=paths.resolve_project(str(cfg.files_meta)) if cfg.files_meta
+                 else os.path.join(files_dir, "meta.yaml"))
+
+
+def source_dir(sc):
+  """A source's folder (its dir, relative to the project, as the BBS's own paths are)."""
+  return os.path.normpath(paths.resolve_project(str(sc.dir)))
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +428,14 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 
+def empty_catalogue():
+  """An empty catalogue in memory (a dry run's, where there is none yet)."""
+  con = sqlite3.connect(":memory:")
+  con.row_factory = sqlite3.Row
+  con.executescript(_SCHEMA)
+  return con
+
+
 def connect(lib):
   """A connection to the catalogue (rows by column name, foreign keys on;
   waits up to 30 s for a writer). Close it when done; use it in one thread."""
@@ -699,11 +718,18 @@ def reconcile_uploads(lib, con, temp_prefix):
   files put there without the BBS (the sysop's, as theirs; in the pending
   folder, an upload a crash left uncatalogued, with no uploader), forget
   files that are gone, update sizes. Names starting with *temp_prefix*
-  (uploads in progress) and the catalogue's own files are left alone.
-  Returns (added, forgotten). Commits."""
+  (uploads in progress, moves) and reserved names are left alone.
+  Returns (added, forgotten). Commits.
+
+  The catalogue is read before the folder: the BBS publishes an upload and
+  then catalogues it, so a row read here is for a file already there when
+  the folder is listed, and an upload published meanwhile is never taken
+  for one gone."""
   reserved = lib.reserved_names()
   added = forgotten = 0
   for root, folder in ((UPLOADS, lib.files_dir), (PENDING, lib.pending_dir)):
+    known = {row["path"]: row for row in con.execute(
+      "SELECT id, path, size, mtime FROM files WHERE root = ?", (root,))}
     on_disk = {}
     try:
       with os.scandir(folder) as it:
@@ -714,8 +740,6 @@ def reconcile_uploads(lib, con, temp_prefix):
           on_disk[e.name] = (st.st_size, st.st_mtime_ns)
     except FileNotFoundError:
       pass
-    known = {row["path"]: row for row in con.execute(
-      "SELECT id, path, size, mtime FROM files WHERE root = ?", (root,))}
     for name, (size, mtime) in on_disk.items():
       row = known.get(name)
       if row is None:
@@ -732,8 +756,12 @@ def reconcile_uploads(lib, con, temp_prefix):
   return added, forgotten
 
 
-def _move_new(source, target):
-  """Move *source* to *target*, never replacing a file. False if *target* exists."""
+def move_new(source, target, temp_prefix):
+  """Move the file *source* to *target*, never replacing a file there:
+  False (and *source* left) if *target* exists. Across volumes, where
+  neither a link nor a rename works, by a copy named *temp_prefix*... beside
+  *target* first (a name the library's folders leave alone). OSError when
+  the move itself fails."""
   try:
     os.link(source, target)  # fails if *target* exists, on every system
   except FileExistsError:
@@ -741,15 +769,36 @@ def _move_new(source, target):
   except OSError:
     if os.path.lexists(target):
       return False
-    os.rename(source, target)  # (no hard links here; on Windows this won't replace either)
-    return True
+    try:
+      os.rename(source, target)  # (no hard links here; on Windows a rename never replaces either)
+      return True
+    except FileExistsError:
+      return False
+    except OSError:
+      pass
+    fd, temp = tempfile.mkstemp(prefix=temp_prefix, suffix=".move", dir=os.path.dirname(target))
+    os.close(fd)
+    try:
+      shutil.copy2(source, temp)
+      try:
+        os.link(temp, target)  # (beside it now)
+      except FileExistsError:
+        return False
+      except OSError:
+        if os.path.lexists(target):
+          return False
+        os.rename(temp, target)
+    finally:
+      with contextlib.suppress(FileNotFoundError):
+        os.remove(temp)
   os.remove(source)
   return True
 
 
-def approve(lib, con, file_id):
+def approve(lib, con, file_id, temp_prefix):
   """List an upload that was awaiting the sysop: move it into the library
-  folder. Returns None, or why it couldn't be done. Commits."""
+  folder. Returns None, or why it couldn't be done (never raising: the
+  sysop is told). Commits."""
   entry = get(con, file_id)
   if entry is None or not entry.pending:
     return "That upload is no longer waiting for approval."
@@ -758,27 +807,92 @@ def approve(lib, con, file_id):
     remove(con, file_id)
     con.commit()
     return f"{entry.name} is gone from the pending folder."
+  if entry.name.lower() in lib.reserved_names():
+    return f"{entry.name} is a name the library keeps for itself; reject it."
   target = os.path.join(lib.files_dir, entry.name)
-  if entry.name.lower() in lib.reserved_names() or not _move_new(source, target):
-    return f"The library already has a file called {entry.name}; reject this one or rename that."
   try:
-    con.execute("UPDATE files SET root = ?, path = ?, added = ? WHERE id = ?",
-                (UPLOADS, entry.name, int(time.time()), file_id))
+    if not move_new(source, target, temp_prefix):
+      return f"The library already has a file called {entry.name}; reject this one or rename that."
+  except OSError as exc:
+    return f"{entry.name} could not be moved into the library: {exc}"
+  try:
+    # The name was free on disk, so a row for it is stale (a file deleted
+    # by hand, not yet reconciled).
+    con.execute("DELETE FROM files WHERE root = ? AND path = ?", (UPLOADS, entry.name))
+    moved = con.execute("UPDATE files SET root = ?, path = ?, added = ? WHERE id = ?",
+                        (UPLOADS, entry.name, int(time.time()), file_id)).rowcount
+    if not moved:  # (forgotten meanwhile, by a sync that saw the pending folder without it)
+      put(con, root=UPLOADS, path=entry.name, size=entry.size, mtime=entry.mtime, description=entry.description,
+          uploader=entry.uploader, tags=entry.tags)
     con.commit()
-  except sqlite3.Error:
+  except sqlite3.Error as exc:
     con.rollback()
-    _move_new(target, source)
-    raise
+    with contextlib.suppress(OSError):
+      move_new(target, source, temp_prefix)
+    return f"The catalogue could not be updated ({exc}); {entry.name} is still waiting."
   return None
 
 
 def reject(lib, con, file_id):
-  """Delete an upload that was awaiting the sysop, and forget it. Commits."""
+  """Delete an upload that was awaiting the sysop, and forget it. Returns
+  None, or why it couldn't be done (never raising). Commits."""
   entry = get(con, file_id)
   if entry is None or not entry.pending:
-    return
+    return "That upload is no longer waiting for approval."
   path = resolve(lib, entry, allow_pending=True)
   if path is not None:
-    os.remove(path)
+    try:
+      os.remove(path)
+    except FileNotFoundError:
+      pass
+    except OSError as exc:  # (being downloaded, say)
+      return f"{entry.name} could not be deleted: {exc}"
   remove(con, file_id)
   con.commit()
+  return None
+
+
+def take_legacy_meta(lib, temp_prefix):
+  """The catalogue the library had before this one (files_meta, by default
+  files/meta.yaml: {name: {keys: [...], description: "..."}}), moved out of
+  the library folder into the catalogue's (so it is read once and never
+  listed). Returns its {name: (tags, description)}, {} if there is none."""
+  path = lib.legacy_meta
+  if not path or not os.path.isfile(path):
+    return {}
+  import yaml
+  try:
+    with open(path, encoding="utf-8") as f:
+      data = yaml.safe_load(f) or {}
+  except (OSError, yaml.YAMLError, UnicodeError):
+    return {}
+  kept = os.path.join(os.path.dirname(os.path.abspath(lib.catalog)), os.path.basename(path) + ".imported")
+  with contextlib.suppress(OSError):
+    if not move_new(path, kept, temp_prefix):
+      os.remove(path)
+  details = {}
+  if isinstance(data, dict):
+    for name, entry in data.items():
+      if isinstance(entry, dict):
+        tags = entry.get("keys") or entry.get("tags") or []
+        details[str(name)] = ([str(t) for t in tags] if isinstance(tags, list) else [],
+                              str(entry.get("description") or ""))
+  return details
+
+
+def apply_legacy_meta(con, details):
+  """Give the library folder's entries of those names the tags and
+  descriptions of take_legacy_meta, where they have neither. Returns how
+  many. Commits."""
+  n = 0
+  for row in con.execute("SELECT id, path FROM files WHERE root = ? AND tag_count = 0 AND description = ''",
+                         (UPLOADS,)).fetchall():
+    tags, description = details.get(row["path"], ([], ""))
+    if tags or description:
+      set_tags(con, row["id"], tags)
+      set_description(con, row["id"], description)
+      n += 1
+  con.commit()
+  return n
+
+

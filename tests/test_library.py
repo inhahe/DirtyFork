@@ -5,6 +5,7 @@ import random
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import _setup  # noqa: F401  (paths, config)
 
@@ -285,19 +286,19 @@ class Folders(unittest.TestCase):
     self.write(self.lib.pending_dir, "up.zip")
     file_id = library.put(self.con, root="pending", path="up.zip", size=1, uploader="alice", tags=["game"])
     self.con.commit()
-    self.assertIsNone(library.approve(self.lib, self.con, file_id))
+    self.assertIsNone(library.approve(self.lib, self.con, file_id, ".upload-"))
     self.assertTrue(os.path.isfile(os.path.join(self.lib.files_dir, "up.zip")))
     self.assertFalse(os.path.exists(os.path.join(self.lib.pending_dir, "up.zip")))
     e = library.get(self.con, file_id)
     self.assertEqual((e.root, e.path, e.uploader, e.tags), ("uploads", "up.zip", "alice", ("game",)))
-    self.assertIn("no longer waiting", library.approve(self.lib, self.con, file_id))
+    self.assertIn("no longer waiting", library.approve(self.lib, self.con, file_id, ".upload-"))
 
   def test_approving_never_replaces_a_file(self):
     self.write(self.lib.pending_dir, "up.zip", b"new")
     self.write(self.lib.files_dir, "UP.zip", b"old")
     file_id = library.put(self.con, root="pending", path="up.zip", size=3, uploader="alice")
     self.con.commit()
-    self.assertIn("already has a file", library.approve(self.lib, self.con, file_id))
+    self.assertIn("already has a file", library.approve(self.lib, self.con, file_id, ".upload-"))
     with open(os.path.join(self.lib.files_dir, "UP.zip"), "rb") as f:
       self.assertEqual(f.read(), b"old")
     self.assertTrue(library.get(self.con, file_id).pending)
@@ -317,6 +318,100 @@ class Folders(unittest.TestCase):
     library.reject(self.lib, self.con, file_id)
     self.assertTrue(os.path.exists(os.path.join(self.lib.files_dir, "listed.zip")))
     self.assertIsNotNone(library.get(self.con, file_id))
+
+  def test_approving_across_volumes(self):
+    # (no hard link and no rename between drives: a copy beside the target)
+    self.write(self.lib.pending_dir, "far.zip", b"far")
+    file_id = library.put(self.con, root="pending", path="far.zip", size=3, uploader="alice")
+    self.con.commit()
+    pending = os.path.normcase(self.lib.pending_dir)
+    real_link, real_rename = os.link, os.rename
+
+    def link(src, dst):
+      if os.path.normcase(os.path.dirname(os.path.abspath(src))) == pending:
+        raise OSError(18, "Invalid cross-device link")
+      return real_link(src, dst)
+
+    def rename(src, dst):
+      if os.path.normcase(os.path.dirname(os.path.abspath(src))) == pending:
+        raise OSError(18, "The system cannot move the file to a different disk drive")  # (EXDEV; WinError 17)
+      return real_rename(src, dst)
+    with mock.patch("os.link", link), mock.patch("os.rename", rename):
+      self.assertIsNone(library.approve(self.lib, self.con, file_id, ".upload-"))
+    with open(os.path.join(self.lib.files_dir, "far.zip"), "rb") as f:
+      self.assertEqual(f.read(), b"far")
+    self.assertEqual(os.listdir(self.lib.pending_dir), [])
+    self.assertEqual([n for n in os.listdir(self.lib.files_dir) if n.startswith(".upload-")], [])
+    self.assertEqual(library.get(self.con, file_id).root, "uploads")
+
+  def test_approving_over_a_stale_row(self):
+    # (a file of that name deleted by hand, its row not yet reconciled)
+    library.put(self.con, root="uploads", path="up.zip", size=1, uploader="old")
+    self.write(self.lib.pending_dir, "up.zip", b"new")
+    file_id = library.put(self.con, root="pending", path="up.zip", size=3, uploader="alice")
+    self.con.commit()
+    self.assertIsNone(library.approve(self.lib, self.con, file_id, ".upload-"))
+    self.assertEqual(self.catalogued("uploads"), {"up.zip": ("alice", 3)})
+
+  def test_approving_or_rejecting_says_what_went_wrong_never_raises(self):
+    self.write(self.lib.pending_dir, "busy.zip")
+    file_id = library.put(self.con, root="pending", path="busy.zip", size=1, uploader="alice")
+    self.con.commit()
+    with mock.patch("os.remove", side_effect=PermissionError(13, "in use")):
+      self.assertIn("could not be deleted", library.reject(self.lib, self.con, file_id))
+    self.assertTrue(library.get(self.con, file_id).pending)
+    with mock.patch.object(library, "move_new", side_effect=OSError(5, "denied")):
+      self.assertIn("could not be moved", library.approve(self.lib, self.con, file_id, ".upload-"))
+    self.assertTrue(library.get(self.con, file_id).pending)
+
+  def test_the_old_meta_yaml_is_taken_once(self):
+    self.write(self.lib.files_dir, "old.zip")
+    self.write(self.lib.files_dir, "plain.txt")
+    meta = os.path.join(self.lib.files_dir, "meta.yaml")
+    with open(meta, "w", encoding="utf-8") as f:
+      f.write('old.zip:\n  keys: [game, dos]\n  description: "An old game"\ngone.zip:\n  keys: [x]\n')
+    lib = dataclasses.replace(self.lib, legacy_meta=meta)
+    details = library.take_legacy_meta(lib, ".upload-")
+    self.assertFalse(os.path.exists(meta))
+    self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(lib.catalog), "meta.yaml.imported")))
+    library.reconcile_uploads(lib, self.con, ".upload-")
+    self.assertEqual(library.apply_legacy_meta(self.con, details), 1)
+    entries = {e.name: e for e in library.fetch(self.con, library.all_ids(self.con))}
+    self.assertEqual(set(entries), {"old.zip", "plain.txt"})  # (meta.yaml itself is not listed)
+    self.assertEqual((entries["old.zip"].tags, entries["old.zip"].description), (("game", "dos"), "An old game"))
+    self.assertEqual(library.take_legacy_meta(lib, ".upload-"), {})  # (once)
+
+  def test_an_upload_catalogued_while_the_folder_is_read_is_not_forgotten(self):
+    # The BBS publishes an upload, then catalogues it. If that happens while
+    # a reconcile reads the folder, the reconcile must not take the new row
+    # for a file gone.
+    real_scandir = os.scandir
+    bbs = library.connect(self.lib)
+
+    class Listing:
+      def __init__(self, path):
+        self.inner = real_scandir(path)
+
+      def __enter__(self):
+        return self.inner.__enter__()
+
+      def __exit__(self, *exc):
+        self.inner.__exit__(*exc)
+        if os.path.normcase(os.path.abspath(self.inner_path)) == os.path.normcase(self.lib_dir):
+          with open(os.path.join(self.lib_dir, "new.zip"), "wb") as f:  # (published after the listing)
+            f.write(b"x")
+          library.put(bbs, root="uploads", path="new.zip", size=1, uploader="alice")
+          bbs.commit()
+    def scandir(path):
+      listing = Listing(path)
+      listing.inner_path, listing.lib_dir = path, os.path.normcase(os.path.abspath(self.lib.files_dir))
+      return listing
+    try:
+      with mock.patch("os.scandir", scandir):
+        library.reconcile_uploads(self.lib, self.con, ".upload-")
+    finally:
+      bbs.close()
+    self.assertEqual(self.catalogued("uploads"), {"new.zip": ("alice", 1)})
 
   def test_reserved_names(self):
     self.assertEqual(self.lib.reserved_names(), {"catalog", "pending", "zips", "repos"})

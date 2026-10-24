@@ -73,15 +73,20 @@ async def _db(work, *args):
 def startup():
   """At BBS startup: create the catalogue if need be, delete what uploads
   cut short by a crash left behind (later, it could be an upload in
-  progress), and catalogue what is in the library folders without being
-  catalogued (library.reconcile_uploads)."""
+  progress), catalogue what is in the library folders without being
+  catalogued (library.reconcile_uploads), and take what an old meta.yaml
+  catalogue said of those files (library.take_legacy_meta)."""
   lib = _library()
   library.ensure_schema(lib)
   for folder in (lib.files_dir, lib.pending_dir):
     file_transfer.remove_stale_uploads(folder)
+  legacy = library.take_legacy_meta(lib, TEMP_PREFIX)  # (meta.yaml, from before the catalogue)
   con = library.connect(lib)
   try:
     added, forgotten = library.reconcile_uploads(lib, con, TEMP_PREFIX)
+    if legacy:
+      log.info("File library: took the tags and descriptions of %d file(s) from %s",
+               library.apply_legacy_meta(con, legacy), lib.legacy_meta)
   except sqlite3.OperationalError as exc:  # (a sync holding the catalogue: it reconciles too)
     log.warning("File library: could not check its folders against the catalogue: %s", exc)
     return
@@ -186,14 +191,16 @@ class _Items:
     return len(self.ids)
 
   async def load(self, start, stop):
-    """Fetch the entries of items start..stop-1 that aren't fetched yet."""
+    """Fetch the entries of items start..stop-1 that aren't fetched yet
+    (when the cache is full, keeping only those of these items)."""
     first = max(start, len(self.head)) - len(self.head)
     last = min(stop, len(self)) - len(self.head)
-    want = [self.ids[i] for i in range(first, last) if self.ids[i] not in self.cache]
+    shown = [self.ids[i] for i in range(first, last)]
+    want = [i for i in shown if i not in self.cache]
     if not want:
       return
     if len(self.cache) + len(want) > self.CACHE:
-      self.cache.clear()
+      self.cache = {i: self.cache[i] for i in shown if i in self.cache}
     for e in await _db(library.fetch, want):
       self.cache[e.id] = e
     for i in want:  # (no longer catalogued: don't ask again)
@@ -340,7 +347,7 @@ async def _show_list(user, items, title, controls, selected=0):
   await draw_all()
   while True:
     key = await get_input_key(user)
-    if isinstance(key, str) and key.isdigit() and len(number) < 9:
+    if isinstance(key, str) and len(key) == 1 and key in "0123456789" and len(number) < 9:
       number += key
       ansi_wrap(user, False)
       await draw_footer()
@@ -518,7 +525,7 @@ async def _search_form(user, query):
   ansi_color(user, fg=cyan, fg_br=True, bg=black)
   await send(user, f"Search the File Library  ({count:,} files)"[:width] + cr + lf + cr + lf, drain=False)
   ansi_color(user, fg=white, fg_br=False, bg=black)
-  await send(user, "Search for (Enter searches; leave it empty to go back):", drain=False)
+  await send(user, "Search for (Enter searches, Ctrl+U clears, empty goes back):", drain=False)
 
   lines = list(library.QUERY_HELP) + ["", "Examples:"] + ["  " + e for e in library.QUERY_EXAMPLES]
   first = 7
@@ -561,8 +568,7 @@ async def _search_files(user):
     if not ids:
       await show_message_box(user, "No files match that search.")
       continue
-    if await _pick_files(user, _Items(ids), f"Search: {query}") == "quit":
-      return
+    await _pick_files(user, _Items(ids), f"Search: {query}")  # (Q or Backspace: back to the search)
 
 
 # ---------------------------------------------------------------------------
@@ -668,7 +674,7 @@ async def _ask_tags(user):
   chosen = []
   for part in (await _read_line(user, max_len=200)).split(","):
     part = part.strip()
-    if part.isdigit() and 1 <= int(part) <= len(valid):
+    if part.isascii() and part.isdigit() and 1 <= int(part) <= len(valid):  # (not "²": int() refuses it)
       tag = valid[int(part) - 1]
     else:
       tag = next((v for v in valid if v.lower() == part.lower()), None)
@@ -695,7 +701,10 @@ async def _upload_file(user):
   def catalogue(con):
     ids = {}
     for name in policy.saved:
-      size, mtime = library.file_stamp(os.path.join(policy.directory, name))
+      try:
+        size, mtime = library.file_stamp(os.path.join(policy.directory, name))
+      except OSError:  # (gone already: deleted by hand, or approved or rejected in a flash)
+        continue
       ids[name] = library.put(con, root=root, path=name, size=size, mtime=mtime, uploader=user.handle)
     con.commit()
     return ids
@@ -714,26 +723,35 @@ async def _upload_file(user):
     lines.append("Nothing was uploaded.")
   log.info("Upload by %s: saved %s, refused %s, %s", user.handle, policy.saved, policy.refused,
            result.message)
-  await show_message_box(user, "\n".join(lines))
-  if not policy.saved:
+  if not ids:
+    await show_message_box(user, "\n".join(lines))
     return
-  if not trusted:
-    await _tell_sysops(f"{user.handle} uploaded {', '.join(policy.saved)}. "
-                       "It is waiting for your approval in Sysop > Vet Uploads.")
+  try:
+    await show_message_box(user, "\n".join(lines))
+    await ansi_cls(user)
+    for fname, file_id in ids.items():
+      await send(user, cr + lf + f"Cataloguing: {fname}" + cr + lf, drain=False)
+      await send(user, "Enter description (or blank for none): ", drain=True)
+      desc = (await _read_line(user, max_len=200)).strip()
+      tags = await _ask_tags(user)
 
-  await ansi_cls(user)
-  for fname in policy.saved:
-    await send(user, cr + lf + f"Cataloguing: {fname}" + cr + lf, drain=False)
-    await send(user, "Enter description (or blank for none): ", drain=True)
-    desc = (await _read_line(user, max_len=200)).strip()
-    tags = await _ask_tags(user)
-
-    def details(con, file_id=ids[fname]):
-      library.set_description(con, file_id, desc)
-      library.set_tags(con, file_id, tags)
-      con.commit()
-    await _db(details)
-    log.info("User %s uploaded %s with tags=%s", user.handle, fname, tags)
+      def details(con, file_id=file_id):
+        # (the sysop may have dealt with it meanwhile: approved, it is the
+        # same entry in the library; rejected, it is gone)
+        if con.execute("SELECT 1 FROM files WHERE id = ?", (file_id,)).fetchone() is None:
+          return False
+        library.set_description(con, file_id, desc)
+        library.set_tags(con, file_id, tags)
+        con.commit()
+        return True
+      if await _db(details):
+        log.info("User %s uploaded %s with tags=%s", user.handle, fname, tags)
+  finally:
+    # The sysops hear of it once its details are in, or when the uploader
+    # leaves without giving them.
+    if not trusted:
+      await _tell_sysops(f"{user.handle} uploaded {', '.join(ids)}. "
+                         "It is waiting for your approval in Sysop > Vet Uploads.")
 
   await show_message_box(user, "File(s) catalogued successfully.")
 
@@ -769,7 +787,7 @@ async def _vet_one(user, entry):
                                      ("back", "Back")))
     r = await fields.run()
     if r.button == "approve":
-      why = await _db(lambda con: library.approve(lib, con, entry.id))
+      why = await _db(lambda con: library.approve(lib, con, entry.id, TEMP_PREFIX))
       log.info("Sysop %s approved upload %s by %s%s", user.handle, entry.name, entry.uploader,
                f": not done: {why}" if why else "")
       await show_message_box(user, why or f"{entry.name} is now in the library.")
@@ -781,9 +799,10 @@ async def _vet_one(user, entry):
                  drain=True)
       await _button_row(user, confirm, (("delete", "Delete"), ("keep", "Keep")))
       if (await confirm.run()).button == "delete":
-        await _db(lambda con: library.reject(lib, con, entry.id))
-        log.info("Sysop %s rejected upload %s by %s", user.handle, entry.name, entry.uploader)
-        await show_message_box(user, f"{entry.name} was deleted.")
+        why = await _db(lambda con: library.reject(lib, con, entry.id))
+        log.info("Sysop %s rejected upload %s by %s%s", user.handle, entry.name, entry.uploader,
+                 f": not done: {why}" if why else "")
+        await show_message_box(user, why or f"{entry.name} was deleted.")
         return
     elif r.button == "download":
       await _do_download(user, entry)
