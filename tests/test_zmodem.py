@@ -3,6 +3,7 @@ over an in-memory pipe (which can damage what passes through it)."""
 import asyncio
 import os
 import random
+import re
 import tempfile
 import time
 import unittest
@@ -80,10 +81,18 @@ class MemorySink:
 
 
 FAST = Settings(start_timeout=5, header_timeout=0.5, retries=6)
+PATIENT = Settings(start_timeout=5, header_timeout=0.5, retries=50)
 
 
 def run(coro):
     return asyncio.run(asyncio.wait_for(coro, 60))
+
+
+def restarts(logs):
+    """How many times the sender was asked for data again, from its summary
+    lines in *logs* (assertLogs' record)."""
+    return sum(int(m.group(1)) for line in logs.output
+               if (m := re.search(r"asked for data again (\d+) time", line)))
 
 
 class Framing(unittest.TestCase):
@@ -214,8 +223,9 @@ class Transfers(unittest.TestCase):
         return path, data[:size]
 
     def transfer(self, paths, accept=None, damage_to_receiver=None, damage_to_sender=None,
-                 settings=FAST, max_files=100):
-        """Send *paths* from our sender to our receiver. Returns (sender's
+                 settings=FAST, max_files=100, receiver_settings=None):
+        """Send *paths* from our sender to our receiver (with *settings*; the
+        receiver with *receiver_settings*, if given). Returns (sender's
         results or exception, receiver's results or exception, files stored)."""
         store, sinks = {}, []
 
@@ -228,7 +238,8 @@ class Transfers(unittest.TestCase):
             s_end, r_end = connected(damage_to_receiver, damage_to_sender)
             return await asyncio.gather(
                 zmodem.send_files(s_end, paths, settings),
-                zmodem.receive_files(r_end, accept or default_accept, settings, max_files),
+                zmodem.receive_files(r_end, accept or default_accept,
+                                     receiver_settings or settings, max_files),
                 return_exceptions=True)
         sent, received = run(go())
         self.sinks = sinks
@@ -256,7 +267,7 @@ class Transfers(unittest.TestCase):
             sent, received, store = self.transfer([path], damage_to_receiver=damage)
         self.assertEqual(received[0].status, "received")
         self.assertEqual(store["big.bin"], data)
-        self.assertGreaterEqual(sum("again" in line for line in logs.output), 2, logs.output)
+        self.assertGreaterEqual(restarts(logs), 2, logs.output)
 
     def test_a_lost_stretch_is_sent_again(self):
         path, data = self.make("lost.bin", 30000)
@@ -269,7 +280,7 @@ class Transfers(unittest.TestCase):
         with self.assertLogs("dirtyfork.zmodem", "INFO") as logs:
             sent, received, store = self.transfer([path], damage_to_receiver=damage)
         self.assertEqual(store["lost.bin"], data)
-        self.assertTrue(any("again" in line for line in logs.output), logs.output)
+        self.assertGreaterEqual(restarts(logs), 1, logs.output)
 
     def test_more_repairs_than_retries_each_further_on_still_finish(self):
         """A long file over a noisy line: what limits the sender's errors is
@@ -286,12 +297,11 @@ class Transfers(unittest.TestCase):
         settings = Settings(start_timeout=5, header_timeout=0.5, retries=2)
         with self.assertLogs("dirtyfork.zmodem", "INFO") as logs:
             sent, received, store = self.transfer([path], damage_to_receiver=damage,
-                                                  settings=settings)
+                                                  settings=settings, receiver_settings=PATIENT)
         self.assertNotIsInstance(sent, Exception, repr(sent))
         self.assertEqual([r.status for r in sent], ["sent"])
         self.assertEqual(store["noisy.bin"], data)
-        restarts = sum("asked for the data again" in line for line in logs.output)
-        self.assertGreater(restarts, settings.retries, logs.output)
+        self.assertGreater(restarts(logs), settings.retries, logs.output)
 
     def test_a_receiver_that_gets_no_further_is_given_up_on(self):
         """From 20000 on everything it is sent is damaged, so it asks for the
@@ -304,18 +314,109 @@ class Transfers(unittest.TestCase):
             chunk = bytearray(chunk)
             chunk[len(chunk) // 2] ^= 0x55  # (in the abort sequence, after its CANs)
             return bytes(chunk)
-
-        async def go():
-            s_end, r_end = connected(damage_to_receiver=damage)
-            return await asyncio.gather(
-                zmodem.send_files(s_end, [path], Settings(start_timeout=5, header_timeout=0.5,
-                                                          retries=3)),
-                zmodem.receive_files(r_end, lambda offer: MemorySink({}, offer.name),
-                                     Settings(start_timeout=5, header_timeout=0.5, retries=50)),
-                return_exceptions=True)
-        sent, received = run(go())
+        sent, received, store = self.transfer(
+            [path], damage_to_receiver=damage, receiver_settings=PATIENT,
+            settings=Settings(start_timeout=5, header_timeout=0.5, retries=3))
         self.assertIs(type(sent), zmodem.TransferError, repr(sent))
         self.assertEqual(str(sent), "too many errors")
+
+    def test_requests_that_pile_up_are_answered_with_one_restart(self):
+        """One bad byte, and the receiver's request to send again arrives
+        three times over (as lrzsz's can, while it looks for the restart):
+        one restart answers them all. Answered one by one, each would take
+        the sender back behind a receiver that had moved on."""
+        path, data = self.make("piled.bin", 60000)
+        request = Encoder.hex_header(zmodem.ZRPOS, zmodem.pos_bytes(0))[:6]  # (ZRPOS, hex)
+        first = Encoder.hex_header(zmodem.ZRPOS, zmodem.pos_bytes(0))
+
+        def hit(chunk, offset):
+            chunk = bytearray(chunk)
+            if offset <= 20000 < offset + len(chunk):
+                chunk[20000 - offset] ^= 0x55
+            return bytes(chunk)
+
+        def three_times(chunk, offset):
+            return chunk * 3 if chunk.startswith(request) and chunk != first else chunk
+        with self.assertLogs("dirtyfork.zmodem", "INFO") as logs:
+            sent, received, store = self.transfer([path], damage_to_receiver=hit,
+                                                  damage_to_sender=three_times,
+                                                  receiver_settings=PATIENT)
+        self.assertEqual(store["piled.bin"], data)
+        self.assertEqual(restarts(logs), 1, logs.output)
+
+    def test_a_request_from_beyond_the_new_pass_is_taken_as_made(self):
+        """A stale request takes the sender back; then the receiver asks to go
+        on from where it really is, beyond where the new pass has got to (but
+        sent before): the sender goes on from there, not from behind it."""
+        path, _ = self.make("ahead.bin", 256 * 1024)
+        far = 128 * 1024
+
+        async def receiver(end):
+            reader = Reader(end)
+
+            async def next_header(kind, pos=None):
+                while True:
+                    try:
+                        hdr = await reader.header(5)
+                    except zmodem._BadFrame:
+                        continue
+                    if hdr.type == kind and (pos is None or hdr.pos == pos):
+                        return hdr
+            end.write(Encoder.hex_header(ZRINIT, zmodem.flag_bytes(f0=CANFDX | CANOVIO | CANFC32)))
+            await next_header(zmodem.ZFILE)
+            await reader.subpacket(True, 5)
+            end.write(Encoder.hex_header(zmodem.ZRPOS, zmodem.pos_bytes(0)))
+            await next_header(zmodem.ZDATA, 0)
+            got = 0
+            while got < far:
+                data, _ = await reader.subpacket(True, 5)
+                got += len(data)
+            end.write(Encoder.hex_header(zmodem.ZRPOS, zmodem.pos_bytes(1024)))  # (the stale one)
+            await next_header(zmodem.ZDATA, 1024)
+            end.write(Encoder.hex_header(zmodem.ZRPOS, zmodem.pos_bytes(far)))
+            restart = await next_header(zmodem.ZDATA)
+            end.outbound.close()  # (the sender ends: LinkClosed)
+            return restart.pos
+
+        async def go():
+            s_end, r_end = connected()
+            return await asyncio.gather(zmodem.send_files(s_end, [path], FAST), receiver(r_end),
+                                        return_exceptions=True)
+        sent, restart_at = run(go())
+        self.assertEqual(restart_at, far)
+
+    def test_a_slow_confirmation_of_the_file_is_not_added_to_earlier_errors(self):
+        """One repair, then the receiver's first two confirmations of the file
+        are lost: the silences after ZEOF count on their own, as the errors
+        before them were mended by the data that followed."""
+        path, data = self.make("late.bin", 30000)
+        request = Encoder.hex_header(zmodem.ZRPOS, zmodem.pos_bytes(0))[:6]
+        confirmation = Encoder.hex_header(ZRINIT, zmodem.flag_bytes(f0=CANFDX | CANOVIO | CANFC32))
+        lost = []
+
+        def hit(chunk, offset):
+            chunk = bytearray(chunk)
+            if offset <= 10000 < offset + len(chunk):
+                chunk[10000 - offset] ^= 0x55
+            return bytes(chunk)
+
+        def lose_two(chunk, offset):  # (the ZRINITs after the data began)
+            if chunk.startswith(request) and not lost:
+                lost.append("started")
+            elif lost and chunk == confirmation and len(lost) < 3:
+                lost.append("lost")
+                return b""
+            return chunk
+        # (a receiver that never times out itself: only the sender's silences)
+        slow = Settings(start_timeout=30, header_timeout=10, retries=50)
+        settings = Settings(start_timeout=5, header_timeout=0.5, retries=2)
+        sent, received, store = self.transfer([path], damage_to_receiver=hit,
+                                              damage_to_sender=lose_two,
+                                              settings=settings, receiver_settings=slow)
+        self.assertNotIsInstance(sent, Exception, repr(sent))
+        self.assertEqual([r.status for r in sent], ["sent"])
+        self.assertEqual(lost, ["started", "lost", "lost"])
+        self.assertEqual(store["late.bin"], data)
 
     def test_a_receiver_without_32_bit_crcs_gets_16_bit_ones(self):
         path, data = self.make("crc16.bin", 9000)

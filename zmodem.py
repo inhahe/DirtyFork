@@ -556,6 +556,35 @@ class SendFile:
     name: Optional[str] = None
 
 
+class _Progress:
+    """How one file's sending stands.
+
+    sent: the furthest offset whose data has gone out (a request to send
+    again is never taken from beyond it). confirmed: the furthest the
+    receiver has said it has (by a request to send again from there, or an
+    acknowledgement). errors: in a row, as Settings.retries limits them; a
+    receiver that confirms more than ever before has made progress, which
+    starts the count again, so that a long file over a noisy line is not
+    given up for its many repairs. restarts: how many, for the log.
+    """
+
+    def __init__(self, name: str, start: int, retries: int):
+        self.name = name
+        self.sent = self.confirmed = start
+        self.errors = self.restarts = 0
+        self.retries = retries
+
+    def confirm(self, pos: int) -> None:
+        """The receiver has everything before *pos*."""
+        if pos > self.confirmed:
+            self.confirmed, self.errors = pos, 0
+
+    def error(self) -> None:
+        self.errors += 1
+        if self.errors > self.retries:
+            raise TransferError("too many errors")
+
+
 class _Sender:
     def __init__(self, link: Link, settings: Settings):
         self.link = link
@@ -707,62 +736,28 @@ class _Sender:
             status, sent = await self._stream(fp, name, start, size)
             return FileResult(name, status, sent)
 
-    def _count_error(self, errors: int) -> int:
-        errors += 1
-        if errors > self.settings.retries:
-            raise TransferError("too many errors")
-        return errors
-
     async def _stream(self, fp, name: str, pos: int, size: int) -> tuple[str, int]:
         """Send the file's data from *pos*, then ZEOF, until the receiver
         confirms the end with ZRINIT (or skips the file). Returns ("sent" or
-        "skipped", position reached).
-
-        Errors count in a row, while the receiver gets no further: one bad
-        byte can bring several requests for one position (each request it
-        makes while it looks for our restart is another), and a long file over
-        a noisy line has many such repairs."""
-        errors = 0
-        furthest = pos  # the furthest position the receiver has asked to go on from
-
-        def asked_from(at: int) -> int:
-            nonlocal errors, furthest
-            if at > furthest:  # it got further than ever before: progress
-                errors, furthest = 0, at
-            errors = self._count_error(errors)
-            log.info("send: %s: the receiver asked for the data again from %d", name, at)
-            return at
-
-        while True:  # once per (re)start at a position
-            restart = await self._send_data(fp, pos, size)
-            if restart == "skip":
-                return "skipped", pos
-            if restart is not None:
-                pos = asked_from(restart)
-                continue
-            pos = fp.tell()
-            # All sent: ZEOF until the receiver confirms the file (ZRINIT)
-            eof = self.enc.bin_header(ZEOF, pos_bytes(pos), self.crc32)
-            await self.send(eof)
-            while True:
-                try:
-                    hdr = await self.next_header(self.settings.header_timeout)
-                except asyncio.TimeoutError:
-                    errors = self._count_error(errors)
-                    await self.send(eof)
-                    continue
-                if hdr.type == ZRINIT:
+        "skipped", position reached)."""
+        p = _Progress(name, pos, self.settings.retries)
+        try:
+            while True:  # once per (re)start at a position
+                outcome = await self._send_data(fp, pos, size, p)
+                if outcome is None:
+                    pos = fp.tell()  # (short of *size* if the file shrank meanwhile)
+                    outcome = await self._end_of_file(pos, p)
+                if outcome == "sent":
                     return "sent", pos
-                if hdr.type == ZSKIP:
+                if outcome == "skip":
                     return "skipped", pos
-                if hdr.type == ZRPOS:
-                    pos = asked_from(min(hdr.pos, size))
-                    break  # send again from there
-                if hdr.type in (ZABORT, ZFERR, ZCAN, ZFIN):
-                    raise Aborted("the receiver cancelled")
-                # ZACK and the like: keep waiting
+                pos = outcome
+        finally:
+            if p.restarts:
+                log.info("send: %s: the receiver asked for data again %d time(s)",
+                         name, p.restarts)
 
-    async def _send_data(self, fp, pos: int, size: int):
+    async def _send_data(self, fp, pos: int, size: int, p: "_Progress"):
         """Send ZDATA and the file from *pos* to *size* (the size announced).
         Returns None once it has all gone, a position to send again from, or
         "skip"."""
@@ -774,12 +769,11 @@ class _Sender:
             # Headers that arrived meanwhile are looked at only after a
             # subpacket has followed the ZDATA: a receiver hunting for the
             # restart needs a header *and* data, or it asks again, forever.
-            hdr = None if first else self.pending_header()
-            first = False
-            if hdr is not None:
-                restart = self._mid_stream(hdr, pos)
+            if not first:
+                restart = self._requests(p)
                 if restart is not None:
                     return restart
+            first = False
             chunk = fp.read(min(SUBPACKET_SIZE, size - pos))
             last = not chunk or pos + len(chunk) >= size
             unacked += len(chunk)
@@ -791,27 +785,48 @@ class _Sender:
                 end = ZCRCG
             await self.send(self.enc.subpacket(chunk, end, self.crc32), flush=end != ZCRCG)
             pos += len(chunk)
+            p.sent = max(p.sent, pos)
             if last:
                 return None
             if end == ZCRCW:
-                restart = await self._wait_ack(pos, acked)
+                restart = await self._wait_ack(pos, acked, p)
                 if restart is not None:
                     return restart
                 acked, unacked = pos, 0
                 await self.send(self.enc.bin_header(ZDATA, pos_bytes(pos), self.crc32))
 
-    def _mid_stream(self, hdr: Header, pos: int):
-        """React to a header that arrived while sending data: a position to
-        send again from, "skip", or None to carry on."""
-        if hdr.type == ZRPOS:
-            return min(hdr.pos, pos)
-        if hdr.type == ZSKIP:
-            return "skip"
-        if hdr.type in (ZABORT, ZFERR, ZCAN, ZFIN):
-            raise Aborted("the receiver cancelled")
-        return None  # ZACK, ZNAK, a late ZRINIT: nothing to do
+    def _requests(self, p: "_Progress", first: Optional[Header] = None):
+        """Act on *first* and the headers that have arrived behind it: a
+        position to send again from, "skip", or None to carry on.
 
-    async def _wait_ack(self, pos: int, acked: int):
+        Requests to send again that have piled up were all made before the
+        receiver could see an answer to any of them, so one restart answers
+        them all, from the furthest (each says the receiver has everything
+        before it). Answered one by one, each would take the sender back
+        behind a receiver that had moved on, which would ask again."""
+        restart = None
+        hdr = first if first is not None else self.pending_header()
+        while hdr is not None:
+            if hdr.type == ZRPOS:
+                # (never beyond what was sent: that would leave a hole)
+                at = min(hdr.pos, p.sent)
+                restart = at if restart is None else max(restart, at)
+            elif hdr.type == ZACK:
+                p.confirm(min(hdr.pos, p.sent))
+            elif hdr.type == ZSKIP:
+                return "skip"
+            elif hdr.type in (ZABORT, ZFERR, ZCAN, ZFIN):
+                raise Aborted("the receiver cancelled")
+            # (ZNAK, a late ZRINIT: nothing to do)
+            hdr = self.pending_header()
+        if restart is not None:
+            p.confirm(restart)
+            p.error()
+            p.restarts += 1
+            log.debug("send: %s: the receiver asked for the data again from %d", p.name, restart)
+        return restart
+
+    async def _wait_ack(self, pos: int, acked: int, p: "_Progress"):
         """After a ZCRCW at *pos*: wait for the receiver's ZACK. Returns None
         when acknowledged, else a position to send again from (*acked*, the
         last acknowledged one, if it never answers) or "skip"."""
@@ -819,13 +834,41 @@ class _Sender:
             try:
                 hdr = await self.next_header(self.settings.header_timeout)
             except asyncio.TimeoutError:
+                p.error()
+                log.debug("send: %s: no acknowledgement at %d; sending again from %d",
+                          p.name, pos, acked)
                 return acked
             if hdr.type == ZACK:
+                p.confirm(pos)
                 return None
-            restart = self._mid_stream(hdr, pos)
+            restart = self._requests(p, hdr)
             if restart is not None:
                 return restart
         raise TimedOut("the receiver stopped acknowledging")
+
+    async def _end_of_file(self, end: int, p: "_Progress"):
+        """All the data has gone, up to *end*: ZEOF until the receiver
+        confirms the file (ZRINIT). Returns "sent", "skip" or a position to
+        send again from. Its silences count on their own: the errors before
+        them were mended by the data that followed."""
+        eof = self.enc.bin_header(ZEOF, pos_bytes(end), self.crc32)
+        await self.send(eof)
+        silences = 0
+        while True:
+            try:
+                hdr = await self.next_header(self.settings.header_timeout)
+            except asyncio.TimeoutError:
+                silences += 1
+                if silences > self.settings.retries:
+                    raise TimedOut("the receiver did not confirm the file")
+                await self.send(eof)
+                continue
+            if hdr.type == ZRINIT:
+                return "sent"
+            restart = self._requests(p, hdr)
+            if restart is not None:
+                return restart
+            # ZACK and the like: keep waiting
 
     async def _finish(self) -> None:
         """ZFIN until the receiver answers ZFIN, then "OO" (over and out)."""
