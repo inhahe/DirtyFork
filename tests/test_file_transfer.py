@@ -194,8 +194,8 @@ class LibraryFiles(unittest.TestCase):
     def entry(self, file_id):
         return asyncio.run(self.file._db(self.library.get, file_id))
 
-    def user(self, handle="caller", keys=()):
-        user = _setup.make_user()
+    def user(self, handle="caller", keys=(), rows=25):
+        user = _setup.make_user(rows=rows)
         user.handle, user.keys = handle, set(keys)
         return user
 
@@ -420,6 +420,25 @@ class LibraryFiles(unittest.TestCase):
         self.assertEqual((self.entry(self.game).description, self.entry(self.game).edited),
                          ("ok", self.library.EDITED))
 
+    def test_a_file_found_gone_by_e_is_shown_gone(self):
+        from array import array
+        f = self.file
+        items = f._Items(array("q", [self.game]))
+        asyncio.run(items.load(0, 1))  # (drawn while it was there)
+        con = self.library.connect(self.lib)
+        try:
+            self.library.remove(con, self.game)  # (forgotten by a sync meanwhile)
+            con.commit()
+        finally:
+            con.close()
+        got = []
+
+        async def show():
+            got.append(await f._show_list(self.user("boss", {"sysop"}), items, "t", "controls"))
+        shown = self.press(["e", "i", "q"], show)  # (E: gone; then I has nothing to show)
+        self.assertEqual(shown, ["That file is no longer in the library."])
+        self.assertEqual(items.item(0)[0], "gone")
+
     def test_enter_edits_where_the_list_is_for_editing(self):
         from keyboard_codes import tab
         sysop = self.user("boss", {"sysop"})
@@ -447,22 +466,71 @@ class LibraryFiles(unittest.TestCase):
         finally:
             con.close()
 
-    def test_the_edit_form_fits_a_small_screen(self):
+    def check_the_form_fits(self):
+        """The edit form, on every screen from the smallest it allows: drawn
+        whole, and saving a tag added."""
         from keyboard_codes import insert, tab
         f = self.file
-        sysop = self.user("boss", {"sysop"})
         self.described("line one\nline two")
-        for height in range(f._EDIT_FORM_ROWS + 3, 30):
-            sysop.screen_height = height
+        smallest = f._edit_form_rows() + 3
+        for height in range(smallest, 30):
+            sysop = self.user("boss", {"sysop"}, rows=height)
             shown = self.press([tab, insert] + list(f"tag {height}") + ["\r", tab, "\r"],  # (a tag added; Save)
                                lambda: f._edit_details(sysop, self.entry(self.game)))
             self.assertEqual(shown, ["Saved the details of game.zip."], height)
+            rows = ["".join(c.char for c in sysop.screen[r]) for r in range(height)]
+            self.assertTrue(any(r.startswith("Tags (Insert adds one") for r in rows), (height, rows))
             e = self.entry(self.game)
             # (the description untouched: kept as it was, line break and all)
             self.assertEqual((e.description, e.tags[-1]), ("line one\nline two", f"tag {height}"), height)
-        sysop.screen_height = f._EDIT_FORM_ROWS + 2
+        sysop = self.user("boss", {"sysop"}, rows=smallest - 1)
         shown = self.press([], lambda: f._edit_details(sysop, self.entry(self.game)))
-        self.assertIn("needs a screen of", shown[0])
+        self.assertIn(f"needs a screen of {smallest} rows", shown[0])
+
+    def test_the_edit_form_fits_a_small_screen(self):
+        self.assertEqual(self.file._edit_form_rows(), 13)  # (as input_fields.yaml has it: 16 rows at least)
+        self.check_the_form_fits()
+
+    def test_the_edit_form_fits_with_the_description_outlined(self):
+        from config import Config, ConfigView
+        f = self.file
+        # (over the config's own layers: a view's nested sections don't merge with another view's)
+        styled = ConfigView(Config({"input_fields": {"input_field": {"outline": {"fg": "green", "bg": "black"}}}}),
+                            *f.config._layers)
+        with mock.patch.object(f, "config", styled):
+            self.assertEqual(f._edit_form_rows(), 15)
+            self.check_the_form_fits()
+
+    def test_reset_gives_the_details_back(self):
+        from keyboard_codes import tab
+        f = self.file
+        con = self.library.connect(self.lib)
+        try:
+            synced = self.library.put(con, root="pics", path="p.jpg", size=1, source="pics", tags=["pic"])
+            self.library.set_details(con, synced, "mine", ["mine"], by_sysop=True)
+            con.commit()
+        finally:
+            con.close()
+        sysop = self.user("boss", {"sysop"})
+        shown = self.press([tab, tab, tab, tab, "\r"],  # (the description, the tags, Save, Cancel: Reset)
+                           lambda: f._edit_details(sysop, self.entry(synced)))
+        self.assertEqual(shown, ["The sync sets the details of p.jpg afresh, at its next run."])
+        self.assertEqual(self.entry(synced).edited, self.library.RESET)
+
+    def test_browsing_reads_the_level_again_after_an_edit(self):
+        from keyboard_codes import insert, tab
+        f = self.file
+        levels = []
+        real = self.library.browse
+
+        def browse(con, path):
+            levels.append(real(con, path))
+            return levels[-1]
+        with mock.patch.object(self.library, "browse", browse):
+            # (E on the one untagged file, a tag added, Save; then Q)
+            self.press(["e", tab, insert] + list("games") + ["\r", tab, "\r", "q"],
+                       lambda: f._browse_files(self.user("boss", {"sysop"})))
+        self.assertEqual([(dirs, list(ids)) for dirs, ids in levels], [([], [self.game]), ([("games", 1)], [])])
 
     def test_a_description_typed_is_trimmed_not_joined(self):
         from keyboard_codes import tab

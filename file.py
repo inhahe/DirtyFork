@@ -361,11 +361,11 @@ async def _show_list(user, items, title, controls, selected=0, enter_edits=False
   async def edit():
     """Edit the selected file's details: True if they were saved."""
     entry = items.item(selected)[1]
-    if await _edit_details(user, entry):
-      items.forget(entry.id)
-      return True
-    await draw_all()
-    return False
+    saved = await _edit_details(user, entry)
+    items.forget(entry.id)  # (read again: saved, or found gone)
+    if not saved:
+      await draw_all()
+    return saved
 
   if total == 0:
     await show_message_box(user, "No files here.")
@@ -407,11 +407,12 @@ async def _show_list(user, items, title, controls, selected=0, enter_edits=False
       await move_to(0)
     elif key == end:
       await move_to(total - 1)
-    elif key in ("\r", "\n"):
-      if not (enter_edits and items.item(selected)[0] == "file"):
-        return "open", items.item(selected), selected
+    elif ((enter_edits and key in ("\r", "\n") or isinstance(key, str) and key.lower() == "e")
+          and _is_sysop(user) and items.item(selected)[0] == "file"):
       if await edit():
         return "edited", None, selected
+    elif key in ("\r", "\n"):
+      return "open", items.item(selected), selected
     elif key in (back, "\x7f", "esc"):
       return "back", None, selected
     elif isinstance(key, str) and key.lower() == "q":
@@ -421,9 +422,6 @@ async def _show_list(user, items, title, controls, selected=0, enter_edits=False
       if item[0] == "file":
         await show_message_box(user, _info_text(item[1]), title="File Information")
         await draw_all()
-    elif isinstance(key, str) and key.lower() == "e" and _is_sysop(user) and items.item(selected)[0] == "file":
-      if await edit():
-        return "edited", None, selected
 
 
 def _controls(user, enter, more=""):
@@ -826,7 +824,15 @@ async def _valid_tag(text):
   return True, None
 
 
-_EDIT_FORM_ROWS = 13  # the edit form's rows but the description's and the tag list's
+def _edit_form_rows():
+  """The edit form's rows but the description's and the tag list's: the
+  header, the labels, the tag list's outline and its "Add:" line, and the
+  description field's and the buttons' outlines (as input_fields.yaml has
+  them: one takes a row above and one below)."""
+  styles = config.input_fields
+  return 11 + (2 if styles.input_field.outline else 0) + (2 if styles.submit.outline else 0)
+
+
 _EDIT_NOTES = {
   library.SYNCED: "Saving makes them yours: the sync keeps them from then on.",
   library.EDITED: "These are your details: the sync keeps them (Reset gives them back to it).",
@@ -843,11 +849,12 @@ async def _edit_details(user, entry):
   if not _is_sysop(user):
     return False
   width, height = user.screen_width, user.screen_height
-  room = height - _EDIT_FORM_ROWS  # (for the description, 1 to 4 rows, and the tag list, 2 to 5: the list's first)
+  fixed = _edit_form_rows()
+  room = height - fixed  # (for the description, 1 to 4 rows, and the tag list, 2 to 5: the list's first)
   desc_rows = max(1, min(4, room - 5))
   list_rows = min(5, room - desc_rows)
   if list_rows < 2:
-    await show_message_box(user, f"Editing a file's details needs a screen of {_EDIT_FORM_ROWS + 3} rows "
+    await show_message_box(user, f"Editing a file's details needs a screen of {fixed + 3} rows "
                                  f"or more; this one has {height}.")
     return False
   entry = await _db(library.get, entry.id)  # (as it is now, not as the list was drawn)
@@ -872,7 +879,7 @@ async def _edit_details(user, entry):
   described = await fields.add_field(conf=config.input_fields.input_field, width=width - 3, height=desc_rows,
                                      word_wrap=True, max_length=2000, content=entry.description)
   shown = described.get_text()  # (the description as the field holds it, to see whether it was changed)
-  row = 6 + desc_rows + 1
+  row = described.row_offset + described.height + (1 if described.outline else 0) + 1  # (after a blank row)
   await ansi_move(user, row, 1, drain=False)
   await send(user, "Tags (Insert adds one, Delete removes the one highlighted):"[:width - 1], drain=False)
   await ansi_move(user, row + 1, 2, drain=True)

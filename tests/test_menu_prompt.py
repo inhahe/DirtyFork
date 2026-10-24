@@ -40,7 +40,7 @@ class Prompt(unittest.IsolatedAsyncioTestCase):
 
 class Prefixes(unittest.TestCase):
     def test_each_sysop_tool_takes_one_letter(self):
-        # (two names beginning alike, Edit User and Edit Files, made both take six)
+        # (names that begin alike must both be typed until they differ: give each tool its own first letter)
         menu._ensure_menu_tree()
         node = menu._menu_nodes["sysop"]
         self.assertEqual({n: p for n, p in node.prefixes.items() if p > 1}, {})

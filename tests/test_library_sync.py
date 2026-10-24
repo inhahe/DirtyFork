@@ -430,17 +430,40 @@ class Syncing(Scratch):
     self.assertEqual((e.description, e.tags, e.edited), ("title of Film.html", ("web", "webpage"), library.SYNCED))
     self.assertEqual(sync().updated, 0)  # (and then left be)
 
-  def test_details_given_back_wait_for_a_description_that_cant_be_read(self):
+  def test_details_given_back_without_a_caption_to_hand(self):
     pics = self.path("data")  # (the root of source "src")
-    write(os.path.join(pics, "a.jpg"))
-    c = conf(type="gallery", dir=pics, captions=self.path("no such thumbsup.db"))
-    S.sync_source(self.ctx, "src", c)
+    path = write(os.path.join(pics, "a.jpg"))
+    captions = self.path("thumbsup.db")
+    c = conf(type="gallery", dir=pics, captions=captions, tags=["more"])
+    S.sync_source(self.ctx, "src", c)  # (no captions yet: none to read)
     file_id = library.source_entries(self.con, "src")["a.jpg"].id
     library.set_details(self.con, file_id, "my words", ["mine"], by_sysop=True)
     library.reset_details(self.con, file_id)
     self.con.commit()
-    S.sync_source(self.ctx, "src", c)  # (no captions to describe it with: given back at the next run that has them)
-    self.assertEqual(library.get(self.con, file_id).edited, library.RESET)
+    S.sync_source(self.ctx, "src", c)  # (the tags are the sync's again; the description, unknown, kept)
+    e = library.get(self.con, file_id)
+    self.assertEqual((e.description, e.tags, e.edited), ("my words", ("pic", "more"), library.SYNCED))
+    con = sqlite3.connect(captions)
+    st = os.stat(path)
+    con.execute("CREATE TABLE ai_descriptions (hash TEXT PRIMARY KEY, caption TEXT, ocr TEXT)")
+    con.execute("INSERT INTO ai_descriptions VALUES (?, 'a picture', '')",
+                (S.thumbsup_key("a.jpg", st.st_size, st.st_mtime_ns),))
+    con.commit()
+    con.close()
+    S.sync_source(self.ctx, "src", c)  # (and the caption, once it can be read)
+    self.assertEqual(library.get(self.con, file_id).description, "a picture")
+
+  def test_unchanged_tags_are_not_written_again(self):
+    data = self.path("data")
+    write(os.path.join(data, "a.flac"))
+    S.sync_source(self.ctx, "src", conf(type="samples", dir=data))
+    file_id = library.source_entries(self.con, "src")["a.flac"].id
+    with mock.patch.object(library, "set_tags", wraps=library.set_tags) as set_tags:
+      self.con.execute("UPDATE files SET description = 'stale' WHERE id = ?", (file_id,))  # (redescribed)
+      self.con.commit()
+      self.assertEqual(S.sync_source(self.ctx, "src", conf(type="samples", dir=data)).updated, 1)
+    set_tags.assert_not_called()
+    self.assertEqual(library.get(self.con, file_id).description, "")
 
   def test_a_sysop_editing_during_the_batch(self):
     # The sync reads a batch's entries once, then releases the write lock

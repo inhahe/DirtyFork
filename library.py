@@ -459,8 +459,8 @@ def _schema_version(con):
   if "files" not in tables:
     return None
   row = con.execute("SELECT value FROM settings WHERE key = 'schema'").fetchone() if "settings" in tables else None
-  # (No version: made by the first schema, which created its tables and
-  # then stamped them in separate steps, and was stopped in between.)
+  # (No version: made by the first schema, which created its tables one by
+  # one and then stamped them, and was stopped before it was done.)
   return int(row[0]) if row else 1
 
 
@@ -480,31 +480,50 @@ def ensure_schema(lib):
   update_schema(lib)
 
 
+def _statements(script):
+  """The SQL statements of *script*, one by one (a comment may hold a ;)."""
+  out, pending = [], ""
+  for line in script.splitlines(keepends=True):
+    pending += line
+    if sqlite3.complete_statement(pending):
+      out.append(pending.strip())
+      pending = ""
+  assert not pending.strip(), pending  # (every statement ends with its ;)
+  return out
+
+
 def update_schema(lib):
   """Create the catalogue's tables if it has none, or bring an older one's
   schema up to date (which changes no entry). One that is up to date is
   only read: writing takes the write lock, which a sync may be holding."""
   con = connect(lib)
-  try:
-    version = _schema_version(con)
+
+  def check(version):
     if version is not None and version > SCHEMA_VERSION:
       raise RuntimeError(f"{lib.catalog} is from a newer DirtyFork (schema {version})")
-    if version == SCHEMA_VERSION:
+    return version == SCHEMA_VERSION
+  try:
+    version = _schema_version(con)
+    if check(version):
       return
     if version is None:
-      con.execute("PRAGMA journal_mode = WAL")
-      # One transaction, so the tables never exist without their version.
-      # (Another process doing the same meanwhile: this one then does nothing.)
-      con.executescript(f"BEGIN IMMEDIATE;\n{_SCHEMA}\nINSERT OR IGNORE INTO settings (key, value) "
-                        f"VALUES ('schema', '{SCHEMA_VERSION}');\nCOMMIT;")
-      return
+      con.execute("PRAGMA journal_mode = WAL")  # (not in a transaction)
+    # One transaction, so tables never exist without their version; the
+    # version is read again under the lock (another process may have done
+    # this meanwhile).
     con.execute("BEGIN IMMEDIATE")
-    if _schema_version(con) != version:  # (another process migrated it meanwhile)
+    version = _schema_version(con)
+    if check(version):
       con.rollback()
       return
-    for step in range(version + 1, SCHEMA_VERSION + 1):
-      for statement in _MIGRATIONS[step]:
-        con.execute(statement)
+    if version is not None:  # (tables of an older schema)
+      for step in range(version + 1, SCHEMA_VERSION + 1):
+        for statement in _MIGRATIONS[step]:
+          con.execute(statement)
+    # (then whatever is missing: all of it for a new catalogue, the rest of
+    # one the first schema was stopped making)
+    for statement in _statements(_SCHEMA):
+      con.execute(statement)
     con.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema', ?)", (str(SCHEMA_VERSION),))
     con.commit()
   finally:
@@ -658,14 +677,17 @@ def put(con, *, root, path, size, mtime=0, description="", uploader="", tags=(),
   """Catalogue the file at *path* under *root* (or, with replace, update it
   if it is catalogued already; without, leave it be). source_key, what the
   file is in its source, is stored only when it isn't *path*. *edited*:
-  whose the description and tags are; a sysop's that it has already are
-  kept, unless these are a sysop's too. Returns its id, or None when it was
-  there already and replace is false. The caller commits."""
+  whose the description and tags are. The entry there already keeps a
+  sysop's, unless these are a sysop's too, when it is the same file a
+  source lists (the same source and key; a file an upload brings is a new
+  one, whatever was there). Returns its id, or None when it was there
+  already and replace is false. The caller commits."""
   name = _name(path)
   if source_key == path:
     source_key = None
   now = int(time.time())
-  keep = f"files.edited = {EDITED} AND excluded.edited != {EDITED}"
+  keep = (f"files.edited = {EDITED} AND excluded.edited != {EDITED} AND files.source = excluded.source "
+          "AND files.source_key IS excluded.source_key")
   conflict = ("DO UPDATE SET size = excluded.size, mtime = excluded.mtime, "
               f"description = CASE WHEN {keep} THEN files.description ELSE excluded.description END, "
               f"desc_norm = CASE WHEN {keep} THEN files.desc_norm ELSE excluded.desc_norm END, "
@@ -708,11 +730,11 @@ def set_tags(con, file_id, tags):
 
 
 def set_details(con, file_id, description, tags, by_sysop=False):
-  """Give a file a description and tags: a sysop's (*by_sysop*), which
-  nothing else writes over from then on, or the sync's or the uploader's,
-  which are never written over a sysop's. Returns whether they were set
-  (not if the file is no longer catalogued, or these would be written over
-  a sysop's). The caller commits."""
+  """Give a file a description and tags (None: its tags as they are): a
+  sysop's (*by_sysop*), which nothing else writes over from then on, or
+  the sync's or the uploader's, which are never written over a sysop's.
+  Returns whether they were set (not if the file is no longer catalogued,
+  or these would be written over a sysop's). The caller commits."""
   # (One write, which takes the write lock before anything is checked:
   # nothing can change the file between the check and the rest.)
   cur = con.execute("UPDATE files SET description = ?, desc_norm = ?, edited = ? WHERE id = ?"
@@ -720,7 +742,8 @@ def set_details(con, file_id, description, tags, by_sysop=False):
                     (description, norm(description), EDITED if by_sysop else SYNCED, file_id))
   if not cur.rowcount:
     return False
-  set_tags(con, file_id, tags)
+  if tags is not None:
+    set_tags(con, file_id, tags)
   return True
 
 

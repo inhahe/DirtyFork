@@ -502,6 +502,20 @@ class Folders(unittest.TestCase):
     self.assertTrue(library.set_details(self.con, file_id, "the uploader's", ["x"]))
     self.assertEqual(self.details(file_id), ("the uploader's", ("x",), library.SYNCED))
 
+  def test_a_new_file_where_one_was_doesnt_take_its_details(self):
+    # (a sysop's details belong to the file: an upload of the same name,
+    # or another of a source's files given that zip's name, is another file)
+    upload = library.put(self.con, root="uploads", path="tool.exe", size=1, uploader="a")
+    library.set_details(self.con, upload, "the old tool", ["old"], by_sysop=True)
+    self.assertEqual(library.put(self.con, root="uploads", path="tool.exe", size=2, uploader="b"), upload)
+    self.assertEqual(self.details(upload), ("", (), library.SYNCED))  # (deleted by hand, then uploaded anew)
+    page = library.put(self.con, root="zips", path="pg/x.zip", size=1, source="pg", source_key="x.html",
+                       tags=["webpage"])
+    library.set_details(self.con, page, "the page", ["mine"], by_sysop=True)
+    site = library.put(self.con, root="zips", path="pg/x.zip", size=2, source="pg", source_key="x",
+                       description="a site", tags=["website"])
+    self.assertEqual(self.details(site), ("a site", ("website",), library.SYNCED))
+
   def test_details_for_a_file_no_longer_catalogued(self):
     file_id = library.put(self.con, root="uploads", path="gone.zip", size=1)
     library.remove(self.con, file_id)
@@ -533,10 +547,11 @@ class Folders(unittest.TestCase):
     self.assertEqual(library.reconcile_uploads(beside, self.con, ".upload-"), (0, 0))  # (never catalogued)
 
 
-def make_v1_catalogue(path, stamped=True):
+def make_v1_catalogue(path, stamped=True, only_files=False):
   """At *path*, a catalogue as schema 1 made it (before files.edited), with
   one file, uploads/old.zip; *stamped*: with its version (without: stopped
-  between making the tables and stamping them)."""
+  between making the tables and stamping them); *only_files*: stopped
+  after making its first table."""
   os.makedirs(os.path.dirname(path), exist_ok=True)
   if os.path.exists(path):
     os.remove(path)
@@ -546,14 +561,16 @@ def make_v1_catalogue(path, stamped=True):
       size INTEGER NOT NULL, mtime INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '',
       uploader TEXT NOT NULL DEFAULT '', added INTEGER NOT NULL, source TEXT, source_key TEXT,
       fingerprint TEXT, tag_count INTEGER NOT NULL DEFAULT 0, name_norm TEXT NOT NULL, desc_norm TEXT NOT NULL,
-      uploader_norm TEXT NOT NULL, UNIQUE (root, path));
-    CREATE TABLE file_tags (file_id INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
-      tag_norm TEXT NOT NULL, tag TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (file_id, tag_norm))
-      WITHOUT ROWID;
-    CREATE TABLE sync_state (source TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
-      PRIMARY KEY (source, key)) WITHOUT ROWID;
-    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);""")
-  if stamped:
+      uploader_norm TEXT NOT NULL, UNIQUE (root, path));""")
+  if not only_files:
+    con.executescript("""
+      CREATE TABLE file_tags (file_id INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
+        tag_norm TEXT NOT NULL, tag TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (file_id, tag_norm))
+        WITHOUT ROWID;
+      CREATE TABLE sync_state (source TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+        PRIMARY KEY (source, key)) WITHOUT ROWID;
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);""")
+  if stamped and not only_files:
     con.execute("INSERT INTO settings (key, value) VALUES ('schema', '1')")
   con.execute("INSERT INTO files (root, path, size, added, name_norm, desc_norm, uploader_norm) "
               "VALUES ('uploads', 'old.zip', 1, 0, 'old.zip', '', '')")
@@ -569,8 +586,8 @@ class Schema(unittest.TestCase):
   def tearDown(self):
     shutil.rmtree(self.top, ignore_errors=True)
 
-  def make_v1(self, stamped=True):
-    make_v1_catalogue(self.lib.catalog, stamped)
+  def make_v1(self, stamped=True, only_files=False):
+    make_v1_catalogue(self.lib.catalog, stamped, only_files)
 
   def check_up_to_date(self):
     con = library.connect(self.lib)
@@ -592,6 +609,27 @@ class Schema(unittest.TestCase):
     self.make_v1(stamped=False)
     library.ensure_schema(self.lib)
     self.check_up_to_date()
+
+  def test_the_first_schemas_tables_half_made(self):
+    self.make_v1(only_files=True)
+    library.ensure_schema(self.lib)
+    self.check_up_to_date()
+    con = library.connect(self.lib)
+    try:
+      library.set_details(con, library.all_ids(con)[0], "words", ["a tag"])  # (file_tags made too)
+      self.assertEqual(library.fetch(con, library.all_ids(con))[0].tags, ("a tag",))
+    finally:
+      con.close()
+
+  def test_the_schema_splits_into_its_statements(self):
+    # (its comments hold semicolons)
+    con = sqlite3.connect(":memory:")
+    for statement in library._statements(library._SCHEMA):
+      con.execute(statement)
+    whole = sqlite3.connect(":memory:")
+    whole.executescript(library._SCHEMA)
+    names = "SELECT type, name FROM sqlite_master ORDER BY name"
+    self.assertEqual(con.execute(names).fetchall(), whole.execute(names).fetchall())
 
   def test_a_new_catalogue_is_made_in_one_transaction(self):
     os.remove(self.lib.catalog)

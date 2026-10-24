@@ -43,3 +43,9 @@ Unsolved bugs and debt that couldn't be fixed when found. Fix and remove entries
 - **Where:** `file_transfer.receive_files_ymodem` (`lib/ymodem`'s receiver, which asks with G).
 - **What:** it is tested against `lib/ymodem`'s own sender only: lrzsz's `sb` has no YMODEM-G (it never answers a G), and SyncTERM cannot be driven by a test. YMODEM-G downloads are tested against lrzsz's `rb` (as plain YMODEM). A sender that does not do G gets no answer it understands.
 - **Fix:** try an upload from SyncTERM; have the receiver fall back to C (plain YMODEM) when a G goes unanswered.
+
+## A ConfigView over other views never looks past its first layer
+
+- **Where:** `config.ConfigView.__getitem__` (and `Mapping.__contains__`, which it inherits); `common.py` builds `user.conf = ConfigView(conf1, conf2, conf3)` from views (`get_config` returns a view), as `settings.py` does.
+- **What:** `key in view` is always true, since `__getitem__` returns `null` for a missing key instead of raising `KeyError`; so a view whose layers are views returns its first layer's answer, `null` included, and never reaches the others. A nested section is not merged across view layers either (only `Config` layers are). Shown by `ConfigView(ConfigView(Config({'y': 1})), ConfigView(Config({'x': 5}))).x`, which is `null`. Nothing depends on it today: what is read through `user.conf` (encoding, start destination, profile fields, show_stars) is in the user's YAML or nowhere, and the defaults come from `config.user_defaults`. A user YAML holding part of a section the main config has, or code expecting `user.conf` to fall back to the main config, would get `null`.
+- **Fix:** give `ConfigView` a `__contains__` that asks each layer (a `Config` by `dict.__contains__`, a view recursively), and merge nested sections that are views as well as `Config`s; then test lookups through two and three layers of views.

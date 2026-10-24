@@ -1158,13 +1158,12 @@ def sync_source(ctx, source, conf):
         if old.edited == library.EDITED:
           continue  # (a sysop's details: kept)
         description = item.description
-        if description is None:  # (only describe() can say, at a cost: kept unless the details were given back)
-          if old.edited != library.RESET:
-            description = old.description
-          elif item.describe:
-            description = item.describe()
-          else:
-            continue  # (unknown this time: the captions can't be read)
+        if description is None:
+          # (only describe() can say, at a cost: asked only when the details
+          # were given back. Without it, as for a picture whose captions can't
+          # be read, the description is kept: the caption comes once it can be.)
+          given_back = old.edited == library.RESET and item.describe
+          description = item.describe() if given_back else old.description
         tags = library.clean_tags(item.tags)
         if old.edited == library.RESET or tags != list(old.tags) or description != old.description:
           stats.updated += 1
@@ -1173,7 +1172,8 @@ def sync_source(ctx, source, conf):
           if not ctx.dry_run:
             # (old is as it was when the batch began; set_details doesn't
             # write over a sysop's details set since)
-            library.set_details(con, old.id, description, tags)
+            library.set_details(con, old.id, description,
+                                tags if old.edited == library.RESET or tags != list(old.tags) else None)
         continue
       if old is None:
         stats.new += 1
@@ -1237,23 +1237,34 @@ def sync_source(ctx, source, conf):
   return stats
 
 
+def _same_file(a, b):
+  try:
+    return os.path.samefile(a, b)
+  except OSError:
+    return False
+
+
 def _sweep_zips(ctx, source):
   """Delete the zips in the source's folder of zips that no entry lists:
   the zips of entries forgotten or moved (renamed), and any an interrupted
   run left. (Every zip goes here, once the source is synced, rather than
-  as its entry goes: Windows' file names ignore case, so a page renamed
-  from x.htm to X.htm has a new zip, X.zip, that is the forgotten x.zip.)"""
+  as its entry goes: where file names ignore case, as on Windows, a page
+  renamed from x.htm to X.htm has a new zip, X.zip, that is the forgotten
+  x.zip. A zip listed by another case is kept if it is the same file.)"""
   folder = os.path.join(ctx.lib.zips_dir, source)
   if not os.path.isdir(folder):
     return
-  listed = {os.path.normcase(r[0]) for r in ctx.con.execute(
-    "SELECT path FROM files WHERE root = 'zips' AND source = ?", (source,))}
+  listed = {r[0] for r in ctx.con.execute("SELECT path FROM files WHERE root = 'zips' AND source = ?", (source,))}
+  by_case = {}
+  for path in listed:
+    by_case.setdefault(path.casefold(), []).append(path)
   for dirpath, dirnames, filenames in os.walk(folder, topdown=False):
     for n in filenames:
       rel = _rel(os.path.join(dirpath, n), ctx.lib.zips_dir)
-      if os.path.normcase(rel) not in listed:
-        log.info("%s: deleting %s, which nothing lists", source, rel)
-        _delete_zip(ctx, rel)
+      if rel in listed or any(_same_file(ctx.zip_path(rel), ctx.zip_path(p)) for p in by_case.get(rel.casefold(), ())):
+        continue
+      log.info("%s: deleting %s, which nothing lists", source, rel)
+      _delete_zip(ctx, rel)
     if dirpath != folder:
       with contextlib.suppress(OSError):
         os.rmdir(dirpath)  # (only if empty)
