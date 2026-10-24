@@ -57,52 +57,17 @@ class Pages(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(SITE, "bbs-term", ref)), ref)
 
 
-# Runs bbs.js in Node as a page at the given location would, with xterm.js,
-# zmodem.js and the page's elements as stand-ins that accept anything, and
-# prints the WebSockets it opened and what the status line says.
-PAGE_IN_NODE = r"""
-const vm = require("vm"), fs = require("fs");
-const [script, protocol, host, libraries] = process.argv.slice(1);
-function anything() {
-    const set = {};
-    return new Proxy(function () {}, {
-        get(_, key) {
-            if (key === Symbol.toPrimitive) return () => 0;
-            if (key === "then") return undefined;  // (not a promise)
-            if (!(key in set)) set[key] = anything();
-            return set[key];
-        },
-        set(_, key, value) { set[key] = value; return true; },
-        apply() { return anything(); },
-        construct() { return anything(); },
-    });
-}
-const elements = {}, sockets = [];
-class WebSocket { constructor(url) { sockets.push(url); } }
-WebSocket.OPEN = 1;
-const page = {
-    location: { protocol, host },
-    document: {
-        readyState: "complete",
-        addEventListener() {},
-        getElementById(id) { return elements[id] || (elements[id] = anything()); },
-    },
-    window: anything(), navigator: anything(), getComputedStyle: anything(),
-    localStorage: { getItem() { return null; }, setItem() {} },
-    Terminal: anything(), WebglAddon: anything(), Zmodem: anything(), WebSocket,
-    console, TextEncoder, setTimeout, clearTimeout,
-};
-if (libraries === "missing") delete page.Terminal;
-vm.runInNewContext(fs.readFileSync(script, "utf8"), page);
-console.log(JSON.stringify({ sockets, status: page.document.getElementById("status").textContent }));
-"""
+PAGE_IN_NODE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_in_node.js")
+CONTROLS = ["size", "sharp", "fullscreen"]
 
 
 @unittest.skipUnless(NODE, "node is not on PATH")
 class Script(unittest.TestCase):
+    """bbs.js, run in Node by page_in_node.js as the page runs it."""
+
     def run_page(self, protocol, host, libraries="loaded"):
         script = os.path.join(SITE, "bbs-term", "bbs.js")
-        done = subprocess.run([NODE, "-e", PAGE_IN_NODE, script, protocol, host, libraries],
+        done = subprocess.run([NODE, PAGE_IN_NODE, script, protocol, host, libraries],
                               capture_output=True, text=True, encoding="utf-8", timeout=30)
         self.assertEqual(done.returncode, 0, done.stderr)
         return json.loads(done.stdout)
@@ -111,6 +76,7 @@ class Script(unittest.TestCase):
         page = self.run_page("https:", "bbs.example")
         self.assertEqual(page["sockets"], ["wss://bbs.example/bbs-ws"])
         self.assertEqual(page["status"], "Connecting...")
+        self.assertEqual(page["hidden"], [])
 
     def test_a_page_opened_from_the_disk_says_so_instead_of_connecting(self):
         # (Browsers read "ws:///bbs-ws" as the host "bbs-ws", which fails as
@@ -118,11 +84,13 @@ class Script(unittest.TestCase):
         page = self.run_page("file:", "")
         self.assertEqual(page["sockets"], [])
         self.assertIn("opened from the disk", page["status"])
+        self.assertEqual(page["hidden"], CONTROLS)
 
     def test_a_page_whose_libraries_did_not_load_says_so(self):
         page = self.run_page("https:", "bbs.example", libraries="missing")
         self.assertEqual(page["sockets"], [])
         self.assertIn("could not load its scripts", page["status"])
+        self.assertEqual(page["hidden"], CONTROLS)
 
 
 if __name__ == "__main__":

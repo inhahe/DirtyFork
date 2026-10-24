@@ -518,8 +518,14 @@
         else then();
     }
 
+    // The page cannot start: say why, and hide the controls (which need the terminal).
     function stopWith(text) {
-        whenLoaded(function () { $("status").textContent = text; });
+        whenLoaded(function () {
+            setStatus(text, false);
+            [$("size").parentNode, $("sharp").parentNode, $("fullscreen")].forEach(function (el) {
+                el.hidden = true;
+            });
+        });
     }
 
     if (location.protocol !== "http:" && location.protocol !== "https:") {
