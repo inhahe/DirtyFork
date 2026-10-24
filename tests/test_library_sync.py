@@ -744,10 +744,27 @@ class GitHub(Scratch):
     self.g("add", "-A")
     self.g("commit", "-q", "-m", "change")
 
-  def listing(self, repo):
+  def listing(self, repo, language=None):
     self.repos = [{"name": "proj", "default_branch": "main", "clone_url": self.work, "pushed_at": str(time.time()),
-                   "description": "A project", "private": False, "fork": False}] if repo else []
+                   "description": "A project", "private": False, "fork": False,
+                   "language": language}] if repo else []
     return self.repos
+
+  def test_a_repository_is_tagged_with_its_language(self):
+    self.commit({"a.cpp": "int main() {}"})
+    self.listing(True, language="C++")
+    self.sync()
+    self.assertEqual(library.source_entries(self.con, "gh")["proj"].tags, ("github", "cpp"))
+    self.repos[0]["language"] = "C#"  # (GitHub's guess changed, nothing pushed)
+    self.assertEqual(self.sync().updated, 1)
+    self.assertEqual(library.source_entries(self.con, "gh")["proj"].tags, ("github", "csharp"))
+
+  def test_language_tags(self):
+    for language, tag in (("Python", "python"), ("C++", "cpp"), ("C#", "csharp"), ("C", "c"), ("F#", "fsharp"),
+                          ("Objective-C++", "objective-cpp"), ("Jupyter Notebook", "jupyter-notebook"),
+                          ("Visual Basic .NET", "visual-basic-.net"), ("QuickBASIC", "quickbasic")):
+      self.assertEqual(S.language_tag(language), tag)
+    self.assertEqual(len({library.norm(S.language_tag(n)) for n in ("C", "C++", "C#")}), 3)  # (three tags to search)
 
   def sync(self, pushed=None):
     with mock.patch.object(S, "github_repos", lambda user: self.repos):

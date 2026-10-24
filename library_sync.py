@@ -26,7 +26,8 @@ Source types (library.SOURCE_TYPES), and what each lists:
             subfolder that is itself a site (an HTTrack mirror, or one with
             an index or default page) is zipped whole as a website instead.
   github    every public repository of an account (include_forks: false),
-            described by its GitHub description, tagged github. Each is kept
+            described by its GitHub description, tagged github and with its
+            language as GitHub detects it (language_tag: cpp for C++). Each is kept
             cloned in repos_dir; a change is fetched, and only the files git
             says changed are replaced in its zip.
   gallery   pictures (tag pic) and videos (tag video) in dir, also tagged
@@ -763,6 +764,14 @@ def handle_webpages(ctx, source, conf, stats):
 # GitHub
 # ---------------------------------------------------------------------------
 
+def language_tag(language):
+  """The tag for a programming language as GitHub names it, as GitHub's
+  topics spell one: lower case, words joined by -, ++ as pp and # as sharp
+  (cpp, csharp, jupyter-notebook). Searching ignores punctuation, so as
+  GitHub names them C++, C# and C would be one tag."""
+  return "-".join(language.lower().replace("++", "pp").replace("#", "sharp").split())
+
+
 def github_repos(user):
   """The account's public repositories, from GitHub's API (GITHUB_TOKEN, if
   set, raises the rate limit)."""
@@ -834,7 +843,7 @@ def handle_github(ctx, source, conf, stats):
     zip_rel = f"{source}/{name}.zip"
     pushed = f"{repo.get('pushed_at')}|{branch}"
     old = existing.get(name)
-    tags = ["github"] + _conf_list(conf.tags)
+    tags = ["github"] + ([language_tag(repo["language"])] if repo.get("language") else []) + _conf_list(conf.tags)
     description = repo.get("description") or ""
     if library.get_state(ctx.con, source, "empty:" + name) == pushed:
       continue  # (empty when last looked at, and not pushed to since)
