@@ -512,16 +512,26 @@
         setTimeout(once, 3000);
     }
 
-    if (typeof Terminal === "undefined" || typeof Zmodem === "undefined") {
-        // The libraries did not load (a blocked CDN, say): say so rather than hang.
-        document.addEventListener("DOMContentLoaded", function () {
-            $("status").textContent = "The terminal could not load its scripts. Try bbs-local.html, or reload.";
-        });
+    // Runs then() once the page's elements exist (this script is in the <head>).
+    function whenLoaded(then) {
+        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", then);
+        else then();
+    }
+
+    function stopWith(text) {
+        whenLoaded(function () { $("status").textContent = text; });
+    }
+
+    if (location.protocol !== "http:" && location.protocol !== "https:") {
+        // Opened from the disk (file://): the terminal connects to /bbs-ws on
+        // the server the page came from, and there is none.
+        stopWith("This page was opened from the disk. Open it from the web site (https://...) instead.");
         return;
     }
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", function () { whenFontReady(start); });
-    } else {
-        whenFontReady(start);
+    if (typeof Terminal === "undefined" || typeof Zmodem === "undefined") {
+        // The libraries did not load (a blocked CDN, say): say so rather than hang.
+        stopWith("The terminal could not load its scripts. Try bbs-local.html, or reload.");
+        return;
     }
+    whenLoaded(function () { whenFontReady(start); });
 })();

@@ -1,13 +1,18 @@
-"""web/site: the two pages stay the same page, and the CDN's files are the
-vendored ones (the integrity hashes in bbs.html match the copies)."""
+"""web/site: the two pages stay the same page, the CDN's files are the
+vendored ones (the integrity hashes in bbs.html match the copies), and bbs.js
+connects only from a page a web server served."""
 import base64
 import hashlib
+import json
 import os
 import re
+import shutil
+import subprocess
 import unittest
 
 import _setup
 
+NODE = shutil.which("node")
 SITE = os.path.join(_setup.PROJECT, "web", "site")
 VENDOR = "bbs-term/vendor/"
 # CDN address -> the vendored copy's name
@@ -50,6 +55,74 @@ class Pages(unittest.TestCase):
                 self.assertTrue(os.path.isfile(os.path.join(SITE, ref)), (page, ref))
         for ref in re.findall(r'url\("([^"]+)"\)', read("bbs-term/bbs.css")):
             self.assertTrue(os.path.isfile(os.path.join(SITE, "bbs-term", ref)), ref)
+
+
+# Runs bbs.js in Node as a page at the given location would, with xterm.js,
+# zmodem.js and the page's elements as stand-ins that accept anything, and
+# prints the WebSockets it opened and what the status line says.
+PAGE_IN_NODE = r"""
+const vm = require("vm"), fs = require("fs");
+const [script, protocol, host, libraries] = process.argv.slice(1);
+function anything() {
+    const set = {};
+    return new Proxy(function () {}, {
+        get(_, key) {
+            if (key === Symbol.toPrimitive) return () => 0;
+            if (key === "then") return undefined;  // (not a promise)
+            if (!(key in set)) set[key] = anything();
+            return set[key];
+        },
+        set(_, key, value) { set[key] = value; return true; },
+        apply() { return anything(); },
+        construct() { return anything(); },
+    });
+}
+const elements = {}, sockets = [];
+class WebSocket { constructor(url) { sockets.push(url); } }
+WebSocket.OPEN = 1;
+const page = {
+    location: { protocol, host },
+    document: {
+        readyState: "complete",
+        addEventListener() {},
+        getElementById(id) { return elements[id] || (elements[id] = anything()); },
+    },
+    window: anything(), navigator: anything(), getComputedStyle: anything(),
+    localStorage: { getItem() { return null; }, setItem() {} },
+    Terminal: anything(), WebglAddon: anything(), Zmodem: anything(), WebSocket,
+    console, TextEncoder, setTimeout, clearTimeout,
+};
+if (libraries === "missing") delete page.Terminal;
+vm.runInNewContext(fs.readFileSync(script, "utf8"), page);
+console.log(JSON.stringify({ sockets, status: page.document.getElementById("status").textContent }));
+"""
+
+
+@unittest.skipUnless(NODE, "node is not on PATH")
+class Script(unittest.TestCase):
+    def run_page(self, protocol, host, libraries="loaded"):
+        script = os.path.join(SITE, "bbs-term", "bbs.js")
+        done = subprocess.run([NODE, "-e", PAGE_IN_NODE, script, protocol, host, libraries],
+                              capture_output=True, text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_a_served_page_connects_to_its_own_server(self):
+        page = self.run_page("https:", "bbs.example")
+        self.assertEqual(page["sockets"], ["wss://bbs.example/bbs-ws"])
+        self.assertEqual(page["status"], "Connecting...")
+
+    def test_a_page_opened_from_the_disk_says_so_instead_of_connecting(self):
+        # (Browsers read "ws:///bbs-ws" as the host "bbs-ws", which fails as
+        # "The connection was lost.")
+        page = self.run_page("file:", "")
+        self.assertEqual(page["sockets"], [])
+        self.assertIn("opened from the disk", page["status"])
+
+    def test_a_page_whose_libraries_did_not_load_says_so(self):
+        page = self.run_page("https:", "bbs.example", libraries="missing")
+        self.assertEqual(page["sockets"], [])
+        self.assertIn("could not load its scripts", page["status"])
 
 
 if __name__ == "__main__":

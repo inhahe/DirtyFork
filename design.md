@@ -232,7 +232,7 @@ They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data
 - **The file library** (`test_file_transfer.py`, `test_modem.py`): upload names, sizes and room (checked as data arrives), publishing that never replaces; downloads of listed files only; cataloguing that keeps other callers' entries; serial flow control and timeouts.
 - **The web terminal's bridge** (`test_terminal_bridge.py`): its telnet client alone, and the bridge against a fake BBS (negotiation, every byte value both ways, the subprotocol and first-message checks, hang-ups and connection errors, an unreachable BBS, the connection limits, silent sockets, origins).
 - **Transfers as a web caller makes them** (`test_web_transfers.py`): zmodem.js, over a WebSocket, through the bridge, to a real telnetlib3 server running `file_transfer` as the BBS does; downloads in UTF-8 and CP437, uploads with refused names and limits, cancelling; and the upload naming rules.
-- **The page** (`test_web_site.py`): `bbs-local.html` is `bbs.html` with local files, and the integrity hashes match the vendored copies.
+- **The page** (`test_web_site.py`): `bbs-local.html` is `bbs.html` with local files, and the integrity hashes match the vendored copies; `bbs.js`, run in Node with stand-ins for the browser and the libraries (skipped without `node`), connects to `/bbs-ws` on the server that served it, and does not try from a page opened from the disk or one whose libraries did not load, saying why instead.
 
 ## File Manifest
 
