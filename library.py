@@ -188,8 +188,8 @@ def clean_tags(tags):
 # ---------------------------------------------------------------------------
 
 QUERY_HELP = [
-  "A word finds files whose tags, name or description have it. Words side by",
-  "side must all match. Join them with and, or, not, and group with ( ).",
+  "A word finds files whose tags, name, description or uploader have it.",
+  "Words side by side must all match. Join with and, or, not; group with ( ).",
   "tag:pic  filename:dirtyfork  description:knight  uploader:sysop",
   'Quotes keep words together: filename:"dirty fork". Case, spaces and',
   "punctuation are ignored. * matches anything: filename:*.zip  description:a*",
@@ -204,7 +204,7 @@ QUERY_EXAMPLES = [
 FIELDS = {"tag": "tag", "tags": "tag", "uploader": "uploader", "by": "uploader",
           "filename": "filename", "name": "filename", "file": "filename",
           "description": "description", "desc": "description"}
-ANY_FIELD = ("tag", "filename", "description")  # what a word without a field: matches
+ANY_FIELD = ("tag", "filename", "description", "uploader")  # what a word without a field: matches
 MAX_TERMS = 40
 MAX_DEPTH = 20
 

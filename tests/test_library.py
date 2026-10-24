@@ -149,10 +149,13 @@ class Catalogue(unittest.TestCase):
     self.assertEqual(self.names("tag:s*"), ["nebula.jpg", "rocket.mp4"])
     self.assertEqual(self.names("uploader:a*"), ["song.xm"])
 
-  def test_a_word_alone_matches_tags_names_and_descriptions_not_uploaders(self):
+  def test_a_word_alone_matches_tags_names_descriptions_and_uploaders(self):
     self.assertEqual(self.names("space"), ["nebula.jpg", "rocket.mp4", "song.xm"])
     self.assertEqual(self.names("knight"), ["knight.png"])
-    self.assertEqual(self.names("alice"), [])
+    self.assertEqual(self.names("alice"), ["song.xm"])
+    self.assertEqual(self.names("ali"), [])  # (an uploader, as a tag, must match whole)
+    self.assertEqual(self.names("bob or alice"), ["plain.txt", "song.xm"])
+    self.assertEqual(self.names("mallory"), [])  # (still never what awaits approval)
 
   def test_and_or_not(self):
     self.assertEqual(self.names("space not tag:video"), ["nebula.jpg", "song.xm"])
