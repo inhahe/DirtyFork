@@ -114,8 +114,9 @@ class Catalogue(unittest.TestCase):
     ]
     cls.ids = {}
     for root, path, tags, desc, who in files:
+      source = path.split("/")[0] if who == "Sysop" else None  # (the sysop's are what sources list)
       cls.ids[path.rsplit("/", 1)[-1]] = library.put(cls.con, root=root, path=path, size=1, tags=tags,
-                                                     description=desc, uploader=who)
+                                                     description=desc, uploader=who, source=source)
     cls.con.commit()
 
   @classmethod
@@ -156,6 +157,13 @@ class Catalogue(unittest.TestCase):
     self.assertEqual(self.names("ali"), [])  # (an uploader, as a tag, must match whole)
     self.assertEqual(self.names("bob or alice"), ["plain.txt", "song.xm"])
     self.assertEqual(self.names("mallory"), [])  # (still never what awaits approval)
+    # (but the uploader of files a source lists is only ever the sysop: a word alone doesn't find them)
+    sysops = library.put(self.con, root="uploads", path="mine.txt", size=1, uploader="Sysop")
+    try:
+      self.assertEqual(self.names("sysop"), ["mine.txt"])
+      self.assertEqual(len(self.names("uploader:sysop")), 7)  # (every one, by that field)
+    finally:
+      library.remove(self.con, sysops)
 
   def test_and_or_not(self):
     self.assertEqual(self.names("space not tag:video"), ["nebula.jpg", "song.xm"])

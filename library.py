@@ -205,6 +205,7 @@ FIELDS = {"tag": "tag", "tags": "tag", "uploader": "uploader", "by": "uploader",
           "filename": "filename", "name": "filename", "file": "filename",
           "description": "description", "desc": "description"}
 ANY_FIELD = ("tag", "filename", "description", "uploader")  # what a word without a field: matches
+# (an uploader only of uploads: _term_sql)
 MAX_TERMS = 40
 MAX_DEPTH = 20
 
@@ -361,17 +362,24 @@ def parse_query(text):
   return node
 
 
-def _term_sql(field, pattern):
+def _term_sql(field, pattern, alone=False):
+  """*alone*: the word was typed without a field."""
   wild = "*" in pattern
   if field == "tag":
     op = "GLOB" if wild else "="
     return f"f.id IN (SELECT file_id FROM file_tags WHERE tag_norm {op} ?)", [pattern]
   column = {"filename": "f.name_norm", "description": "f.desc_norm", "uploader": "f.uploader_norm"}[field]
   if wild:
-    return f"{column} GLOB ?", [pattern]
-  if field == "uploader":
-    return f"{column} = ?", [pattern]
-  return f"instr({column}, ?) > 0", [pattern]
+    sql = f"{column} GLOB ?"
+  elif field == "uploader":
+    sql = f"{column} = ?"
+  else:
+    sql = f"instr({column}, ?) > 0"
+  if field == "uploader" and alone:
+    # (the uploader of a file someone uploaded: every file a source lists
+    # has the sysop's handle, which would otherwise find all of them)
+    sql = f"(f.source IS NULL AND {sql})"
+  return sql, [pattern]
 
 
 def query_sql(node):
@@ -380,7 +388,7 @@ def query_sql(node):
   description must contain it; with one, the pattern must match all of it."""
   if isinstance(node, Term):
     fields = (node.field,) if node.field else ANY_FIELD
-    parts = [_term_sql(f, node.pattern) for f in fields]
+    parts = [_term_sql(f, node.pattern, alone=not node.field) for f in fields]
     if len(parts) == 1:
       return parts[0]
     return "(" + " OR ".join(sql for sql, _ in parts) + ")", [p for _, ps in parts for p in ps]

@@ -125,6 +125,14 @@ class Titles(Scratch):
     self.assertEqual(S.mod_description(self.path("bad.zip"), "xm"), "")
     self.assertEqual(S.bundle_description(self.path("bad.zip")), "")
 
+  def test_language_tags(self):
+    for language, tag in (("Python", "python"), ("C++", "cpp"), ("C#", "csharp"), ("C", "c"), ("F#", "fsharp"),
+                          ("F*", "fstar"), ("Objective-C++", "objective-cpp"), ("Jupyter Notebook", "jupyter-notebook"),
+                          ("Visual Basic .NET", "visual-basic-net"), ("Graphviz (DOT)", "graphviz-dot"),
+                          ("Ren'Py", "ren-py"), ("QuickBASIC", "quickbasic")):
+      self.assertEqual(S.language_tag(language), tag)
+    self.assertEqual(len({library.norm(S.language_tag(n)) for n in ("C", "C++", "C#")}), 3)  # (three tags to search)
+
   def test_thumbsup_keys_match_nodes(self):
     # computed by thumbsup2's hashFile arithmetic in Node (sec * 1e3 + nsec / 1e6)
     for name, size, ns, key in (
@@ -758,13 +766,6 @@ class GitHub(Scratch):
     self.repos[0]["language"] = "C#"  # (GitHub's guess changed, nothing pushed)
     self.assertEqual(self.sync().updated, 1)
     self.assertEqual(library.source_entries(self.con, "gh")["proj"].tags, ("github", "csharp"))
-
-  def test_language_tags(self):
-    for language, tag in (("Python", "python"), ("C++", "cpp"), ("C#", "csharp"), ("C", "c"), ("F#", "fsharp"),
-                          ("Objective-C++", "objective-cpp"), ("Jupyter Notebook", "jupyter-notebook"),
-                          ("Visual Basic .NET", "visual-basic-.net"), ("QuickBASIC", "quickbasic")):
-      self.assertEqual(S.language_tag(language), tag)
-    self.assertEqual(len({library.norm(S.language_tag(n)) for n in ("C", "C++", "C#")}), 3)  # (three tags to search)
 
   def sync(self, pushed=None):
     with mock.patch.object(S, "github_repos", lambda user: self.repos):

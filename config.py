@@ -30,8 +30,6 @@ class Config(defaultdict):
         else:
           self._strict = _root._strict
 
-        self._sealed = False
-
         if source is None:
             return
 
@@ -44,6 +42,12 @@ class Config(defaultdict):
 
     def __repr__(self):
         return dict.__repr__(self) # prevent the __init__ function from showing up when printing the dictionary's contents
+
+    def __missing__(self, key):
+        # A key not there reads as null and stays not there (defaultdict's
+        # would add it: a key read once, as a {placeholder} is when it is
+        # resolved, would then hide the layers below it in a ConfigView).
+        return null
 
     def __getattr__(self, name):
         return self._get(name)
@@ -139,13 +143,6 @@ class Config(defaultdict):
         except (ValueError, KeyError, IndexError):
             return value
 
-    def seal(self):
-        self._sealed = True
-        for v in self.values():
-            if isinstance(v, Config):
-                v.seal()
-        return self
-
     def merge(self, *sources, deep=True):
         """In-place merge."""
         def do_merge(target, source):
@@ -217,21 +214,8 @@ class _DotFormatter(Formatter):
         finally:
             self.resolving.discard(field_name)
 
-class _MergeDirective:
-    __slots__ = ("source", "deep")
-
-    def __init__(self, source, *, deep):
-        self.source = source
-        self.deep = deep
-
-def shallow(source):
-    return _MergeDirective(source, deep=False)
-
-def deep(source):
-    return _MergeDirective(source, deep=True)
-
 class ConfigView(Mapping):
-    def __init__(self, *layers, write_to=None, _root=None):
+    def __init__(self, *layers, _root=None):
         if not layers:
             raise ValueError("ConfigView requires at least one layer")
 
@@ -245,15 +229,15 @@ class ConfigView(Mapping):
         self._root = _root if _root is not None else self
         self._strict = self._layers[0]._strict
 
-        self._write_to = write_to
+    # (Mapping's own __contains__ and get ask __getitem__ and expect a
+    # KeyError for a missing key; this one answers null instead.)
 
     def __contains__(self, key):
-        """Whether a layer has *key*: a Config among its own keys, a view in
-        one of its layers. (Mapping's would ask __getitem__, which answers
-        null for a missing key instead of raising: every key would seem to
-        be there.)"""
-        return any(dict.__contains__(layer, key) if isinstance(layer, Config) else key in layer
-                   for layer in self._layers)
+        """Whether a layer has *key* (a Config among its keys, a view in one of its layers)."""
+        return any(key in layer for layer in self._layers)
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
 
     def __getitem__(self, key):
         for layer in self._layers:
@@ -278,17 +262,7 @@ class ConfigView(Mapping):
         return null
 
     def __setitem__(self, key, value):
-        if self._write_to is null:
-            raise TypeError("ConfigView is read-only")
-
-        # Ensure nested structure exists in write layer
-        if isinstance(value, Mapping):
-            value = Config(value)
-
-        if getattr(self, "_sealed", False):
-            raise TypeError("Config is sealed")
-
-        self._write_to[key] = value
+        raise TypeError("ConfigView is read-only")
 
     def __iter__(self):
         """Iterate over values instead of keys to allow iterating over config objects."""
@@ -364,33 +338,6 @@ class ConfigView(Mapping):
                 return value
             return value
 
-    def freeze(self):
-        def materialize(obj):
-            if isinstance(obj, ConfigView):
-                return Config(
-                    {k: materialize(obj[k]) for k in obj},
-                    strict=self._strict,
-                )
-            return obj
-
-        return materialize(self)
-    
-    def source(self, path):
-        parts = self._normalize_path(path)
-        results = []
-
-        for layer in self._layers:
-            cur = layer
-            for p in parts:
-                if isinstance(cur, Mapping) and p in cur:
-                    cur = cur[p]
-                else:
-                    cur = null
-                    break
-            results.append((layer, cur))
-
-        return results
-
     def __or__(self, other):
         return ConfigView(other, *self._layers)
 
@@ -398,6 +345,7 @@ class ConfigView(Mapping):
         raise TypeError("ConfigView is immutable")
 
 configs = {}
+_stamps = {}  # path -> (mtime, size) of a file other than the main config when it was read
 main_path = None
 def _apply_option_defaults(cfg):
   """Walk the config tree and merge option_defaults into each child of options.
@@ -439,9 +387,17 @@ def get_config(*dicts, path=None, main=False): # because of this, no module that
     main_path = path
   if not path:
     path = main_path
-  if not path in configs:
+  # The main config is read once. Any other file (a user's settings) is
+  # read again when it has changed: the Settings page writes it, and fills
+  # its form from it, so what it shows must be what is on disk.
+  stamp = None
+  if path != main_path:
+    st = os.stat(path)
+    stamp = (st.st_mtime_ns, st.st_size)
+  if path not in configs or _stamps.get(path) != stamp:
     with open(path, "r", encoding="utf-8") as f:  # not the locale's code page (cp1252 here)
       cfg = Config(yaml.safe_load(f.read()))
     _apply_option_defaults(cfg)
     configs[path] = cfg
+    _stamps[path] = stamp
   return ConfigView(*dicts, configs[path])

@@ -125,9 +125,10 @@ async def edit_settings(user, target_handle, return_destination, return_menu_ite
 
   from config import get_config as gc, ConfigView
   try:
-    target_conf = ConfigView(gc(path=user_conf_path), gc()) if os.path.exists(user_conf_path) else ConfigView(gc(), gc())
+    # (gc reads the file again if a save has changed it since)
+    target_conf = ConfigView(gc(path=user_conf_path), gc()) if os.path.exists(user_conf_path) else gc()
   except Exception:
-    target_conf = ConfigView(gc(), gc())
+    target_conf = gc()
 
   await ansi_cls(user)
 

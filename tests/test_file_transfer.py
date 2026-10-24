@@ -494,9 +494,8 @@ class LibraryFiles(unittest.TestCase):
     def test_the_edit_form_fits_with_the_description_outlined(self):
         from config import Config, ConfigView
         f = self.file
-        # (over the config's own layers: a view's nested sections don't merge with another view's)
         styled = ConfigView(Config({"input_fields": {"input_field": {"outline": {"fg": "green", "bg": "black"}}}}),
-                            *f.config._layers)
+                            f.config)
         with mock.patch.object(f, "config", styled):
             self.assertEqual(f._edit_form_rows(), 15)
             self.check_the_form_fits()

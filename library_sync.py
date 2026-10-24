@@ -766,10 +766,12 @@ def handle_webpages(ctx, source, conf, stats):
 
 def language_tag(language):
   """The tag for a programming language as GitHub names it, as GitHub's
-  topics spell one: lower case, words joined by -, ++ as pp and # as sharp
-  (cpp, csharp, jupyter-notebook). Searching ignores punctuation, so as
-  GitHub names them C++, C# and C would be one tag."""
-  return "-".join(language.lower().replace("++", "pp").replace("#", "sharp").split())
+  topics spell one: lower-case letters and digits, words joined by -, ++
+  as pp, # as sharp and * as star (cpp, csharp, fstar, jupyter-notebook,
+  visual-basic-net). Searching ignores punctuation, so as GitHub names
+  them C++, C# and C would be one tag (and a * in a tag is a wildcard)."""
+  spelt = language.lower().replace("++", "pp").replace("#", "sharp").replace("*", "star")
+  return "-".join(re.findall(r"[a-z0-9]+", spelt))
 
 
 def github_repos(user):

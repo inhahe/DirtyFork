@@ -43,3 +43,9 @@ Unsolved bugs and debt that couldn't be fixed when found. Fix and remove entries
 - **Where:** `file_transfer.receive_files_ymodem` (`lib/ymodem`'s receiver, which asks with G).
 - **What:** it is tested against `lib/ymodem`'s own sender only: lrzsz's `sb` has no YMODEM-G (it never answers a G), and SyncTERM cannot be driven by a test. YMODEM-G downloads are tested against lrzsz's `rb` (as plain YMODEM). A sender that does not do G gets no answer it understands.
 - **Fix:** try an upload from SyncTERM; have the receiver fall back to C (plain YMODEM) when a G goes unanswered.
+
+## A destination's parent menu is one stamp shared by every caller
+
+- **Where:** `menu._resolve_destination` stamps `parent_menu` on the `Destinations` handler it returns; `common.user_director` reads it back to send a caller refused by `check_keys`, or a destination that failed, to the menu it came from. The handler is one object per destination for the whole process.
+- **What:** another caller choosing the same destination from a different menu restamps it in between (the stamp is set when a menu returns, read after `user_director`'s first `await`), and reaching a destination by `/jump` or a start destination leaves an earlier caller's stamp in place. A caller can then be sent back to someone else's menu (still subject to its keys).
+- **Fix:** carry the menu a destination was chosen from with the caller (in the `RetVals` the menu returns, or on the user), not on the shared handler, and drop `parent_menu` from the handlers.

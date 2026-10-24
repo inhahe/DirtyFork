@@ -578,15 +578,15 @@ def setup_user_session(user, handle, user_id, time_created):
   user.config_filename = cf_row["config_filename"] if cf_row and cf_row["config_filename"] else handle
 
   # Load user's YAML config (profile data, preferences)
-  conf3 = get_config()
+  main_conf = get_config()
   try:
     user_conf_dir = paths.resolve_data(str(config.user_configs or "user_configs"))
     user_conf_path = os.path.join(str(user_conf_dir), user.config_filename + ".yaml")
-    conf1 = get_config(path=user_conf_path) if os.path.exists(user_conf_path) else conf3
+    user_file = get_config(path=user_conf_path) if os.path.exists(user_conf_path) else None
   except Exception:
-    conf1 = conf3
-  conf2 = conf3
-  user.conf = ConfigView(conf1, conf2, conf3)
+    user_file = None
+  # (the user's own settings, and for what they don't set, the main config's)
+  user.conf = ConfigView(user_file, main_conf) if user_file is not None else main_conf
 
   # Profile data from YAML
   user.email = str(user.conf.email) if user.conf.email else None
@@ -993,16 +993,6 @@ class _DestinationRegistry:
     elif dest_type == "module":
       async def handler(user, menu_item=null):
         mod_name = name  # capture for closure
-        if menu_item and menu_item is not null:
-          # Validate menu_item against the parent menu's options
-          check_name = menu_item[0] if isinstance(menu_item, tuple) else str(menu_item)
-          parent = getattr(handler, 'parent_menu', None)
-          if parent and config.menu_system and isinstance(check_name, str):
-            mc = config.menu_system[parent]
-            if mc and mc.options and check_name not in mc.options:
-              from logger import log as _log
-              _log.warning("Module '%s' received unknown menu_item '%s' (parent menu '%s')",
-                           mod_name, check_name, parent)
         if mod_name in _modules:
           r = await _modules[mod_name].run(user, dest_conf, menu_item)
           if not hasattr(r, 'next_destination'):

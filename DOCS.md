@@ -253,7 +253,7 @@ file_tags: [game, utility, ...]   # the tags an uploader may choose from
 
 **Search** takes one line, with its help and examples under the field. It comes back holding the last search, to be refined (Ctrl+U deletes back to the start of the line, in any input field); Q or Backspace in the results returns to it, and an empty search goes back to the menu.
 
-- A word finds files whose **tags**, **name**, **description** or **uploader** have it: `space`, or `inhahe` (what inhahe uploaded, and files with inhahe in their names). Words side by side must all match: `space nebula`.
+- A word finds files whose **tags**, **name**, **description** or **uploader** have it: `space`, or `inhahe` (what inhahe uploaded, and files with inhahe in their names). As an uploader it matches only uploads: the files `library_sync.py` lists all carry the sysop's handle, so a word alone would otherwise find every one of them (`uploader:` does). Words side by side must all match: `space nebula`.
 - `tag:pic`, `filename:dirtyfork`, `description:knight`, `uploader:inhahe` look in one field (also `tags:`, `name:`, `file:`, `desc:`, `by:`). A field before parentheses applies inside them: `tag:(art or nature)`.
 - `and`, `or` and `not`, nested with parentheses: `(tag:mod or tag:sample) and not tag:xm`. `and` binds tighter than `or`; `not` applies to what follows it.
 - Quotes keep words together: `filename:"dirty fork"`. Case, spaces and punctuation don't count, so that is the same as `filename:dirtyfork`, and either finds `DirtyFork.zip` and `Dirty Fork.txt`.
