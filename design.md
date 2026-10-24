@@ -28,7 +28,7 @@ DirtyFork.py: main()
   ├─ modem_listener(port, baudrate, init_string)   — one per serial port (if configured)
   │
   └─ user_loop(reader, writer, connection_type) per connection:
-      ├─ _IdleMonitor wraps reader for timeout/warning
+      ├─ idle.IdleMonitor wraps reader for timeout/warning
       ├─ setup_terminal  — detect encoding, screen size
       ├─ login           — login or inline registration
       └─ while True:
@@ -185,7 +185,7 @@ When the popup or overlay closes normally (not on the way out of a disconnect), 
 
 ## Idle timeout
 
-The `_IdleMonitor` class wraps the reader's `read()` method — the single entry point for all user input (menus, input fields, doors, teleconference, file transfers). This means timeouts work everywhere without any per-module code. The warning popup's own input loop calls `read()` recursively; the monitor detects this via an `_in_warning` flag and does a plain timed wait without showing another popup. If the user has no screen yet (before terminal detection), the warning falls back to raw text.
+`idle.IdleMonitor` wraps the reader's `read()` method — the single entry point for all user input (menus, input fields, doors, teleconference, file transfers). This means timeouts work everywhere without any per-module code. The warning popup's own input loop calls `read()` recursively; the monitor detects this via an `_in_warning` flag and does a plain timed wait without showing another popup. If the user has no screen yet (before terminal detection), the warning falls back to raw text. Setting the encoding through it (`fn_encoding`) reaches the reader underneath.
 
 ## Input Field System
 
@@ -216,7 +216,7 @@ Plain `unittest`, in `tests/`. Run from the project directory, with the BBS's Py
 python -m unittest discover -s tests
 ```
 
-They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data directory that is removed afterwards, and need no network, DOSBox or door files. Covered: door node directories, the generated autoexec and dropfiles, the daily mark, the door I/O pumps and process handling, menu keys on `/jump`, dotted paths and jumps to a menu by name, the text menu's prompt line, the escape-sequence helpers, the ambient stars, the web terminal's bridge (against a fake BBS on a loopback port: it reaches only its own BBS, every byte value in both directions, telnet commands split across reads reaching the page whole, only the first message as a request, hang-ups and connection errors, an unreachable BBS, the connection limits, silent sockets, origins), and terminal detection marking the web terminal as unable to transfer files, which the file library then tells its callers before asking them anything.
+They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data directory that is removed afterwards, and need no network, DOSBox or door files. Covered: door node directories, the generated autoexec and dropfiles, the daily mark, the door I/O pumps and process handling, menu keys on `/jump`, dotted paths and jumps to a menu by name, the text menu's prompt line, the escape-sequence helpers, the ambient stars, the encoding switch through the idle monitor, the web terminal's bridge (against a fake BBS on a loopback port: it reaches only its own BBS, every byte value in both directions, telnet commands split across reads reaching the page whole, only the first message as a request, hang-ups and connection errors, an unreachable BBS, the connection limits, silent sockets, origins), and terminal detection marking the web terminal as unable to transfer files, which the file library then tells its callers before asking them anything.
 
 ## File Manifest
 
@@ -241,6 +241,7 @@ They load the shipped `DirtyFork.yaml` (as on a fresh clone) with a scratch data
 | `ansi_emulator.py` | ANSI parser for door output, screen buffer |
 | `file_transfer.py` | ZMODEM/YMODEM async wrappers |
 | `lib/` | The vendored protocol libraries: `modem` (ZMODEM) and `ymodem` (YMODEM-G); where they came from is in `lib/README.md` |
+| `idle.py` | Idle timeout: the reader wrapper with its warning popup |
 | `logger.py` | Rotating file logging |
 | `modem.py` | Serial/modem adapter classes and AT command handling |
 | `modules.py` | Dynamic module loader |
