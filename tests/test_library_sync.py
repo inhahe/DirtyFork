@@ -878,6 +878,88 @@ class CommandLine(Scratch):
       self.assertEqual(S.main([cfg, "--dry-run", "--data-dir", self.top]), 0)
     self.assertTrue(any("w: 1 listed, 1 new" in line for line in logs.output), logs.output)
 
+  def samples_config(self, *names):
+    """A config with a samples source of each name (one file each); returns
+    (its path, a function giving each source's recorded check)."""
+    files = self.path("files")
+    sources = ""
+    for name in names:
+      write(self.path(name, "a.flac"))
+      sources += f"    {name}: {{type: samples, dir: '{self.path(name)}'}}\n"
+    cfg = write(self.path("bbs.yaml"), f"files_dir: '{files}'\nfile_library:\n  sources:\n{sources}")
+
+    def checked():
+      con = sqlite3.connect(os.path.join(files, "catalog", "library.db"))
+      try:
+        return dict(con.execute("SELECT source, value FROM sync_state WHERE key = 'checked'").fetchall())
+      finally:
+        con.close()
+    return cfg, checked
+
+  def set_checked(self, source, value):
+    con = sqlite3.connect(self.path("files", "catalog", "library.db"))
+    try:
+      con.execute("UPDATE sync_state SET value = ? WHERE source = ? AND key = 'checked'", (value, source))
+      con.commit()
+    finally:
+      con.close()
+
+  def run_logged(self, *args):
+    with self.assertLogs("library_sync", "INFO") as logs:
+      self.assertEqual(S.main(list(args) + ["--data-dir", self.top]), 0)
+    return logs.output
+
+  def test_a_scheduled_run_checks_a_source_only_when_due(self):
+    cfg, checked = self.samples_config("slow", "quick")
+    self.run_logged(cfg)
+    self.assertEqual(set(checked()), {"slow", "quick"})
+    now = time.time()
+    self.set_checked("slow", f"{now - 10:.0f} 1.0")   # (took 1 s, 10 s ago: due 30 s after it began)
+    self.set_checked("quick", f"{now - 10:.0f} 0.1")  # (due 3 s after)
+    logs = self.run_logged(cfg)
+    self.assertIn("library_sync: quick; not due: slow (at ", logs[0])
+    self.assertFalse(any(line.split(" ", 4)[-1].startswith("slow:") for line in logs), logs)
+    self.assertTrue(checked()["slow"].startswith(f"{now - 10:.0f} "))  # (not checked)
+    logs = self.run_logged(cfg, "--all")  # (--all, or a source named: at once)
+    self.assertTrue(any("slow: 1 listed" in line for line in logs), logs)
+    self.set_checked("slow", f"{now - 10:.0f} 1.0")
+    logs = self.run_logged(cfg, "slow")
+    self.assertTrue(any("slow: 1 listed" in line for line in logs), logs)
+
+  def test_when_a_source_is_checked_next(self):
+    con = library.empty_catalogue()
+    now = 1_000_000
+    self.assertIsNone(S.next_check(con, "s", 30, now))  # (never checked)
+    library.set_state(con, "s", "checked", f"{now - 100} 2.5")
+    self.assertEqual(S.next_check(con, "s", 30, now), now - 100 + 75)
+    library.set_state(con, "s", "checked", f"{now - 100} 10000")
+    self.assertEqual(S.next_check(con, "s", 30, now), now - 100 + S.MAX_GAP)  # (at least daily)
+    library.set_state(con, "s", "checked", f"{now + 3600} 1")
+    self.assertIsNone(S.next_check(con, "s", 30, now))  # (the clock went back)
+    library.set_state(con, "s", "checked", "nonsense")
+    self.assertIsNone(S.next_check(con, "s", 30, now))
+
+  def test_zipping_is_not_counted_in_a_checks_cost(self):
+    files, pages = self.path("files"), self.path("pages")
+    write(os.path.join(pages, "P.html"), page("p"))
+    cfg = write(self.path("bbs.yaml"), f"files_dir: '{files}'\nfile_library:\n  sources:\n"
+                                       f"    w: {{type: webpages, dir: '{pages}'}}\n")
+
+    def zip_files(ctx, final, cwd, names):
+      time.sleep(0.5)  # (a slow zip)
+      write(final, "zip")
+    with mock.patch.object(S, "find_seven_zip", lambda configured=None: "7z"), \
+         mock.patch.object(S, "zip_files", zip_files):
+      logs = self.run_logged(cfg)
+    self.assertTrue(any("of it zipping" in line for line in logs), logs)
+    con = sqlite3.connect(os.path.join(files, "catalog", "library.db"))
+    try:
+      took = float(con.execute("SELECT value FROM sync_state WHERE source = 'w' AND key = 'checked'")
+                   .fetchone()[0].split()[1])
+    finally:
+      con.close()
+    self.assertLess(took, 0.25)  # (not 0.5: Windows' clocks may measure the sleep a little short)
+
   def test_a_failure_before_any_source_is_logged(self):
     with self.assertLogs("library_sync", "ERROR") as logs:
       self.assertEqual(S.main([self.path("no such config.yaml"), "--data-dir", self.top]), 1)

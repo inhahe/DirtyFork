@@ -5,9 +5,11 @@ sources in file_library.sources (DirtyFork.yaml).
     python library_sync.py [CONFIG] [--data-dir DIR] [--all] [--dry-run] [-v] [SOURCE ...]
 
 Without SOURCE names it runs every source not marked "scheduled: false"
-(what the scheduled task runs, register-library-sync.ps1); --all runs every
-source. Each run first makes the catalogue agree with the library's own
-folders (library.reconcile_uploads). --dry-run says what would change and
+(what the scheduled task runs, register-library-sync.ps1), each only when
+due: as often as its last check's cost allows (next_check). --all runs
+every source, due or not; SOURCE names run those. Each run first makes
+the catalogue agree with the library's own folders
+(library.reconcile_uploads). --dry-run says what would change and
 changes nothing (but the schema of a catalogue an older DirtyFork made,
 which changes no entry). Its log is library_sync.log in the data directory.
 
@@ -82,6 +84,9 @@ import library
 DEFAULT_CONFIG = "DirtyFork.yaml"
 BATCH = 1000            # items compared with the catalogue at a time
 COMMIT_EVERY = 0.5      # seconds the sync holds the catalogue's write lock at most (but for one write)
+PACE = 30               # (file_library.sync_pace) a scheduled run checks a source again only once
+                        # this many times as long as its last check took has passed...
+MAX_GAP = 24 * 3600     # ...or a day
 TEMP_SUFFIX = ".~sync.zip"
 HTML_TYPES = (".htm", ".html", ".xhtml", ".shtml", ".mht", ".mhtml")
 SITE_EXCLUDE = ("hts-cache", "hts-log.txt", "hts-in_progress.lock", "hts-nohup.out", "cookies.txt", "*.whtt")
@@ -161,6 +166,7 @@ class Stats:
   failed: int = 0
   skipped: Counter = field(default_factory=Counter)  # extension -> count, of files left out
   incomplete: bool = False  # some of it couldn't be read: forget nothing this time
+  zipping: float = 0.0  # seconds spent making zips (builds)
 
   def summary(self):
     text = (f"{self.listed} listed, {self.new} new, {self.changed} changed, {self.updated} retagged or "
@@ -1186,7 +1192,11 @@ def sync_source(ctx, source, conf):
       try:
         if item.build is not None:
           settle(now=True)  # (making a zip can take minutes)
-          item.build(old)
+          began = time.monotonic()
+          try:
+            item.build(old)
+          finally:
+            stats.zipping += time.monotonic() - began
         if item.stamp is not None:
           size, mtime = item.stamp
         else:
@@ -1316,6 +1326,29 @@ def forget_unconfigured(ctx):
     log.info("%s is no longer in the config: forgot its %d file(s)", source, n)
 
 
+def next_check(con, source, pace, now):
+  """When a scheduled run is to check *source* next (Unix time), or None
+  (now: never checked, or the clock has gone back since). Its last finished
+  check's cost decides: a check that took t seconds is done again *pace*
+  times t after it began, at most a day after. (A check that fails, or
+  can't read everything, records nothing, so the source stays due.) Making
+  zips doesn't count, being work a change asked for: what is paced is
+  looking for changes, which, on a disk busy with something else, can take
+  a hundred times as long as on one idle (all of a source's folders are
+  read)."""
+  try:
+    began, took = (float(v) for v in library.get_state(con, source, "checked", "").split())
+  except ValueError:
+    return None
+  return began + min(MAX_GAP, pace * took) if began <= now else None
+
+
+def _when(t):
+  """Unix time *t* for the log: its time of day, and its day if not today."""
+  local = time.localtime(t)
+  return time.strftime("%H:%M" if local[:3] == time.localtime()[:3] else "%a %H:%M", local)
+
+
 class AlreadyRunning(RuntimeError):
   """Another library_sync holds the lock."""
 
@@ -1403,6 +1436,14 @@ def _run(args, paths):
   else:
     chosen = [name for name, sc in lib.sources.items()
               if args.all or not (sc.scheduled is False or str(sc.scheduled).lower() == "false")]
+  # (a scheduled run checks each source only as often as its last check's
+  # cost allows: next_check; a run naming sources, or --all, checks them now)
+  paced = not (args.sources or args.all or args.dry_run)
+  try:
+    pace = float(cfg.file_library.sync_pace) if cfg.file_library.sync_pace else PACE
+  except (TypeError, ValueError):
+    log.warning("Unreadable file_library.sync_pace %r; using %s", cfg.file_library.sync_pace, PACE)
+    pace = PACE
 
   if args.dry_run and not os.path.isfile(lib.catalog):
     con = library.empty_catalogue()  # (a dry run makes nothing, not even the catalogue)
@@ -1419,7 +1460,14 @@ def _run(args, paths):
   failures = 0
   try:
     with contextlib.nullcontext() if args.dry_run else single_instance(lib.sync_lock):
-      log.info("library_sync: %s%s", ", ".join(chosen) or "(no sources)", " (dry run)" if args.dry_run else "")
+      later = {}  # source -> when it is next checked, for those not due yet
+      if paced:
+        now = time.time()
+        later = {name: due for name in chosen
+                 if (due := next_check(con, name, pace, now)) is not None and due > now}
+        chosen = [name for name in chosen if name not in later]
+      log.info("library_sync: %s%s%s", ", ".join(chosen) or "(no sources)", " (dry run)" if args.dry_run else "",
+               "; not due: " + ", ".join(f"{n} (at {_when(d)})" for n, d in later.items()) if later else "")
       if not args.dry_run:
         added, forgotten = library.reconcile_uploads(lib, ctx.con, TEMP_PREFIX)
         if added or forgotten:
@@ -1432,7 +1480,7 @@ def _run(args, paths):
           log.error("%s: 7-Zip (7z.exe) is not installed; set file_library.seven_zip", name)
           failures += 1
           continue
-        t = time.monotonic()
+        t, began = time.monotonic(), time.time()
         try:
           stats = sync_source(ctx, name, conf)
         except SourceError as exc:
@@ -1446,7 +1494,12 @@ def _run(args, paths):
           failures += 1
           continue
         failures += 1 if stats.failed else 0
-        log.info("%s: %s (%.1f s)", name, stats.summary(), time.monotonic() - t)
+        took = time.monotonic() - t
+        log.info("%s: %s (%.1f s%s)", name, stats.summary(), took,
+                 f", {stats.zipping:.1f} s of it zipping" if stats.zipping else "")
+        if not (args.dry_run or stats.incomplete):  # (a check that couldn't read it all: again next run)
+          library.set_state(ctx.con, name, "checked", f"{began:.0f} {max(0.0, took - stats.zipping):.3f}")
+          ctx.con.commit()
   except AlreadyRunning as exc:
     log.error("%s", exc)
     return 3

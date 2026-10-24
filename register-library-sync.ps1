@@ -11,19 +11,19 @@
 # their zips, zips websites and webpages that are new or changed, and lists new
 # pictures and videos. Its log is library_sync.log in the data directory.
 #
-# How often: unless -Minutes is given, this runs the sync once to bring everything up to
-# date, then again to time a run with nothing much to do, and repeats the task every
-# Factor times that long (a sync that takes longer runs less often), at least every
-# 15 minutes and at most once a day, rounded up to 5 minutes. Run this again after the
-# sources grow to recalibrate.
+# How often: the task runs every -Minutes (default 15), and the sync paces each source
+# itself: a run checks a source only once 30 times as long as its last check took has
+# passed (file_library.sync_pace; zipping not counted), and at least once a day. So a
+# source that is quick to check is checked at every run, and one that takes minutes, as
+# a big folder does on a disk busy with something else, waits hours. The first run
+# brings everything up to date, however long that takes (zips are kept as they are made).
 #
 # It runs as the current user, only while logged on (no stored password), with pythonw so
 # no console window appears. A run still going when the next is due has that one skipped
 # (one at a time); a run that hangs is stopped after 3 hours.
 param(
     [string]$DataDir = 'me',
-    [int]$Minutes = 0,
-    [int]$Factor = 30
+    [int]$Minutes = 15
 )
 $ErrorActionPreference = 'Stop'
 
@@ -38,36 +38,9 @@ $pyw = Join-Path (Split-Path -Parent $py) 'pythonw.exe'
 if (-not (Test-Path $pyw)) { throw "pythonw.exe not found next to $py" }
 $data = if ([IO.Path]::IsPathRooted($DataDir)) { $DataDir } else { Join-Path $root $DataDir }
 $data = (Resolve-Path $data).Path
+if ($Minutes -lt 1) { throw "-Minutes must be at least 1" }
 "Python: $pyw"
 "Data directory: $data"
-
-function Invoke-Sync {
-    # Runs the sync; returns how long it took. (Windows PowerShell 5.1 turns a native
-    # program's stderr, the sync's log, into a terminating error under 'Stop'.)
-    $ErrorActionPreference = 'Continue'
-    Push-Location $root
-    try {
-        $took = Measure-Command { & $py library_sync.py --data-dir $data 2>&1 | Out-Null }
-        $code = $LASTEXITCODE
-    } finally {
-        Pop-Location
-    }
-    if ($code -eq 3) { throw "Another library_sync is running; run this again when it has finished." }
-    if ($code -ne 0) { Write-Host "library_sync exited with $code (a source failed; see $data\library_sync.log)" }
-    $took
-}
-
-if ($Minutes -le 0) {
-    "Bringing the library up to date..."
-    $first = Invoke-Sync
-    "  took {0:N0} s" -f $first.TotalSeconds
-    "Timing a run with nothing new..."
-    $second = Invoke-Sync
-    "  took {0:N1} s" -f $second.TotalSeconds
-    $Minutes = [int][Math]::Ceiling($second.TotalSeconds * $Factor / 60 / 5) * 5
-    $Minutes = [Math]::Min([Math]::Max($Minutes, 15), 1440)
-    "Every $Minutes minutes ($Factor times $([Math]::Round($second.TotalSeconds, 1)) s, rounded up, 15 minutes to a day)"
-}
 
 $name = 'DirtyFork library sync'
 $action = New-ScheduledTaskAction -Execute $pyw -WorkingDirectory $root -Argument "library_sync.py --data-dir `"$data`""
@@ -78,7 +51,7 @@ $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" 
 
 Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings `
     -Principal $principal -Force `
-    -Description "Refreshes the DirtyFork BBS file library from its sources every $Minutes minutes: $root\library_sync.py --data-dir $data (log: $data\library_sync.log)." | Out-Null
+    -Description "Refreshes the DirtyFork BBS file library from its sources, each as often as its cost allows, looking every $Minutes minutes: $root\library_sync.py --data-dir $data (log: $data\library_sync.log)." | Out-Null
 
 Get-ScheduledTask -TaskName $name | Select-Object TaskName, State,
     @{n = 'Every'; e = { "$Minutes minutes" } },
