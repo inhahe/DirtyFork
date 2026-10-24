@@ -15,9 +15,10 @@ from logger import log
 class SerialWriter:
   """Adapter wrapping pyserial-asyncio StreamWriter to match telnetlib3 writer interface."""
 
-  def __init__(self, transport, protocol, encoding="cp437"):
+  def __init__(self, transport, protocol, stream_writer=None, encoding="cp437"):
     self._transport = transport
     self._protocol = protocol
+    self._stream_writer = stream_writer  # pyserial-asyncio's own, for drain()
     self._encoding = encoding
     self._closed = False
 
@@ -33,8 +34,12 @@ class SerialWriter:
     self._transport.write(data)
 
   async def drain(self):
-    # pyserial transport writes immediately; drain is a no-op but we yield
-    await asyncio.sleep(0)
+    # The transport queues what the line has not taken yet (without limit): a
+    # file transfer must wait for it, or it queues a whole file at once.
+    if self._stream_writer is not None:
+      await self._stream_writer.drain()
+    else:
+      await asyncio.sleep(0)
 
   def close(self):
     self._closed = True
@@ -92,7 +97,7 @@ async def _open_serial(port, baudrate):
   protocol = writer.transport.get_protocol() if hasattr(writer.transport, 'get_protocol') else None
   return (
     SerialReader(reader),
-    SerialWriter(transport, protocol),
+    SerialWriter(transport, protocol, writer),
     writer,  # keep reference to underlying writer for cleanup
   )
 
@@ -199,7 +204,7 @@ async def wait_for_call(port, baudrate, init_string="ATZ"):
           # Connected — return adapted reader/writer
           return (
             SerialReader(reader),
-            SerialWriter(transport, protocol),
+            SerialWriter(transport, protocol, writer),
           )
         if "NO CARRIER" in upper or "ERROR" in upper or "NO ANSWER" in upper:
           log.warning("Modem: connection failed: %s", line)

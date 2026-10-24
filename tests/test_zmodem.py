@@ -139,6 +139,18 @@ class Framing(unittest.TestCase):
                           (zmodem.ZDATA, bytes([0x18, 0x11, 0xff, 0x0d]), False),
                           (zmodem.ZEOF, bytes([0x18, 0x11, 0xff, 0x0d]), True)])
 
+    def test_a_subpacket_right_after_a_hex_header_keeps_its_first_byte(self):
+        """A nonconforming sender's hex ZDATA, then data starting with LF
+        (not escaped): only the header's own CR LF XON may be taken."""
+        async def go():
+            pipe = Pipe()
+            pipe.write(Encoder.hex_header(zmodem.ZDATA, zmodem.pos_bytes(0))
+                       + Encoder().subpacket(b"\nline", ZCRCE, False))
+            reader = Reader(End(pipe, Pipe()))
+            hdr = await reader.header(5)
+            return await reader.subpacket(hdr.crc32, 5)
+        self.assertEqual(asyncio.run(go()), (b"\nline", ZCRCE))
+
     def test_five_cans_abort(self):
         async def go():
             pipe = Pipe()

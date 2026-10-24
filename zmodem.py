@@ -178,9 +178,6 @@ def _crc32(data: bytes) -> int:
 # Encoding (what we send)
 # ---------------------------------------------------------------------------
 
-_HEX = b"0123456789abcdef"
-
-
 class Encoder:
     """Builds headers and subpackets, ZDLE-escaping binary data.
 
@@ -359,11 +356,15 @@ class Reader:
         raw = bytes(digits[i] << 4 | digits[i + 1] for i in range(0, 14, 2))
         if _crc16(raw[:5]) != int.from_bytes(raw[5:], "big"):
             raise _BadFrame("bad CRC in a hex header")
-        # The trailing CR, LF and XON: consumed when they are already here, so a
-        # subpacket after a hex header (which only nonconforming senders send)
-        # does not start with them. Anything else is left for the next read.
-        while self.buf and self.buf[0] in (0x0D, 0x8D, 0x0A, 0x8A, XON):
-            del self.buf[0]
+        # The trailing CR, LF and XON (each with or without the high bit, in
+        # that order, each at most once): consumed when they are already here,
+        # so a subpacket after a hex header (which only nonconforming senders
+        # send) does not start with them. Its data may itself start with an LF,
+        # so nothing more is taken. Anything not here yet is skipped as noise
+        # by the next header read.
+        for expected in ((0x0D, 0x8D), (0x0A, 0x8A), (XON, XON | 0x80)):
+            if self.buf and self.buf[0] in expected:
+                del self.buf[0]
         return Header(raw[0], raw[1:5], crc32=False)
 
     async def _bin_header(self, deadline: Optional[float], crc32: bool) -> Header:
@@ -414,21 +415,6 @@ class Reader:
         if not ok:
             raise _BadFrame("bad CRC in a data subpacket")
         return bytes(data), frame_end
-
-    async def discard_until_quiet(self, quiet: float, limit: float) -> None:
-        """Drop what arrives until nothing has come for *quiet* seconds (at
-        most *limit* seconds in all): the rest of an interrupted transfer,
-        which must not reach the BBS as keystrokes."""
-        self.buf.clear()
-        loop = asyncio.get_running_loop()
-        end = loop.time() + limit
-        while loop.time() < end:
-            try:
-                data = await asyncio.wait_for(self.link.read(), min(quiet, end - loop.time()))
-            except asyncio.TimeoutError:
-                return
-            if not data:
-                return
 
 
 # ---------------------------------------------------------------------------

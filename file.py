@@ -407,10 +407,24 @@ async def _choose_protocol(user):
 # Transfer helpers
 # ---------------------------------------------------------------------------
 
+def _library_path(name):
+  """The path of the library file *name*, or None unless it is one the
+  library lists. The name may come from the caller (Download asks for it),
+  so it is never joined to the folder unchecked: "../DirtyFork.db", an
+  absolute path or an upload still in progress would be sent otherwise."""
+  if name not in {entry[0] for entry in _get_all_files()}:
+    return None
+  directory = os.path.realpath(_files_dir())
+  path = os.path.realpath(os.path.join(directory, name))
+  if os.path.dirname(path) != directory or not os.path.isfile(path):
+    return None
+  return path
+
+
 async def _do_download(user, filename):
   """Download a single file to the user."""
-  file_path = os.path.join(_files_dir(), filename)
-  if not os.path.isfile(file_path):
+  file_path = _library_path(filename)
+  if file_path is None:
     await show_message_box(user, f"File not found: {filename}")
     return
 
@@ -723,14 +737,7 @@ async def _download_file(user):
   name = name.strip()
   if not name or name.lower() == "q":
     return
-
-  # Check if it's a valid file
-  file_path = os.path.join(_files_dir(), name)
-  if not os.path.isfile(file_path):
-    await show_message_box(user, f"File not found: {name}")
-    return
-
-  await _do_download(user, name)
+  await _do_download(user, name)  # (which accepts only names the library lists)
 
 
 # ---------------------------------------------------------------------------
@@ -783,7 +790,6 @@ async def _upload_file(user):
   if not policy.saved:
     return
 
-  meta = _load_meta()
   await ansi_cls(user)
   for fname in policy.saved:
     await send(user, cr + lf + f"Cataloguing: {fname}" + cr + lf, drain=False)
@@ -818,7 +824,9 @@ async def _upload_file(user):
               if vk.lower() == part_lower and vk not in assigned_keys:
                 assigned_keys.append(vk)
 
-    # Save to meta
+    # Save to meta: read again just before writing (no await in between), so
+    # what others catalogued while this caller was typing is kept
+    meta = _load_meta()
     meta[fname] = {
       'keys': assigned_keys,
       'description': desc,

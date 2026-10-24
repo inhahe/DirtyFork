@@ -33,7 +33,7 @@ import threading
 from dataclasses import dataclass, field
 
 import zmodem
-from definitions import RetVals, success, fail
+from definitions import RetVals, success, fail, null
 from logger import log
 
 _lib_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib')
@@ -51,6 +51,10 @@ except ImportError:
 CAN = 0x18
 CANS_TO_ABORT = 5
 TEMP_PREFIX = ".upload-"  # (uploads in progress; never listed: see safe_upload_name)
+ROOM_CHECK = 1024 * 1024  # bytes an upload writes between checks of the free disk space
+MAX_UPLOAD_FILES = 20     # files taken in one upload
+READ_SIZE = 1 << 20       # what a transfer reads at a time: more than telnetlib3 ever buffers, which
+                          # it then hands back whole (for less, it decodes byte by byte)
 
 
 def get_available_protocols():
@@ -73,7 +77,7 @@ class _ConnectionLink:
     self._writer = user.writer
 
   async def read(self):
-    data = await self._read(4096)
+    data = await self._read(READ_SIZE)
     if isinstance(data, str):
       data = data.encode("latin-1")
     return data
@@ -169,18 +173,20 @@ def safe_upload_name(name):
   MAX_NAME characters (keeping the extension). None when nothing usable is left."""
   base = name.replace("\\", "/").rsplit("/", 1)[-1]
   base = base.rsplit(":", 1)[-1]  # a drive letter, or an NTFS stream
-  base = _BAD_CHARS.sub("_", base).strip().lstrip(".").rstrip(". ")
+  base = _BAD_CHARS.sub("_", base)
+  if len(base) > MAX_NAME:
+    stem, dot, ext = base.rpartition(".")
+    if dot and 0 < len(ext) <= 16:
+      base = stem[:MAX_NAME - len(ext) - 1] + "." + ext
+    else:
+      base = base[:MAX_NAME]
+  # (after cutting: what was cut can have left dots or spaces at either end)
+  base = base.lstrip(". ").rstrip(". ")
   if not base:
     return None
   if base.split(".")[0].strip().upper() in _DEVICE_NAMES:
     base = "_" + base
-  if len(base) > MAX_NAME:
-    stem, dot, ext = base.rpartition(".")
-    if dot and 0 < len(ext) <= 16:
-      base = stem[:MAX_NAME - len(ext) - 1].rstrip(". ") + "." + ext
-    else:
-      base = base[:MAX_NAME].rstrip(". ")
-  return base or None
+  return base
 
 
 _SIZE = re.compile(r"\s*(\d+(?:\.\d+)?)\s*([KMGT]?)I?B?\s*", re.IGNORECASE)
@@ -189,8 +195,8 @@ _SIZE = re.compile(r"\s*(\d+(?:\.\d+)?)\s*([KMGT]?)I?B?\s*", re.IGNORECASE)
 def parse_size(value, default):
   """A size from the config: a number of bytes, or text such as "100 MB"
   (B, KB, MB, GB, TB; powers of 1024). *default* when absent or unreadable."""
-  if not value:  # (absent: None, or the config's falsy null)
-    return default
+  if value is None or value is null or (isinstance(value, str) and not value.strip()):
+    return default  # (absent; but 0 is 0: keep no reserve, say)
   if isinstance(value, (int, float)):
     return int(value)
   m = _SIZE.fullmatch(str(value))
@@ -245,6 +251,12 @@ class UploadPolicy:
         return None
     return name
 
+  def out_of_room(self):
+    """True when the disk has less free than keep_free. Checked while files
+    arrive too (every ROOM_CHECK bytes): the size a sender declares may be
+    false, and a batch of files adds up."""
+    return shutil.disk_usage(self.directory).free < self.keep_free
+
   def publish(self, temp_path, name):
     """Move a whole upload from *temp_path* into the library as *name*,
     never replacing a file. True on success."""
@@ -276,12 +288,18 @@ class _UploadSink:
     fd, self.temp = tempfile.mkstemp(prefix=TEMP_PREFIX, suffix=".part", dir=policy.directory)
     self.file = os.fdopen(fd, "wb")
     self.size = 0
+    self.checked = 0  # size at the last free-space check
 
   def write(self, data):
     self.size += len(data)
     if self.size > self.policy.max_bytes:
       self.policy.refused.append((self.name, f"it is larger than the {_size_text(self.policy.max_bytes)} allowed"))
       raise zmodem.TransferError(f"{self.name} is larger than the {_size_text(self.policy.max_bytes)} allowed")
+    if self.size - self.checked >= ROOM_CHECK:
+      self.checked = self.size
+      if self.policy.out_of_room():
+        self.policy.refused.append((self.name, "there is not enough room for it"))
+        raise zmodem.TransferError("there is not enough room for the upload")
     self.file.write(data)
 
   def finish(self):
@@ -362,7 +380,7 @@ async def send_files_zmodem(user, paths):
   return RetVals(status=fail, message="Your terminal declined the file.", results=results)
 
 
-async def receive_files_zmodem(user, policy, max_files=20):
+async def receive_files_zmodem(user, policy, max_files=MAX_UPLOAD_FILES):
   """Receive files from the caller by ZMODEM into the library, as *policy*
   allows. RetVals: status, message; policy.saved and policy.refused say
   what came of each file."""
@@ -425,6 +443,11 @@ class _ThreadedLink:
     self.pump = asyncio.ensure_future(self._pump())
 
   async def stop(self):
+    """Stop the pump, and the library's thread at its next read or write (it
+    still runs if the task awaiting it was cancelled)."""
+    with self.cond:
+      self.cancelled = True
+      self.cond.notify_all()
     if self.pump:
       self.pump.cancel()
       with contextlib.suppress(BaseException):
@@ -462,10 +485,14 @@ class _ThreadedLink:
         raise _Cancelled()
       data = bytes(self.buf[:size])
       del self.buf[:size]
+      if not data and self.closed:
+        # (else the library polls a dead connection, at full speed, until its timeouts end)
+        self.cancel("The connection closed.")
+        raise _Cancelled()
     return data or None
 
   def write(self, data, timeout=1):
-    if self.cancelled:
+    if self.cancelled or self.closed:
       raise _Cancelled()
     data = bytes(data)
 
@@ -521,7 +548,7 @@ async def send_files_ymodem(user, paths):
   return RetVals(status=fail, message="The transfer failed.", results=[])
 
 
-async def receive_files_ymodem(user, policy):
+async def receive_files_ymodem(user, policy, max_files=MAX_UPLOAD_FILES):
   """Receive files by YMODEM-G into the library, as *policy* allows. The
   library writes into a fresh hidden folder; each whole file is then checked
   and published like a ZMODEM upload."""
@@ -530,10 +557,20 @@ async def receive_files_ymodem(user, policy):
   staging = tempfile.mkdtemp(prefix=TEMP_PREFIX, dir=policy.directory)
   log.info("YMODEM-G receive from %s into %s", getattr(user, 'handle', '?'), staging)
 
+  checked = {}  # file -> bytes at its last free-space check
+
   def job(modem, threaded):
     def progress(task_index, name, total, received):
-      if received > policy.max_bytes and not threaded.cancelled:
+      if threaded.cancelled:
+        return
+      if task_index >= max_files:
+        threaded.cancel(f"No more than {max_files} files can be uploaded at a time.")
+      elif received > policy.max_bytes:
         threaded.cancel(f"{name} is larger than the {_size_text(policy.max_bytes)} allowed.")
+      elif received - checked.get(task_index, 0) >= ROOM_CHECK:
+        checked[task_index] = received
+        if policy.out_of_room():
+          threaded.cancel("There is not enough room for the upload.")
     return modem.recv(staging, callback=progress)
   try:
     try:

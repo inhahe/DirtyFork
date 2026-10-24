@@ -40,6 +40,17 @@
     var settings = loadSettings();
     var term = null, ws = null, sentry = null, zsession = null;
     var grid = null;           // [cols, rows] of the current connection
+    var ctrlX = 0;             // Ctrl+X pressed in a row during a transfer
+    // After the caller cancels a download, what the BBS had already sent still
+    // arrives, and the Sentry would show it as text. It is dropped until 300 ms
+    // pass without any (the BBS itself waits for a second of quiet before it
+    // redraws the screen, so that redraw is not lost).
+    var dropping = null;
+
+    function dropTheRest() {
+        clearTimeout(dropping);
+        dropping = setTimeout(function () { dropping = null; }, 300);
+    }
     var encoder = new TextEncoder();
 
     // -- settings -------------------------------------------------------------
@@ -134,7 +145,14 @@
             return true;
         });
         term.onData(function (text) {
-            if (!zsession) send(encoder.encode(text));
+            if (!zsession) {
+                send(encoder.encode(text));
+                return;
+            }
+            // During a transfer the keys are not the BBS's; five Ctrl+X cancel
+            // it, as the BBS tells callers (the same as the panel's button).
+            ctrlX = text === "\x18" ? ctrlX + 1 : 0;
+            if (ctrlX >= 5 && $("xfer-cancel").onclick) $("xfer-cancel").onclick();
         });
         term.onBinary(function (text) {  // mouse reports with bytes over 127
             var bytes = new Uint8Array(text.length);
@@ -182,6 +200,10 @@
         socket.onmessage = function (e) {
             if (typeof e.data === "string") {  // the bridge's own notices (busy, BBS down)
                 term.write(e.data);
+                return;
+            }
+            if (dropping) {  // (the rest of a transfer the caller cancelled)
+                dropTheRest();
                 return;
             }
             try {
@@ -235,6 +257,7 @@
         zsession = null;
         pending = null;
         retracting = false;
+        ctrlX = 0;
         $("xfer").hidden = true;
         $("xfer-files").value = "";
         $("xfer-cancel").onclick = null;
@@ -298,6 +321,7 @@
         showTransfer("Downloading");
         $("xfer-cancel").onclick = function () {
             try { session.abort(); } catch (e) { }
+            dropTheRest();
             endTransfer("Download cancelled.");
         };
         session.on("offer", function (offer) {
@@ -332,6 +356,7 @@
         var started = false;
         $("xfer-cancel").onclick = function () {
             if (started) { try { zsession.abort(); } catch (e) { } } else if (pending) { pending.deny(); }
+            dropTheRest();
             pending = null;
             endTransfer("Upload cancelled.");
         };

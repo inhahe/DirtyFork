@@ -248,7 +248,9 @@ File management with search, browse, list, upload, and download capabilities. Fi
 - The name the caller's terminal sends is cut to its last part (no folders), without characters Windows forbids, leading dots or device names (`CON`, `NUL`, `COM1` ...), and at most 120 characters.
 - A file never replaces another: a name already in the library (or the catalogue's own, `meta.yaml`) is refused, and the caller is told why.
 - A file is received under a temporary name (`.upload-*.part`, never listed) and published only when it has arrived whole; an interrupted one is deleted (and any left by a crash, at the next start).
-- `upload_max_size` (default `100 MB`) is the largest file taken, and `upload_keep_free` (default `500 MB`) the free disk space an upload must leave; sizes take B, KB, MB or GB.
+- `upload_max_size` (default `100 MB`) is the largest file taken, and `upload_keep_free` (default `500 MB`) the free disk space an upload must leave (`0`: none); sizes take B, KB, MB or GB. Both are checked as the data arrives, not only against the size the caller's terminal announces. An upload takes at most 20 files.
+
+A download can only be a file the library lists: a name typed at Download is looked up there, never joined to a folder.
 
 After an upload the caller is asked for a description and keys for each file saved.
 

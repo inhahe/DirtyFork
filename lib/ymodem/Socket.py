@@ -30,6 +30,10 @@ class Channel(ABC):
 
 _psm = ProtocolStyleManagement()
 
+# DirtyFork: names Windows takes for devices, in any folder
+_DEVICE_NAMES = ({"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+                 | {f"COM{i}" for i in range(10)} | {f"LPT{i}" for i in range(10)})
+
 class ModemSocket(Channel):
     def __init__(self, 
                  read: Callable[[int, Optional[float]], Any], 
@@ -149,7 +153,7 @@ class ModemSocket(Channel):
                             self.logger.warning("[Sender]: Received a request from the Receiver to cancel the transmission, exit.")
                             if stream:
                                 stream.close()
-                            return True
+                            return False  # DirtyFork: a cancel is not a success (was True)
                     else:
                         self.logger.error("[Sender]: Waiting for command from Receiver has timed out, abort and exit!")
                         self._abort()
@@ -164,7 +168,10 @@ class ModemSocket(Channel):
                     else:
                         self.logger.debug("[Sender]: <- CRC / G")
                         crc = 1
-                    
+                    # DirtyFork: the file name packet too waits for its ACK unless the
+                    # receiver asked to stream (G); see the data packets below
+                    streaming = c == G
+
                     header = self._make_send_header(self._packet_size, 0)
                     self.logger.debug(f"[Sender]: {'SOH' if self._packet_size == 128 else 'STX'} ->")
 
@@ -262,7 +269,7 @@ class ModemSocket(Channel):
                     
                     retries = 0
                     while True:
-                        if self.protocol_subtype == ProtocolSubType.YMODEM_BATCH_FILE_TRANSMISSION:
+                        if self.protocol_subtype == ProtocolSubType.YMODEM_BATCH_FILE_TRANSMISSION or not streaming:
                             if retries < 10:
                                 self.write(header + data + checksum)
                                 self.logger.debug("[Sender]: Filename packet ->")
@@ -310,14 +317,14 @@ class ModemSocket(Channel):
                         self.logger.warning("[Sender]: Received a request from the Receiver to cancel the transmission, exit.")
                         if stream:
                             stream.close()
-                        return True
+                        return False  # DirtyFork: not a success (was True)
                 else:
                     self.logger.error("[Sender]: Waiting for command from Receiver has timed out, abort and exit!")
                     self._abort()
                     self.logger.debug("[Sender]: CAN ->")
                     if stream:
                         stream.close()
-                    return True
+                    return False  # DirtyFork: not a success (was True)
                 
                 if c == NAK:
                     self.logger.debug("[Sender]: <- NAK")
@@ -434,11 +441,21 @@ class ModemSocket(Channel):
             '''
 
             if self.protocol_type == ProtocolType.YMODEM:
+                # DirtyFork: wait for the receiver to ask for the next file (C or G)
+                # before saying there is none: one that clears its input before
+                # asking would lose the packet. A plain YMODEM receiver then
+                # acknowledges it; wait for that briefly.
+                c = self._read_and_wait([NAK, CRC, G, CAN], 10)
+                if c == CAN:
+                    return False
+                crc = 0 if c == NAK else 1
                 header = self._make_send_header(self._packet_size, 0)
                 data = bytearray().ljust(self._packet_size, b"\x00")
                 checksum = self._make_send_checksum(crc, data)
                 self.write(header + data + checksum)
                 self.logger.debug("[Sender]: Batch end packet ->")
+                if c != G:
+                    self._read_and_wait([ACK], 5)
 
             return True
 
@@ -490,7 +507,7 @@ class ModemSocket(Channel):
                             if c == CAN:
                                 self.logger.debug("[Receiver]: <- CAN")
                                 self.logger.warning("[Receiver]: Received a request from the Sender to cancel the transmission, exit.")
-                                return True
+                                return False  # DirtyFork: the sender cancelled; not a success (was True)
                             else:
                                 pass
                         else:
@@ -549,9 +566,15 @@ class ModemSocket(Channel):
                                     # component, so it cannot be a path out of the save folder
                                     # (os.path.join below would even take an absolute one whole).
                                     file_name = file_name.replace("\\", "/").rsplit("/", 1)[-1]
-                                    file_name = file_name.split(":")[-1].strip()
-                                    if file_name in ("", ".", ".."):
+                                    file_name = file_name.split(":")[-1]
+                                    file_name = "".join("_" if c in '<>"|?*' or ord(c) < 32 else c
+                                                        for c in file_name).strip().rstrip(". ")
+                                    if file_name.lstrip(".") == "":
                                         file_name = "upload.bin"
+                                    # Windows opens a device for these names in any folder
+                                    # (PRN, COM1 ...), not a file
+                                    if file_name.split(".")[0].strip().upper() in _DEVICE_NAMES:
+                                        file_name = "_" + file_name
                                     task.name = file_name
                                     self.logger.debug(f"[Receiver]: File - {task.name}")
 
@@ -690,7 +713,7 @@ class ModemSocket(Channel):
                             self.logger.warning("[Receiver]: Received a request from the Sender to cancel the transmission, exit.")
                             if stream:
                                 stream.close()
-                            return True
+                            return False  # DirtyFork: the sender cancelled; not a success (was True)
                         else:
                             # YMODEM enter here
                             crc = 1
@@ -707,7 +730,7 @@ class ModemSocket(Channel):
                                 self.logger.warning("[Receiver]: Received a request from the Sender to cancel the transmission, exit.")
                                 if stream:
                                     stream.close()
-                                return True
+                                return False  # DirtyFork: the sender cancelled; not a success (was True)
                             else:
                                 crc = 0
                                 break
@@ -734,7 +757,7 @@ class ModemSocket(Channel):
                         self.logger.debug("[Receiver]: <- CAN")
                         if stream:
                             stream.close()
-                        return True
+                        return False  # DirtyFork: the sender cancelled; not a success (was True)
                     elif c == EOT:
                         self.logger.debug("[Receiver]: <- EOT")
                         self.write(ACK)

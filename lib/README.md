@@ -10,4 +10,8 @@ ZMODEM is DirtyFork's own, `zmodem.py`. Until 2026-10 it came from Wijnand Modde
 - **License:** MIT, `ymodem/LICENSE` (upstream's own file).
 - **Needs:** `ordered-set` (listed in the project's `requirements.txt`).
 - **Used by DirtyFork:** `ymodem.Socket.ModemSocket` and `ymodem.Protocol.ProtocolType`.
-- **Changed here** (marked "DirtyFork" in `ymodem/Socket.py`): the receiver keeps only the last component of the file name the sender gives, and refuses `.` and `..`. Upstream joins the sender's name to the save folder as it is, so a name such as `..\..\DirtyFork.yaml`, or an absolute path, was written outside it. A name that is not UTF-8 is read as CP437 instead of stopping the transfer.
+- **Changed here** (each marked "DirtyFork" in `ymodem/Socket.py`):
+  - The receiver keeps only the last component of the file name the sender gives, without characters Windows forbids, and makes `.`, `..` and the like `upload.bin`. Upstream joins the sender's name to the save folder as it is, so a name such as `..\..\DirtyFork.yaml`, or an absolute path, was written outside it. A device name (`PRN`, `COM1`, `NUL` ...), which Windows opens as the device in any folder, gets a `_` in front. A name that is not UTF-8 is read as CP437 instead of stopping the transfer.
+  - A cancel (CAN) and the sender's timeout waiting to start return False, not True, both ways: upstream reported a cancelled transfer as a success, so a half-received file looked whole.
+  - The sender streams (YMODEM-G) only when the receiver asked with G: upstream streamed whenever it was set up for G, file name packet included, so a receiver that asked with C (plain YMODEM) lost sync, and a NAK of the name packet was taken as the go-ahead in checksum mode.
+  - Before the end-of-batch packet the sender waits for the receiver to ask (C or G), and for a plain YMODEM receiver's ACK after it: one that clears its input before asking lost it.
